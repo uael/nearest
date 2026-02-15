@@ -2,7 +2,11 @@
 *
 
 # Git
+# !.git and !.git/** are needed for release-plz, which uses the `ignore` crate
+# to copy the repo to a temp dir. Without these, the deny-all `*` pattern
+# causes .git internals to be skipped, breaking the copy. (release-plz#1961)
 !.git
+!.git/**
 !.gitignore
 
 # Project
