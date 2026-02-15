@@ -195,6 +195,74 @@ impl<T: Flat> NearList<T> {
     count
   }
 
+  /// Returns a reference to the last element, or `None` if empty.
+  ///
+  /// **O(n)**: requires full traversal of the segment chain to find the
+  /// last segment, then indexes its final element.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region, empty};
+  ///
+  /// #[derive(Flat)]
+  /// struct Root { items: NearList<u32> }
+  ///
+  /// let region = Region::new(Root::make([10u32, 20, 30]));
+  /// assert_eq!(region.items.last(), Some(&30));
+  ///
+  /// let region = Region::new(Root::make(empty()));
+  /// assert_eq!(region.items.last(), None);
+  /// ```
+  #[must_use]
+  pub fn last(&self) -> Option<&T> {
+    if self.len == 0 {
+      return None;
+    }
+    // Walk the segment chain to the last segment.
+    let mut seg_addr =
+      core::ptr::from_ref(&self.head).cast::<u8>().addr().wrapping_add_signed(self.head as isize);
+    loop {
+      // SAFETY: seg_addr points to a valid Segment<T> in the region buffer.
+      let seg = unsafe { &*core::ptr::with_exposed_provenance::<Segment<T>>(seg_addr) };
+      if seg.next == 0 {
+        // This is the last segment. Return its final element.
+        let last_idx = seg.len as usize - 1;
+        let val_addr =
+          seg_addr.wrapping_add(size_of::<Segment<T>>()).wrapping_add(last_idx * size_of::<T>());
+        // SAFETY: val_addr points to a valid T within the last segment.
+        return Some(unsafe { &*core::ptr::with_exposed_provenance::<T>(val_addr) });
+      }
+      seg_addr =
+        core::ptr::from_ref(&seg.next).cast::<u8>().addr().wrapping_add_signed(seg.next as isize);
+    }
+  }
+
+  /// Returns `true` if the list contains an element equal to the given value.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region, empty};
+  ///
+  /// #[derive(Flat)]
+  /// struct Root { items: NearList<u32> }
+  ///
+  /// let region = Region::new(Root::make([1u32, 2, 3]));
+  /// assert!(region.items.contains(&2));
+  /// assert!(!region.items.contains(&4));
+  ///
+  /// let region = Region::new(Root::make(empty()));
+  /// assert!(!region.items.contains(&1));
+  /// ```
+  #[must_use]
+  pub fn contains(&self, item: &T) -> bool
+  where
+    T: PartialEq,
+  {
+    self.iter().any(|x| x == item)
+  }
+
   /// Returns a reference to the first element, or `None` if empty.
   ///
   /// # Examples

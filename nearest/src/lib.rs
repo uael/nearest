@@ -191,6 +191,9 @@
 //! | [`Session::extend_list`] | Append multiple elements |
 //! | [`Session::filter_list`] | Keep elements matching a predicate |
 //! | [`Session::map_list`] | Transform `Copy` elements in place |
+//! | [`Session::reverse_list`] | Reverse element order |
+//! | [`Session::sort_list`] | Sort elements by comparator |
+//! | [`Session::dedup_list`] | Remove consecutive duplicates |
 //!
 //! ## Cursor API
 //!
