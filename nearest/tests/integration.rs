@@ -2324,3 +2324,115 @@ mod serde_tests {
     assert_eq!(restored.as_bytes(), &original_bytes[..]);
   }
 }
+
+// ===========================================================================
+// Consuming conversions: into_buf, into_vec, AsRef<[u8]>, From
+// ===========================================================================
+
+#[test]
+fn into_buf_roundtrip() {
+  use nearest::{AlignedBuf, Buf};
+
+  let region = build_simple_func(7);
+  let byte_len = region.byte_len();
+  let buf: AlignedBuf<Func> = region.into_buf();
+  // The buffer preserves the exact byte length.
+  assert_eq!(buf.len() as usize, byte_len);
+  // The buffer can be used to restore a region via from_bytes.
+  let restored: Region<Func> = Region::from_bytes(buf.as_bytes()).unwrap();
+  assert_eq!(restored.name, Symbol(7));
+  assert_eq!(restored.entry.insts.len(), 1);
+}
+
+#[test]
+fn into_vec_returns_correct_length() {
+  let region = build_simple_func(42);
+  let expected_len = region.byte_len();
+  let vec = region.into_vec();
+  assert_eq!(vec.len(), expected_len);
+}
+
+#[test]
+fn into_vec_roundtrip() {
+  let region: Region<Func> = Region::new(Func::make(
+    Symbol(100),
+    Block::make(
+      Symbol(0),
+      [(Symbol(1), Type(2))],
+      [Inst::make(1, Type(0), [Value::Const(42)])],
+      Term::make_ret([Value::Const(99)]),
+    ),
+  ));
+  let vec = region.into_vec();
+  let restored: Region<Func> = Region::from_bytes(&vec).unwrap();
+  assert_eq!(restored.name, Symbol(100));
+  assert_eq!(restored.entry.params.len(), 1);
+  assert_eq!(restored.entry.insts[0].args[0], Value::Const(42));
+}
+
+#[test]
+fn into_vec_primitive_region() {
+  let region: Region<u32> = Region::new(42u32);
+  let vec = region.into_vec();
+  let restored: Region<u32> = Region::from_bytes(&vec).unwrap();
+  assert_eq!(*restored, 42);
+  // u32 has no padding, so we can safely compare raw bytes.
+  assert_eq!(vec, 42u32.to_ne_bytes());
+}
+
+#[test]
+fn as_ref_u8_slice() {
+  let region = build_simple_func(5);
+  let as_ref: &[u8] = region.as_ref();
+  // Both as_ref and as_bytes return the same buffer slice.
+  assert!(core::ptr::eq(as_ref, region.as_bytes()));
+  assert_eq!(as_ref.len(), region.byte_len());
+}
+
+#[test]
+fn as_ref_works_with_generic_api() {
+  fn byte_len(data: &impl AsRef<[u8]>) -> usize {
+    data.as_ref().len()
+  }
+
+  let region = build_simple_func(1);
+  let len = byte_len(&region);
+  assert_eq!(len, region.byte_len());
+}
+
+#[test]
+fn from_region_for_vec() {
+  let region = build_simple_func(3);
+  let expected_len = region.byte_len();
+  let vec: Vec<u8> = region.into();
+  assert_eq!(vec.len(), expected_len);
+  // Verify by restoring a region from the vec.
+  let restored: Region<Func> = Region::from_bytes(&vec).unwrap();
+  assert_eq!(restored.name, Symbol(3));
+}
+
+#[test]
+fn into_vec_after_mutation_and_trim() {
+  let mut region = build_simple_func(1);
+  region.session(|s| {
+    let name = s.nav(s.root(), |f| &f.name);
+    s.set(name, Symbol(99));
+  });
+  region.trim();
+
+  let vec = region.into_vec();
+  let restored: Region<Func> = Region::from_bytes(&vec).unwrap();
+  assert_eq!(restored.name, Symbol(99));
+}
+
+#[test]
+fn into_buf_fixed_buf() {
+  use nearest::{Buf, FixedBuf};
+
+  let region: Region<u32, FixedBuf<64>> = Region::new_in(42u32);
+  let byte_len = region.byte_len();
+  let buf: FixedBuf<64> = region.into_buf();
+  assert_eq!(buf.len() as usize, byte_len);
+  // u32 has no padding, raw bytes are safe to compare.
+  assert_eq!(buf.as_bytes(), &42u32.to_ne_bytes());
+}
