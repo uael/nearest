@@ -520,3 +520,59 @@ impl<T: Flat + fmt::Debug, B: Buf> fmt::Debug for Region<T, B> {
 unsafe impl<T: Flat + Send + Sync, B: Buf + Send> Send for Region<T, B> {}
 // SAFETY: See above — Region owns its buffer exclusively.
 unsafe impl<T: Flat + Send + Sync, B: Buf + Sync> Sync for Region<T, B> {}
+
+// ---------------------------------------------------------------------------
+// serde support
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "serde")]
+impl<T: Flat, B: Buf> serde::Serialize for Region<T, B> {
+  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_bytes(self.as_bytes())
+  }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, T: Flat, B: Buf> serde::Deserialize<'de> for Region<T, B> {
+  fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    struct RegionVisitor<T, B>(core::marker::PhantomData<(T, B)>);
+
+    impl<'de, T: Flat, B: Buf> serde::de::Visitor<'de> for RegionVisitor<T, B> {
+      type Value = Region<T, B>;
+
+      fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.write_str("a valid nearest region byte buffer")
+      }
+
+      fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+        Region::from_bytes(v).map_err(E::custom)
+      }
+
+      fn visit_byte_buf<E: serde::de::Error>(
+        self,
+        v: alloc::vec::Vec<u8>,
+      ) -> Result<Self::Value, E> {
+        // Validate in place, then copy into an aligned buffer.
+        // The copy is unavoidable: `Buf` requires alignment guarantees
+        // that a `Vec<u8>` allocation (align 1) cannot provide.
+        T::validate(0, &v).map_err(E::custom)?;
+        let mut buf = B::empty();
+        buf.extend_from_slice(&v);
+        Ok(Region::from_buf(buf))
+      }
+
+      fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+      ) -> Result<Self::Value, A::Error> {
+        let mut bytes = alloc::vec::Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(b) = seq.next_element::<u8>()? {
+          bytes.push(b);
+        }
+        self.visit_byte_buf(bytes)
+      }
+    }
+
+    deserializer.deserialize_byte_buf(RegionVisitor(core::marker::PhantomData))
+  }
+}

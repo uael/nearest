@@ -364,6 +364,8 @@ version = "0.2.1"
 dependencies = [
  "criterion",
  "nearest-derive",
+ "serde",
+ "serde_json",
  "trybuild",
 ]
 

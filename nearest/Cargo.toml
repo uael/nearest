@@ -16,12 +16,15 @@ categories = ["data-structures", "memory-management"]
 default = ["alloc"]
 alloc = []
 std = ["alloc"]
+serde = ["dep:serde"]
 
 [dependencies]
 nearest-derive = { version = "=0.2.0", path = "../nearest-derive" }
+serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+serde_json = "1"
 trybuild = "1"
 
 [[bench]]
@@ -29,6 +32,7 @@ name = "region"
 harness = false
 
 [package.metadata.docs.rs]
+all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]

@@ -2243,3 +2243,84 @@ fn region_from_bytes_fixed_buf() {
   let restored: Region<u32, FixedBuf<64>> = Region::from_bytes(bytes).unwrap();
   assert_eq!(*restored, 42);
 }
+
+// ===========================================================================
+// serde roundtrip tests
+// ===========================================================================
+
+#[cfg(feature = "serde")]
+mod serde_tests {
+  use nearest::{Flat, Near, NearList, Region};
+
+  // Serde test types — use only 4-byte-aligned fields so there is no internal
+  // padding. Types with enum padding (e.g. `Value`) cause uninitialized bytes
+  // in the buffer due to a pre-existing issue in `gen_emit_self` (whole-value
+  // `write_flat` copies uninit padding from the stack). Avoiding padding here
+  // keeps serde tests Miri-clean.
+
+  #[derive(Flat, Debug)]
+  struct SNode {
+    id: u32,
+    items: NearList<u32>,
+  }
+
+  #[derive(Flat, Debug)]
+  struct SFunc {
+    name: u32,
+    entry: Near<SNode>,
+  }
+
+  #[test]
+  fn serde_json_roundtrip_simple() {
+    let region: Region<SNode> = Region::new(SNode::make(42, [1u32, 2, 3]));
+    let json = serde_json::to_string(&region).unwrap();
+    let restored: Region<SNode> = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.id, 42);
+    assert_eq!(restored.items.len(), 3);
+    assert_eq!(restored.items[0], 1);
+    assert_eq!(restored.items[1], 2);
+    assert_eq!(restored.items[2], 3);
+  }
+
+  #[test]
+  fn serde_json_roundtrip_nested() {
+    let region: Region<SFunc> = Region::new(SFunc::make(100, SNode::make(7, [10u32, 20, 30])));
+    let json = serde_json::to_string(&region).unwrap();
+    let restored: Region<SFunc> = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.name, 100);
+    assert_eq!(restored.entry.get().id, 7);
+    assert_eq!(restored.entry.get().items.len(), 3);
+    assert_eq!(restored.entry.get().items[0], 10);
+    assert_eq!(restored.entry.get().items[1], 20);
+    assert_eq!(restored.entry.get().items[2], 30);
+  }
+
+  #[test]
+  fn serde_json_roundtrip_fixed_buf() {
+    use nearest::FixedBuf;
+
+    let region: Region<SNode, FixedBuf<256>> = Region::new_in(SNode::make(7, [10u32, 20]));
+    let json = serde_json::to_string(&region).unwrap();
+    let restored: Region<SNode, FixedBuf<256>> = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.id, 7);
+    assert_eq!(restored.items.len(), 2);
+    assert_eq!(restored.items[0], 10);
+    assert_eq!(restored.items[1], 20);
+  }
+
+  #[test]
+  fn serde_json_invalid_bytes_rejected() {
+    let bad_json = serde_json::to_string(&[0u8; 2]).unwrap();
+    let result: Result<Region<SNode>, _> = serde_json::from_str(&bad_json);
+    assert!(result.is_err());
+  }
+
+  #[test]
+  fn serde_roundtrip_preserves_byte_equality() {
+    let region: Region<SNode> = Region::new(SNode::make(99, [5u32, 6, 7, 8]));
+    let original_bytes = region.as_bytes().to_vec();
+    let json = serde_json::to_string(&region).unwrap();
+    let restored: Region<SNode> = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.as_bytes(), &original_bytes[..]);
+  }
+}
