@@ -3100,6 +3100,9 @@ fn display_region_delegates_to_root() {
   let region: Region<u32> = Region::new(42u32);
   let output = format!("{region}");
   assert_eq!(output, "42");
+}
+
+// ===========================================================================
 // Derive attribute tests — #[flat(into)] and #[flat(rename = "...")]
 // ===========================================================================
 
