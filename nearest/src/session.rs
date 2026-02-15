@@ -358,7 +358,9 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// assert_eq!(region.id, 99);
   /// ```
   pub fn set<T: Flat + Copy>(&mut self, r: Ref<'id, T>, val: T) {
-    self.region.write_flat_internal(r.pos, val);
+    // SAFETY: `r.pos` was obtained from a branded `Ref` which guarantees it
+    // is a valid position for `T` within this region.
+    unsafe { self.region.write_flat_internal(r.pos, val) };
   }
 
   /// Overwrite the value at a [`Ref`]'s position using a builder.
@@ -405,7 +407,9 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// ```
   pub fn splice<U: Flat>(&mut self, r: Ref<'id, Near<U>>, builder: impl Emit<U>) {
     let target = builder.emit(self.region);
-    self.region.patch_near_internal(r.pos, target);
+    // SAFETY: `r.pos` points to a `Near<U>` field (guaranteed by the branded
+    // `Ref<Near<U>>`), and `target` was just allocated by `emit`.
+    unsafe { self.region.patch_near_internal(r.pos, target) };
   }
 
   /// Replace the contents of a [`NearList<U>`] with freshly emitted elements.
@@ -450,7 +454,8 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
     let len = count as u32;
 
     if len == 0 {
-      self.region.patch_list_header_internal(list_pos, Pos::ZERO, 0);
+      // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`).
+      unsafe { self.region.patch_list_header_internal(list_pos, Pos::ZERO, 0) };
       return;
     }
 
@@ -461,7 +466,9 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
       // SAFETY: `val_pos` was allocated for `U` by `alloc_segment_internal`.
       unsafe { item.write_at(self.region, val_pos) };
     }
-    self.region.patch_list_header_internal(list_pos, seg_pos, len);
+    // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`), and
+    // `seg_pos` was just allocated by `alloc_segment_internal`.
+    unsafe { self.region.patch_list_header_internal(list_pos, seg_pos, len) };
   }
 
   /// Replace the contents of a [`NearList<U>`] with deep-copied values referenced
@@ -510,7 +517,8 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
     let len = count as u32;
 
     if len == 0 {
-      self.region.patch_list_header_internal(list_pos, Pos::ZERO, 0);
+      // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`).
+      unsafe { self.region.patch_list_header_internal(list_pos, Pos::ZERO, 0) };
       return;
     }
 
@@ -534,7 +542,9 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
         Emit::<U>::write_at(val, self.region, val_pos);
       }
     }
-    self.region.patch_list_header_internal(list_pos, seg_pos, len);
+    // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`), and
+    // `seg_pos` was just allocated by `alloc_segment_internal`.
+    unsafe { self.region.patch_list_header_internal(list_pos, seg_pos, len) };
   }
 
   /// Replace the contents of a [`NearList<U>`] by mapping each element through
@@ -602,9 +612,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
         f(val)
       };
       let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
-      self.region.write_flat_internal(val_pos, mapped);
+      // SAFETY: `val_pos` was allocated for `U` by `alloc_segment_internal`.
+      unsafe { self.region.write_flat_internal(val_pos, mapped) };
     }
-    self.region.patch_list_header_internal(list_pos, seg_pos, len);
+    // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`), and
+    // `seg_pos` was just allocated by `alloc_segment_internal`.
+    unsafe { self.region.patch_list_header_internal(list_pos, seg_pos, len) };
   }
 
   /// Prepend an element to a [`NearList<U>`].
@@ -646,11 +659,14 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
       let old_first_abs = head_field_abs + i64::from(old_head_offset);
       #[expect(clippy::cast_sign_loss, reason = "absolute position is always non-negative")]
       let old_first_pos = Pos(old_first_abs as u32);
-      self.region.patch_segment_next_internal(seg_pos, old_first_pos);
+      // SAFETY: `seg_pos` was just allocated by `alloc_segment_internal`,
+      // and `old_first_pos` points to the existing first segment.
+      unsafe { self.region.patch_segment_next_internal(seg_pos, old_first_pos) };
     }
 
-    // Patch the list header to point to the new segment.
-    self.region.patch_list_header_internal(r.pos, seg_pos, old_len + 1);
+    // SAFETY: `r.pos` points to a `NearList<U>` (branded `Ref`), and
+    // `seg_pos` was just allocated by `alloc_segment_internal`.
+    unsafe { self.region.patch_list_header_internal(r.pos, seg_pos, old_len + 1) };
   }
 
   /// Append one element to the end of a [`NearList<U>`].
@@ -697,9 +713,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
 
     if let Some(t) = tail {
       // Hot path — O(1): link cached tail, patch header with cached len/head.
-      self.region.patch_segment_next_internal(t.seg_pos, seg_pos);
+      // SAFETY: `t.seg_pos` is a previously allocated segment, `seg_pos` was
+      // just allocated.
+      unsafe { self.region.patch_segment_next_internal(t.seg_pos, seg_pos) };
       let new_len = t.len + 1;
-      self.region.patch_list_header_internal(r.pos, t.head_abs, new_len);
+      // SAFETY: `r.pos` points to a `NearList<U>` (branded `Ref`).
+      unsafe { self.region.patch_list_header_internal(r.pos, t.head_abs, new_len) };
       ListTail {
         seg_pos,
         len: new_len,
@@ -714,7 +733,9 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
 
       if old_len == 0 {
         // First element: point header at new segment.
-        self.region.patch_list_header_internal(r.pos, seg_pos, 1);
+        // SAFETY: `r.pos` points to a `NearList<U>` (branded `Ref`), and
+        // `seg_pos` was just allocated.
+        unsafe { self.region.patch_list_header_internal(r.pos, seg_pos, 1) };
         ListTail { seg_pos, len: 1, head_abs: seg_pos, brand: self.brand, _type: PhantomData }
       } else {
         // O(s): walk segments to find tail, link it.
@@ -738,9 +759,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
           }
           (Pos(seg_abs as u32), Pos(head_abs as u32))
         };
-        self.region.patch_segment_next_internal(last_seg_pos, seg_pos);
+        // SAFETY: `last_seg_pos` points to the tail segment (found by walk),
+        // `seg_pos` was just allocated.
+        unsafe { self.region.patch_segment_next_internal(last_seg_pos, seg_pos) };
         let new_len = old_len + 1;
-        self.region.patch_list_header_internal(r.pos, head_abs, new_len);
+        // SAFETY: `r.pos` points to a `NearList<U>` (branded `Ref`).
+        unsafe { self.region.patch_list_header_internal(r.pos, head_abs, new_len) };
         ListTail { seg_pos, len: new_len, head_abs, brand: self.brand, _type: PhantomData }
       }
     }
@@ -823,12 +847,17 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
 
     // Link last existing segment → new segment, update header.
     if let Some(last) = last_seg_pos {
-      self.region.patch_segment_next_internal(last, seg_pos);
+      // SAFETY: `last` points to the tail segment (found by walk), `seg_pos`
+      // was just allocated.
+      unsafe { self.region.patch_segment_next_internal(last, seg_pos) };
       #[expect(clippy::cast_sign_loss, reason = "absolute position is always non-negative")]
       let first_abs = Pos((i64::from(r.pos.0) + i64::from(head_off)) as u32);
-      self.region.patch_list_header_internal(r.pos, first_abs, old_len + count);
+      // SAFETY: `r.pos` points to a `NearList<U>` (branded `Ref`).
+      unsafe { self.region.patch_list_header_internal(r.pos, first_abs, old_len + count) };
     } else {
-      self.region.patch_list_header_internal(r.pos, seg_pos, count);
+      // SAFETY: `r.pos` points to a `NearList<U>` (branded `Ref`), and
+      // `seg_pos` was just allocated.
+      unsafe { self.region.patch_list_header_internal(r.pos, seg_pos, count) };
     }
   }
 
@@ -963,7 +992,8 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
     let len = positions.len() as u32;
 
     if len == 0 {
-      self.region.patch_list_header_internal(list_pos, Pos::ZERO, 0);
+      // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`).
+      unsafe { self.region.patch_list_header_internal(list_pos, Pos::ZERO, 0) };
       return;
     }
 
@@ -985,7 +1015,9 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
         Emit::<U>::write_at(val, self.region, val_pos);
       }
     }
-    self.region.patch_list_header_internal(list_pos, seg_pos, len);
+    // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`), and
+    // `seg_pos` was just allocated by `alloc_segment_internal`.
+    unsafe { self.region.patch_list_header_internal(list_pos, seg_pos, len) };
   }
 
   /// Get a [`Ref`] to a list element by index.

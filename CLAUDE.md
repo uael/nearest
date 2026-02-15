@@ -65,6 +65,7 @@ Requires **nightly** Rust (`nightly-2026-02-10` pinned in `rust-toolchain`) for 
 - **Branding**: Ghost-cell pattern with `for<'id>` lifetime prevents `Ref` escape from session and cross-session use (enforced at compile time)
 - **No-Drop**: Derive macro emits `const { assert!(!needs_drop::<T>()) }` to reject types with `Drop`
 - **Alignment**: Buffer aligned to `max(align_of::<Root>(), 8)`
+- **`pub(crate)` never relaxes safety invariants**: If a function has unsafe preconditions, it must be `unsafe fn` regardless of visibility. `pub(crate)` restricts who can _call_ it, not whether callers must uphold safety invariants.
 
 ## Releasing
 

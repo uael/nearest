@@ -121,7 +121,13 @@ impl<T: Flat, B: Buf> Region<T, B> {
   }
 
   /// Create a region from a buffer.
-  pub(crate) fn from_buf(buf: B) -> Self {
+  ///
+  /// # Safety
+  ///
+  /// The buffer must contain a valid representation of `T` at byte 0 and
+  /// all transitively reachable data must be valid. Constructing a region
+  /// from an invalid buffer causes UB on `Deref`.
+  pub(crate) unsafe fn from_buf(buf: B) -> Self {
     debug_assert!(buf.len() as usize >= mem::size_of::<T>(), "buffer too small for root type");
     Self { buf, _type: core::marker::PhantomData }
   }
@@ -257,7 +263,12 @@ impl<T: Flat, B: Buf> Region<T, B> {
   }
 
   /// Write a [`Flat`] value at position `at`.
-  pub(crate) fn write_flat_internal<U: Flat>(&mut self, at: Pos, val: U) {
+  ///
+  /// # Safety
+  ///
+  /// `at` must have been allocated for `U` via `alloc_internal::<U>()`,
+  /// ensuring correct alignment.
+  pub(crate) unsafe fn write_flat_internal<U: Flat>(&mut self, at: Pos, val: U) {
     let start = at.0 as usize;
     let size = mem::size_of::<U>();
     assert!(
@@ -278,7 +289,12 @@ impl<T: Flat, B: Buf> Region<T, B> {
   }
 
   /// Patch a [`Near<U>`](crate::Near) at position `at` to point to `target`.
-  pub(crate) fn patch_near_internal(&mut self, at: Pos, target: Pos) {
+  ///
+  /// # Safety
+  ///
+  /// `at` must point to a `Near<U>` field within a previously allocated
+  /// value, and `target` must be a position allocated for `U`.
+  pub(crate) unsafe fn patch_near_internal(&mut self, at: Pos, target: Pos) {
     let rel = i64::from(target.0) - i64::from(at.0);
     let rel_i32: i32 = rel.try_into().expect("near offset overflow");
     let nz = NonZero::new(rel_i32).expect("near offset must be non-zero");
@@ -295,7 +311,13 @@ impl<T: Flat, B: Buf> Region<T, B> {
   }
 
   /// Patch a [`NearList<U>`](crate::NearList) header at position `at`.
-  pub(crate) fn patch_list_header_internal(&mut self, at: Pos, target: Pos, len: u32) {
+  ///
+  /// # Safety
+  ///
+  /// `at` must point to a `NearList<U>` field within a previously allocated
+  /// value, and `target` must be a position of a `Segment<U>` (or
+  /// `Pos::ZERO` when `len == 0`).
+  pub(crate) unsafe fn patch_list_header_internal(&mut self, at: Pos, target: Pos, len: u32) {
     let off_pos = at.0 as usize;
     let len_pos = off_pos + mem::size_of::<i32>();
 
@@ -356,7 +378,11 @@ impl<T: Flat, B: Buf> Region<T, B> {
   }
 
   /// Patch the `next` pointer of a segment at `seg_pos`.
-  pub(crate) fn patch_segment_next_internal(&mut self, seg_pos: Pos, next_seg_pos: Pos) {
+  ///
+  /// # Safety
+  ///
+  /// `seg_pos` must be a position of a previously allocated `Segment<T>`.
+  pub(crate) unsafe fn patch_segment_next_internal(&mut self, seg_pos: Pos, next_seg_pos: Pos) {
     // next field is at offset 0 of Segment<T>
     let rel = i64::from(next_seg_pos.0) - i64::from(seg_pos.0);
     let rel_i32: i32 = rel.try_into().expect("segment next offset overflow");
@@ -377,7 +403,12 @@ impl<T: Flat, B: Buf> Region<T, B> {
   }
 
   /// Copy raw bytes to position `at`.
-  pub(crate) fn write_bytes_internal(&mut self, at: Pos, src: *const u8, len: usize) {
+  ///
+  /// # Safety
+  ///
+  /// `src` must be valid for reading `len` bytes. `at` must be a valid
+  /// position with at least `len` bytes available.
+  pub(crate) unsafe fn write_bytes_internal(&mut self, at: Pos, src: *const u8, len: usize) {
     let start = at.0 as usize;
     assert!(
       start + len <= self.buf.len() as usize,
@@ -475,7 +506,8 @@ impl<T: Flat, B: Buf> Region<T, B> {
     let mut buf = B::empty();
     buf.extend_from_slice(bytes);
     T::validate(0, buf.as_bytes())?;
-    Ok(Self::from_buf(buf))
+    // SAFETY: `T::validate` just verified the buffer contents are valid.
+    Ok(unsafe { Self::from_buf(buf) })
   }
 
   /// Reconstruct a region from raw bytes **without validation**.
@@ -488,7 +520,8 @@ impl<T: Flat, B: Buf> Region<T, B> {
   pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self {
     let mut buf = B::empty();
     buf.extend_from_slice(bytes);
-    Self::from_buf(buf)
+    // SAFETY: Caller guarantees the bytes form a valid region buffer.
+    unsafe { Self::from_buf(buf) }
   }
 }
 

@@ -74,10 +74,16 @@ impl<T: Flat, B: Buf> Emitter<T, B> {
 
   /// Write a value at a previously reserved position.
   ///
+  /// # Safety
+  ///
+  /// `pos` must have been allocated for `U` via `reserve::<U>()`, ensuring
+  /// correct alignment. Writing at a misaligned or otherwise invalid position
+  /// can produce an invalid region that causes UB when later read.
+  ///
   /// # Panics
   ///
   /// Panics if the write would exceed the buffer bounds.
-  pub(crate) fn write<U: Flat>(&mut self, pos: Pos, val: U) {
+  pub(crate) unsafe fn write<U: Flat>(&mut self, pos: Pos, val: U) {
     let start = pos.0 as usize;
     let size = mem::size_of::<U>();
     assert!(
@@ -102,10 +108,15 @@ impl<T: Flat, B: Buf> Emitter<T, B> {
   /// Computes the relative offset from `at` (the `off` field of `Near`) to `target`
   /// and writes it as a `NonZero<i32>`.
   ///
+  /// # Safety
+  ///
+  /// `at` must point to a `Near<U>` field within a previously allocated value,
+  /// and `target` must be a position allocated for `U`.
+  ///
   /// # Panics
   ///
   /// Panics if the offset overflows `i32`, if `target == at`, or if out of bounds.
-  pub(crate) fn patch_near(&mut self, at: Pos, target: Pos) {
+  pub(crate) unsafe fn patch_near(&mut self, at: Pos, target: Pos) {
     let rel = i64::from(target.0) - i64::from(at.0);
     let rel_i32: i32 = rel.try_into().expect("near offset overflow");
     let nz = NonZero::new(rel_i32).expect("near offset must be non-zero (target == at)");
@@ -123,10 +134,15 @@ impl<T: Flat, B: Buf> Emitter<T, B> {
 
   /// Copy raw bytes to position `at`.
   ///
+  /// # Safety
+  ///
+  /// `src` must be valid for reading `len` bytes. `at` must be a valid
+  /// position with at least `len` bytes available.
+  ///
   /// # Panics
   ///
   /// Panics if the write would exceed the buffer bounds.
-  pub(crate) fn write_bytes_internal(&mut self, at: Pos, src: *const u8, len: usize) {
+  pub(crate) unsafe fn write_bytes_internal(&mut self, at: Pos, src: *const u8, len: usize) {
     let start = at.0 as usize;
     assert!(
       start + len <= self.buf.len() as usize,
@@ -146,10 +162,16 @@ impl<T: Flat, B: Buf> Emitter<T, B> {
   ///
   /// Writes the self-relative offset to the first node and the element count.
   ///
+  /// # Safety
+  ///
+  /// `at` must point to a `NearList<U>` field within a previously allocated
+  /// value, and `target` must be a position of a `Segment<U>` (or `Pos::ZERO`
+  /// when `len == 0`).
+  ///
   /// # Panics
   ///
   /// Panics if the offset overflows `i32` or if out of bounds.
-  pub(crate) fn patch_list_header(&mut self, at: Pos, target: Pos, len: u32) {
+  pub(crate) unsafe fn patch_list_header(&mut self, at: Pos, target: Pos, len: u32) {
     let off_field_pos = at.0 as usize;
     let len_field_pos = off_field_pos + mem::size_of::<i32>();
 
@@ -187,7 +209,9 @@ impl<T: Flat, B: Buf> Emitter<T, B> {
   /// Zero-copy: moves the buffer directly into the `Region`.
   #[doc(hidden)]
   pub fn finish(self) -> crate::Region<T, B> {
-    crate::Region::from_buf(self.buf)
+    // SAFETY: The emitter constructed this buffer through the `Emit` trait,
+    // which guarantees the root `T` and all reachable data are valid.
+    unsafe { crate::Region::from_buf(self.buf) }
   }
 
   /// Mutable pointer to buffer start (for Patch impls).

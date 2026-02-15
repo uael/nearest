@@ -89,19 +89,23 @@ impl<R: Flat, B: Buf> Patch for Emitter<R, B> {
   }
 
   unsafe fn write_flat<T: Flat>(&mut self, at: Pos, val: T) {
-    self.write(at, val);
+    // SAFETY: Caller upholds the `Patch::write_flat` preconditions.
+    unsafe { self.write(at, val) };
   }
 
   unsafe fn patch_near<T: Flat>(&mut self, at: Pos, target: Pos) {
-    self.patch_near(at, target);
+    // SAFETY: Caller upholds the `Patch::patch_near` preconditions.
+    unsafe { self.patch_near(at, target) };
   }
 
   unsafe fn patch_list_header<T: Flat>(&mut self, at: Pos, target: Pos, len: u32) {
-    self.patch_list_header(at, target, len);
+    // SAFETY: Caller upholds the `Patch::patch_list_header` preconditions.
+    unsafe { self.patch_list_header(at, target, len) };
   }
 
   unsafe fn write_bytes(&mut self, at: Pos, src: *const u8, len: usize) {
-    self.write_bytes_internal(at, src, len);
+    // SAFETY: Caller upholds the `Patch::write_bytes` preconditions.
+    unsafe { self.write_bytes_internal(at, src, len) };
   }
 
   fn alloc_segment<T: Flat>(&mut self, count: u32) -> Pos {
@@ -144,19 +148,23 @@ impl<R: Flat, B: Buf> Patch for Region<R, B> {
   }
 
   unsafe fn write_flat<T: Flat>(&mut self, at: Pos, val: T) {
-    self.write_flat_internal(at, val);
+    // SAFETY: Caller upholds the `Patch::write_flat` preconditions.
+    unsafe { self.write_flat_internal(at, val) };
   }
 
   unsafe fn patch_near<T: Flat>(&mut self, at: Pos, target: Pos) {
-    self.patch_near_internal(at, target);
+    // SAFETY: Caller upholds the `Patch::patch_near` preconditions.
+    unsafe { self.patch_near_internal(at, target) };
   }
 
   unsafe fn patch_list_header<T: Flat>(&mut self, at: Pos, target: Pos, len: u32) {
-    self.patch_list_header_internal(at, target, len);
+    // SAFETY: Caller upholds the `Patch::patch_list_header` preconditions.
+    unsafe { self.patch_list_header_internal(at, target, len) };
   }
 
   unsafe fn write_bytes(&mut self, at: Pos, src: *const u8, len: usize) {
-    self.write_bytes_internal(at, src, len);
+    // SAFETY: Caller upholds the `Patch::write_bytes` preconditions.
+    unsafe { self.write_bytes_internal(at, src, len) };
   }
 
   fn alloc_segment<T: Flat>(&mut self, count: u32) -> Pos {
@@ -164,7 +172,8 @@ impl<R: Flat, B: Buf> Patch for Region<R, B> {
   }
 
   unsafe fn patch_segment_next<T: Flat>(&mut self, seg_pos: Pos, next_seg_pos: Pos) {
-    self.patch_segment_next_internal(seg_pos, next_seg_pos);
+    // SAFETY: Caller upholds the `Patch::patch_segment_next` preconditions.
+    unsafe { self.patch_segment_next_internal(seg_pos, next_seg_pos) };
   }
 
   fn byte_len(&self) -> usize {
