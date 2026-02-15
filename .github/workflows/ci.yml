@@ -19,6 +19,11 @@ jobs:
           toolchain: nightly-2026-02-10
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all
+      - run: cargo run --example expr
+      - run: cargo run --example json
+      - run: cargo run --example ecs
+      - run: cargo run --example fs
+      - run: cargo run --example fsm
 
   test-no-std:
     name: Test (no_std)

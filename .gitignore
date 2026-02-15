@@ -27,8 +27,9 @@
 !.cargo/
 !.cargo/config.toml
 !nearest/
-!nearest/src/
 !nearest/benches/
+!nearest/examples/
+!nearest/src/
 !nearest/tests/
 !nearest/tests/compile-fail/
 !nearest/tests/compile-fail/*.stderr
