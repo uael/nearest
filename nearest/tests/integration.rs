@@ -2245,6 +2245,149 @@ fn region_from_bytes_fixed_buf() {
 }
 
 // ===========================================================================
+// from_bytes_unchecked / from_buf_unchecked tests
+// ===========================================================================
+
+#[test]
+fn from_bytes_unchecked_matches_checked_simple() {
+  let region: Region<Func> = build_simple_func(99);
+  let bytes = region.as_bytes();
+
+  let checked: Region<Func> = Region::from_bytes(bytes).unwrap();
+  // SAFETY: `bytes` came from `as_bytes()` on a valid `Region<Func>`.
+  let unchecked: Region<Func> = unsafe { Region::from_bytes_unchecked(bytes) };
+
+  assert_eq!(checked.name, unchecked.name);
+  assert_eq!(checked.entry.get().name, unchecked.entry.get().name);
+  assert_eq!(checked.entry.get().insts.len(), unchecked.entry.get().insts.len());
+  assert_eq!(checked.entry.get().insts[0].op, unchecked.entry.get().insts[0].op);
+  assert_eq!(checked.as_bytes(), unchecked.as_bytes());
+}
+
+#[test]
+fn from_bytes_unchecked_matches_checked_complex() {
+  let region: Region<Func> = Region::new(Func::make(
+    Symbol(200),
+    Block::make(
+      Symbol(0),
+      [(Symbol(1), Type(0)), (Symbol(2), Type(1))],
+      [
+        Inst::make(1, Type(0), [Value::Const(10), Value::Const(11)]),
+        Inst::make(2, Type(1), [Value::Const(20), Value::Const(21)]),
+      ],
+      Term::make_jmp(Jmp::make(
+        [Value::Const(1)],
+        Block::make(Symbol(1), empty(), empty(), Term::make_ret([Value::Const(42)])),
+      )),
+    ),
+  ));
+
+  let bytes = region.as_bytes();
+  let checked: Region<Func> = Region::from_bytes(bytes).unwrap();
+  // SAFETY: `bytes` came from `as_bytes()` on a valid `Region<Func>`.
+  let unchecked: Region<Func> = unsafe { Region::from_bytes_unchecked(bytes) };
+
+  assert_eq!(checked.name, unchecked.name);
+  let cb = checked.entry.get();
+  let ub = unchecked.entry.get();
+  assert_eq!(cb.params.len(), ub.params.len());
+  assert_eq!(cb.insts.len(), ub.insts.len());
+  for i in 0..cb.insts.len() {
+    assert_eq!(cb.insts[i].op, ub.insts[i].op);
+    assert_eq!(cb.insts[i].typ, ub.insts[i].typ);
+    assert_eq!(cb.insts[i].args.len(), ub.insts[i].args.len());
+  }
+  assert_eq!(checked.as_bytes(), unchecked.as_bytes());
+}
+
+#[test]
+fn from_bytes_unchecked_primitive() {
+  let region: Region<u32> = Region::new(42u32);
+  let bytes = region.as_bytes();
+
+  let checked: Region<u32> = Region::from_bytes(bytes).unwrap();
+  // SAFETY: `bytes` came from `as_bytes()` on a valid `Region<u32>`.
+  let unchecked: Region<u32> = unsafe { Region::from_bytes_unchecked(bytes) };
+
+  assert_eq!(*checked, *unchecked);
+  assert_eq!(checked.as_bytes(), unchecked.as_bytes());
+}
+
+#[test]
+fn from_bytes_unchecked_generic_type() {
+  let region: Region<Signature<u32>> =
+    Region::new(Signature::<u32>::make([Type(0), Type(1)], [Type(2)], [10u32, 20, 30]));
+  let bytes = region.as_bytes();
+
+  let checked: Region<Signature<u32>> = Region::from_bytes(bytes).unwrap();
+  // SAFETY: `bytes` came from `as_bytes()` on a valid `Region<Signature<u32>>`.
+  let unchecked: Region<Signature<u32>> = unsafe { Region::from_bytes_unchecked(bytes) };
+
+  assert_eq!(checked.params.len(), unchecked.params.len());
+  assert_eq!(checked.returns.len(), unchecked.returns.len());
+  assert_eq!(checked.custom.len(), unchecked.custom.len());
+  for i in 0..checked.custom.len() {
+    assert_eq!(checked.custom[i], unchecked.custom[i]);
+  }
+  assert_eq!(checked.as_bytes(), unchecked.as_bytes());
+}
+
+#[test]
+fn from_buf_unchecked_fixed_buf() {
+  use nearest::{Buf, FixedBuf};
+
+  let region: Region<u32, FixedBuf<64>> = Region::new_in(42u32);
+  let bytes = region.as_bytes();
+
+  let mut buf = FixedBuf::<64>::new();
+  buf.extend_from_slice(bytes);
+
+  // SAFETY: `buf` contains bytes from a valid `Region<u32>`.
+  let restored: Region<u32, FixedBuf<64>> = unsafe { Region::from_buf_unchecked(buf) };
+  assert_eq!(*restored, 42);
+}
+
+#[test]
+fn from_buf_unchecked_matches_checked() {
+  use nearest::Buf;
+
+  let region: Region<Func> = build_simple_func(77);
+  let bytes = region.as_bytes();
+
+  let checked: Region<Func> = Region::from_bytes(bytes).unwrap();
+
+  let mut buf = nearest::AlignedBuf::<Func>::with_capacity(bytes.len() as u32);
+  buf.extend_from_slice(bytes);
+  // SAFETY: `buf` contains bytes from a valid `Region<Func>`.
+  let unchecked: Region<Func> = unsafe { Region::from_buf_unchecked(buf) };
+
+  assert_eq!(checked.name, unchecked.name);
+  assert_eq!(checked.entry.get().name, unchecked.entry.get().name);
+  assert_eq!(checked.as_bytes(), unchecked.as_bytes());
+}
+
+#[test]
+fn from_bytes_unchecked_after_mutation_and_trim() {
+  let mut region: Region<Func> = build_simple_func(50);
+
+  region.session(|s| {
+    let root = s.root();
+    let name = s.nav(root, |f| &f.name);
+    s.set(name, Symbol(999));
+  });
+  region.trim();
+
+  let bytes = region.as_bytes();
+  let checked: Region<Func> = Region::from_bytes(bytes).unwrap();
+  // SAFETY: `bytes` came from `as_bytes()` on a valid (trimmed) `Region<Func>`.
+  let unchecked: Region<Func> = unsafe { Region::from_bytes_unchecked(bytes) };
+
+  assert_eq!(checked.name, Symbol(999));
+  assert_eq!(unchecked.name, Symbol(999));
+  assert_eq!(checked.as_bytes(), unchecked.as_bytes());
+}
+
+// ===========================================================================
 // serde roundtrip tests
 // ===========================================================================
 

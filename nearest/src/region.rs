@@ -512,15 +512,116 @@ impl<T: Flat, B: Buf> Region<T, B> {
 
   /// Reconstruct a region from raw bytes **without validation**.
   ///
+  /// This is the unsafe fast path for deserialization. The bytes are copied
+  /// into a fresh aligned buffer but **no validation** is performed — no
+  /// bounds checks, no pointer validation, no discriminant checks.
+  ///
+  /// For a safe alternative that validates the buffer, use
+  /// [`from_bytes`](Self::from_bytes).
+  ///
   /// # Safety
   ///
-  /// The caller must guarantee that `bytes` is a valid region buffer for `T`
-  /// (e.g. produced by [`as_bytes`](Self::as_bytes) on a valid `Region<T>`).
-  /// Passing arbitrary bytes is immediate UB.
+  /// The caller must guarantee **all** of the following:
+  ///
+  /// - `bytes` was originally produced by [`as_bytes`](Self::as_bytes) on a
+  ///   valid `Region<T>` (or is byte-for-byte identical to such output).
+  /// - The buffer contains a valid representation of `T` at byte offset 0,
+  ///   with correct size (`bytes.len() >= size_of::<T>()`).
+  /// - All [`Near<U>`](crate::Near) self-relative offsets resolve to
+  ///   in-bounds, correctly aligned addresses within the buffer, and the
+  ///   target bytes form a valid `U`.
+  /// - All [`NearList<U>`](crate::NearList) headers have in-bounds segment
+  ///   chains with correct lengths, and every element is a valid `U`.
+  /// - All enum discriminants are valid for their `#[repr]`.
+  /// - All `bool` values are `0` or `1`.
+  /// - No `Option<Near<T>>` contains a bit pattern that is neither `None`
+  ///   nor a valid `Some(Near<T>)`.
+  ///
+  /// Violating any of these preconditions causes **undefined behavior** on
+  /// subsequent reads through the region.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region};
+  ///
+  /// #[derive(Flat, Debug)]
+  /// struct Node {
+  ///   id: u32,
+  ///   children: NearList<u32>,
+  /// }
+  ///
+  /// let original = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let bytes = original.as_bytes();
+  ///
+  /// // SAFETY: `bytes` was produced by `as_bytes()` on a valid `Region<Node>`.
+  /// let restored: Region<Node> = unsafe { Region::from_bytes_unchecked(bytes) };
+  /// assert_eq!(restored.id, 1);
+  /// assert_eq!(restored.children.len(), 3);
+  /// ```
   pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self {
     let mut buf = B::empty();
     buf.extend_from_slice(bytes);
-    // SAFETY: Caller guarantees the bytes form a valid region buffer.
+    // SAFETY: Caller guarantees the bytes form a valid region buffer for `T`.
+    // The copy into `buf` provides the required alignment (see `Buf` trait).
+    unsafe { Self::from_buf(buf) }
+  }
+
+  /// Reconstruct a region from a pre-existing buffer **without validation**.
+  ///
+  /// Unlike [`from_bytes_unchecked`](Self::from_bytes_unchecked), this takes
+  /// an already-allocated buffer `B`, avoiding an extra copy when the caller
+  /// already has an aligned buffer (e.g. memory-mapped I/O with a
+  /// [`FixedBuf`](crate::FixedBuf)).
+  ///
+  /// # Safety
+  ///
+  /// The caller must guarantee **all** of the following:
+  ///
+  /// - `buf` contains a valid representation of `T` at byte offset 0,
+  ///   with `buf.len() >= size_of::<T>()`.
+  /// - The buffer base is aligned to at least `align_of::<T>()` (guaranteed
+  ///   by the [`Buf`](crate::Buf) trait, but the *contents* must also be
+  ///   valid).
+  /// - All [`Near<U>`](crate::Near) self-relative offsets resolve to
+  ///   in-bounds, correctly aligned addresses within the buffer, and the
+  ///   target bytes form a valid `U`.
+  /// - All [`NearList<U>`](crate::NearList) headers have in-bounds segment
+  ///   chains with correct lengths, and every element is a valid `U`.
+  /// - All enum discriminants are valid for their `#[repr]`.
+  /// - All `bool` values are `0` or `1`.
+  /// - No `Option<Near<T>>` contains a bit pattern that is neither `None`
+  ///   nor a valid `Some(Near<T>)`.
+  ///
+  /// Violating any of these preconditions causes **undefined behavior** on
+  /// subsequent reads through the region.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use nearest::{Buf, Flat, NearList, Region, FixedBuf};
+  ///
+  /// #[derive(Flat, Debug)]
+  /// struct Node {
+  ///   id: u32,
+  ///   children: NearList<u32>,
+  /// }
+  ///
+  /// let original: Region<Node, FixedBuf<256>> =
+  ///   Region::new_in(Node::make(1, [10u32, 20, 30]));
+  /// let bytes = original.as_bytes();
+  ///
+  /// let mut buf = FixedBuf::<256>::new();
+  /// buf.extend_from_slice(bytes);
+  ///
+  /// // SAFETY: `buf` contains bytes from a valid `Region<Node>`.
+  /// let restored: Region<Node, FixedBuf<256>> =
+  ///   unsafe { Region::from_buf_unchecked(buf) };
+  /// assert_eq!(restored.id, 1);
+  /// assert_eq!(restored.children.len(), 3);
+  /// ```
+  pub unsafe fn from_buf_unchecked(buf: B) -> Self {
+    // SAFETY: Caller guarantees the buffer contains a valid region for `T`.
     unsafe { Self::from_buf(buf) }
   }
 }
