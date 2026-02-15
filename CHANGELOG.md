@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1](https://github.com/uael/nearest/compare/v0.3.0...v0.3.1) - 2026-02-15
+
+### Added
+
+- add consuming conversions for Region ([#17](https://github.com/uael/nearest/pull/17))
+- add #[flat(into)] and #[flat(rename)] derive macro attributes ([#16](https://github.com/uael/nearest/pull/16))
+- add collection methods to NearList and Session ([#15](https://github.com/uael/nearest/pull/15))
+- implement Display for Near<T>, NearList<T>, and Region<T>
+- add unsafe Region::from_bytes_unchecked() and from_buf_unchecked()
+- implement FusedIterator for NearListIter and add NearList::last
+- implement PartialEq and Eq for Region<T>, Near<T>, and NearList<T>
+
+### Fixed
+
+- avoid raw byte comparison on types with enum padding in Miri tests
+
+### Other
+
+- fix crate version in README.md
+
 ## [0.3.0](https://github.com/uael/nearest/compare/v0.2.1...v0.3.0) - 2026-02-15
 
 ### Added
