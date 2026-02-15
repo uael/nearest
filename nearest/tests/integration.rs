@@ -2687,3 +2687,60 @@ fn region_eq_different_buffer_layouts() {
   assert_ne!(a.byte_len(), b.byte_len());
   assert_eq!(a, b);
 }
+
+// ===========================================================================
+// Display tests
+// ===========================================================================
+
+#[derive(Flat, Debug)]
+struct DisplayNode {
+  value: u32,
+  child: Near<u32>,
+}
+
+#[derive(Flat, Debug)]
+struct DisplayList {
+  items: NearList<u32>,
+}
+
+#[test]
+fn display_near_delegates_to_target() {
+  let region = Region::new(DisplayNode::make(1, 42u32));
+  let output = format!("{}", region.child);
+  assert_eq!(output, "42");
+}
+
+#[test]
+fn display_near_with_format_spec() {
+  let region = Region::new(DisplayNode::make(1, 42u32));
+  let output = format!("{:>5}", region.child);
+  assert_eq!(output, "   42");
+}
+
+#[test]
+fn display_nearlist_empty() {
+  let region = Region::new(DisplayList::make(empty()));
+  let output = format!("{}", region.items);
+  assert_eq!(output, "[]");
+}
+
+#[test]
+fn display_nearlist_single() {
+  let region = Region::new(DisplayList::make([7u32]));
+  let output = format!("{}", region.items);
+  assert_eq!(output, "[7]");
+}
+
+#[test]
+fn display_nearlist_multiple() {
+  let region = Region::new(DisplayList::make([1u32, 2, 3]));
+  let output = format!("{}", region.items);
+  assert_eq!(output, "[1, 2, 3]");
+}
+
+#[test]
+fn display_region_delegates_to_root() {
+  let region: Region<u32> = Region::new(42u32);
+  let output = format!("{region}");
+  assert_eq!(output, "42");
+}

@@ -417,6 +417,19 @@ impl<T: Flat + fmt::Debug> fmt::Debug for NearList<T> {
   }
 }
 
+impl<T: Flat + fmt::Display> fmt::Display for NearList<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str("[")?;
+    for (i, item) in self.iter().enumerate() {
+      if i > 0 {
+        f.write_str(", ")?;
+      }
+      fmt::Display::fmt(item, f)?;
+    }
+    f.write_str("]")
+  }
+}
+
 impl<T: Flat> NearList<T> {
   /// Returns a reference to the element at `index`, or `None` if out of bounds.
   ///

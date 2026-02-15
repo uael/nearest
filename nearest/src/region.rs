@@ -657,6 +657,12 @@ impl<T: Flat + fmt::Debug, B: Buf> fmt::Debug for Region<T, B> {
   }
 }
 
+impl<T: Flat + fmt::Display, B: Buf> fmt::Display for Region<T, B> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Display::fmt(&**self, f)
+  }
+}
+
 // SAFETY: Region owns its buffer exclusively via Buf which is Send+Sync.
 // The `Send + Sync` bounds on `T` are defense-in-depth: all `Flat` types are
 // `Send + Sync` by construction (no heap pointers, no interior mutability),

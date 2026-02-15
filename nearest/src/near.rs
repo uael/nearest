@@ -120,3 +120,9 @@ impl<T: Flat + fmt::Debug> fmt::Debug for Near<T> {
     fmt::Debug::fmt(self.get(), f)
   }
 }
+
+impl<T: Flat + fmt::Display> fmt::Display for Near<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Display::fmt(self.get(), f)
+  }
+}
