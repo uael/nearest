@@ -1,6 +1,6 @@
 # nearest
 
-[![Rust](https://github.com/uael/nearest/workflows/Rust/badge.svg)](https://github.com/uael/nearest/actions)
+[![Rust](https://github.com/uael/nearest/workflows/CI/badge.svg)](https://github.com/uael/nearest/actions)
 [![Latest version](https://img.shields.io/crates/v/nearest.svg)](https://crates.io/crates/nearest)
 [![Documentation](https://docs.rs/nearest/badge.svg)](https://docs.rs/nearest)
 ![License](https://img.shields.io/crates/l/nearest.svg)
