@@ -2009,6 +2009,372 @@ fn list_item_oob_panics() {
 }
 
 // ===========================================================================
+// NearList::contains tests
+// ===========================================================================
+
+#[test]
+fn near_list_contains_present() {
+  let region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2), Value::Const(3)]));
+  assert!(region.items.contains(&Value::Const(2)));
+}
+
+#[test]
+fn near_list_contains_absent() {
+  let region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2), Value::Const(3)]));
+  assert!(!region.items.contains(&Value::Const(99)));
+}
+
+#[test]
+fn near_list_contains_empty() {
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  assert!(!region.items.contains(&Value::Const(1)));
+}
+
+#[test]
+fn near_list_contains_first_and_last() {
+  let region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20), Value::Const(30)]));
+  assert!(region.items.contains(&Value::Const(10)));
+  assert!(region.items.contains(&Value::Const(30)));
+}
+
+// ===========================================================================
+// reverse_list tests
+// ===========================================================================
+
+/// A simple struct with a `NearList<u32>` field for testing.
+#[derive(Flat, Debug)]
+struct U32List {
+  items: NearList<u32>,
+}
+
+#[test]
+fn reverse_list_basic() {
+  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 2, 3, 4, 5]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.reverse_list(items);
+  });
+
+  assert_eq!(region.items.len(), 5);
+  assert_eq!(region.items[0], 5);
+  assert_eq!(region.items[1], 4);
+  assert_eq!(region.items[2], 3);
+  assert_eq!(region.items[3], 2);
+  assert_eq!(region.items[4], 1);
+}
+
+#[test]
+fn reverse_list_single() {
+  let mut region: Region<U32List> = Region::new(U32List::make([42u32]));
+  let before = region.byte_len();
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.reverse_list(items);
+  });
+
+  // No-op: byte_len unchanged for single-element.
+  assert_eq!(region.byte_len(), before);
+  assert_eq!(region.items[0], 42);
+}
+
+#[test]
+fn reverse_list_empty() {
+  let mut region: Region<U32List> = Region::new(U32List::make(empty()));
+  let before = region.byte_len();
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.reverse_list(items);
+  });
+
+  assert_eq!(region.byte_len(), before);
+  assert!(region.items.is_empty());
+}
+
+#[test]
+fn reverse_list_two_elements() {
+  let mut region: Region<U32List> = Region::new(U32List::make([10u32, 20]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.reverse_list(items);
+  });
+
+  assert_eq!(region.items[0], 20);
+  assert_eq!(region.items[1], 10);
+}
+
+#[test]
+fn reverse_list_then_trim() {
+  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 2, 3]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.reverse_list(items);
+  });
+
+  region.trim();
+
+  assert_eq!(region.items.len(), 3);
+  assert_eq!(region.items.segment_count(), 1);
+  assert_eq!(region.items[0], 3);
+  assert_eq!(region.items[1], 2);
+  assert_eq!(region.items[2], 1);
+}
+
+// ===========================================================================
+// sort_list tests
+// ===========================================================================
+
+#[test]
+fn sort_list_basic() {
+  let mut region: Region<U32List> = Region::new(U32List::make([3u32, 1, 4, 1, 5, 9, 2, 6]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.sort_list(items, u32::cmp);
+  });
+
+  assert_eq!(region.items.len(), 8);
+  assert_eq!(region.items[0], 1);
+  assert_eq!(region.items[1], 1);
+  assert_eq!(region.items[2], 2);
+  assert_eq!(region.items[3], 3);
+  assert_eq!(region.items[4], 4);
+  assert_eq!(region.items[5], 5);
+  assert_eq!(region.items[6], 6);
+  assert_eq!(region.items[7], 9);
+}
+
+#[test]
+fn sort_list_descending() {
+  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 2, 3, 4, 5]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.sort_list(items, |a, b| b.cmp(a));
+  });
+
+  assert_eq!(region.items[0], 5);
+  assert_eq!(region.items[1], 4);
+  assert_eq!(region.items[2], 3);
+  assert_eq!(region.items[3], 2);
+  assert_eq!(region.items[4], 1);
+}
+
+#[test]
+fn sort_list_already_sorted() {
+  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 2, 3]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.sort_list(items, u32::cmp);
+  });
+
+  assert_eq!(region.items[0], 1);
+  assert_eq!(region.items[1], 2);
+  assert_eq!(region.items[2], 3);
+}
+
+#[test]
+fn sort_list_single() {
+  let mut region: Region<U32List> = Region::new(U32List::make([42u32]));
+  let before = region.byte_len();
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.sort_list(items, u32::cmp);
+  });
+
+  // No-op for single element.
+  assert_eq!(region.byte_len(), before);
+  assert_eq!(region.items[0], 42);
+}
+
+#[test]
+fn sort_list_empty() {
+  let mut region: Region<U32List> = Region::new(U32List::make(empty()));
+  let before = region.byte_len();
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.sort_list(items, u32::cmp);
+  });
+
+  assert_eq!(region.byte_len(), before);
+  assert!(region.items.is_empty());
+}
+
+#[test]
+fn sort_list_then_trim() {
+  let mut region: Region<U32List> = Region::new(U32List::make([5u32, 3, 1, 4, 2]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.sort_list(items, u32::cmp);
+  });
+
+  region.trim();
+
+  assert_eq!(region.items.len(), 5);
+  assert_eq!(region.items.segment_count(), 1);
+  let vals: Vec<u32> = region.items.iter().copied().collect();
+  assert_eq!(vals, vec![1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn sort_list_with_value_enum() {
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(30), Value::Const(10), Value::Const(20)]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |b| &b.items);
+    s.sort_list(items, |a, b| {
+      let Value::Const(a_val) = a else { return core::cmp::Ordering::Equal };
+      let Value::Const(b_val) = b else { return core::cmp::Ordering::Equal };
+      a_val.cmp(b_val)
+    });
+  });
+
+  assert_eq!(region.items[0], Value::Const(10));
+  assert_eq!(region.items[1], Value::Const(20));
+  assert_eq!(region.items[2], Value::Const(30));
+}
+
+// ===========================================================================
+// dedup_list tests
+// ===========================================================================
+
+#[test]
+fn dedup_list_basic() {
+  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 1, 2, 3, 3, 3, 2]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.dedup_list(items, |a, b| a == b);
+  });
+
+  assert_eq!(region.items.len(), 4);
+  assert_eq!(region.items[0], 1);
+  assert_eq!(region.items[1], 2);
+  assert_eq!(region.items[2], 3);
+  assert_eq!(region.items[3], 2);
+}
+
+#[test]
+fn dedup_list_no_duplicates() {
+  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 2, 3, 4]));
+  let before = region.byte_len();
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.dedup_list(items, |a, b| a == b);
+  });
+
+  // No-op: nothing deduped, byte_len unchanged.
+  assert_eq!(region.byte_len(), before);
+  assert_eq!(region.items.len(), 4);
+}
+
+#[test]
+fn dedup_list_all_same() {
+  let mut region: Region<U32List> = Region::new(U32List::make([5u32, 5, 5, 5]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.dedup_list(items, |a, b| a == b);
+  });
+
+  assert_eq!(region.items.len(), 1);
+  assert_eq!(region.items[0], 5);
+}
+
+#[test]
+fn dedup_list_empty() {
+  let mut region: Region<U32List> = Region::new(U32List::make(empty()));
+  let before = region.byte_len();
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.dedup_list(items, |a, b| a == b);
+  });
+
+  assert_eq!(region.byte_len(), before);
+  assert!(region.items.is_empty());
+}
+
+#[test]
+fn dedup_list_single() {
+  let mut region: Region<U32List> = Region::new(U32List::make([42u32]));
+  let before = region.byte_len();
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.dedup_list(items, |a, b| a == b);
+  });
+
+  assert_eq!(region.byte_len(), before);
+  assert_eq!(region.items[0], 42);
+}
+
+#[test]
+fn dedup_list_then_trim() {
+  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 1, 2, 2, 3, 3]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.dedup_list(items, |a, b| a == b);
+  });
+
+  region.trim();
+
+  assert_eq!(region.items.len(), 3);
+  assert_eq!(region.items.segment_count(), 1);
+  assert_eq!(region.items[0], 1);
+  assert_eq!(region.items[1], 2);
+  assert_eq!(region.items[2], 3);
+}
+
+#[test]
+fn dedup_list_with_value_enum() {
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    [Value::Const(1), Value::Const(1), Value::Const(2), Value::Const(2), Value::Const(3)],
+  ));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |b| &b.items);
+    s.dedup_list(items, |a, b| a == b);
+  });
+
+  assert_eq!(region.items.len(), 3);
+  assert_eq!(region.items[0], Value::Const(1));
+  assert_eq!(region.items[1], Value::Const(2));
+  assert_eq!(region.items[2], Value::Const(3));
+}
+
+#[test]
+fn sort_then_dedup() {
+  let mut region: Region<U32List> = Region::new(U32List::make([3u32, 1, 2, 1, 3, 2]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |r| &r.items);
+    s.sort_list(items, u32::cmp);
+    s.dedup_list(items, |a, b| a == b);
+  });
+
+  assert_eq!(region.items.len(), 3);
+  assert_eq!(region.items[0], 1);
+  assert_eq!(region.items[1], 2);
+  assert_eq!(region.items[2], 3);
+}
+
+// ===========================================================================
 // Panic-path tests (#[should_panic])
 // ===========================================================================
 

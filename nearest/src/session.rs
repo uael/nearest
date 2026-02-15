@@ -1020,6 +1020,256 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
     unsafe { self.region.patch_list_header_internal(list_pos, seg_pos, len) };
   }
 
+  /// Replace the contents of a [`NearList<U>`] with its elements in reverse
+  /// order.
+  ///
+  /// Collects element positions, reverses them, then deep-copies into a
+  /// single contiguous segment. No-op on empty lists.
+  ///
+  /// **Note**: Allocates a `Vec<u32>` of element positions as a temporary
+  /// snapshot.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region};
+  ///
+  /// #[derive(Flat)]
+  /// struct Root { items: NearList<u32> }
+  ///
+  /// let mut region = Region::new(Root::make([1u32, 2, 3]));
+  ///
+  /// region.session(|s| {
+  ///   let items = s.nav(s.root(), |r| &r.items);
+  ///   s.reverse_list(items);
+  /// });
+  ///
+  /// assert_eq!(region.items[0], 3);
+  /// assert_eq!(region.items[1], 2);
+  /// assert_eq!(region.items[2], 1);
+  /// ```
+  #[cfg(feature = "alloc")]
+  pub fn reverse_list<U: Flat>(&mut self, r: Ref<'id, NearList<U>>) {
+    let list: &NearList<U> = self.at(r);
+    let count = list.len();
+
+    if count <= 1 {
+      return;
+    }
+
+    // Collect element positions before mutation.
+    let base = self.region.deref_raw() as usize;
+    let mut positions: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(count);
+    for elem in list {
+      let offset = (core::ptr::from_ref(elem) as usize) - base;
+      positions.push(offset as u32);
+    }
+
+    positions.reverse();
+
+    let list_pos = r.pos;
+    let len = count as u32;
+
+    // Pre-reserve so the buffer does not reallocate during deep-copy writes.
+    let seg_overhead = size_of::<Segment<U>>() + count * size_of::<U>() + align_of::<Segment<U>>();
+    self.region.reserve_internal((self.region.byte_len() + seg_overhead) as u32);
+
+    let seg_pos = self.region.alloc_segment_internal::<U>(len);
+    let values_offset = size_of::<Segment<U>>();
+    for (i, &pos) in positions.iter().enumerate() {
+      let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
+      // SAFETY: Pre-reserve guarantees no reallocation. We recover provenance
+      // via `with_exposed_provenance` so the read is not derived from
+      // `self.region` — avoiding Stacked Borrows violation.
+      unsafe {
+        let addr = self.region.deref_raw().add(pos as usize).addr();
+        let val = &*core::ptr::with_exposed_provenance::<U>(addr);
+        Emit::<U>::write_at(val, self.region, val_pos);
+      }
+    }
+    // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`), and
+    // `seg_pos` was just allocated by `alloc_segment_internal`.
+    unsafe { self.region.patch_list_header_internal(list_pos, seg_pos, len) };
+  }
+
+  /// Replace the contents of a [`NearList<U>`] with its elements sorted by a
+  /// comparator.
+  ///
+  /// Collects element positions, sorts them by reading each element through
+  /// the comparator, then deep-copies into a single contiguous segment.
+  /// No-op on empty or single-element lists.
+  ///
+  /// **Note**: Allocates a `Vec<u32>` of element positions as a temporary
+  /// snapshot.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region};
+  ///
+  /// #[derive(Flat)]
+  /// struct Root { items: NearList<u32> }
+  ///
+  /// let mut region = Region::new(Root::make([3u32, 1, 2]));
+  ///
+  /// region.session(|s| {
+  ///   let items = s.nav(s.root(), |r| &r.items);
+  ///   s.sort_list(items, |a, b| a.cmp(b));
+  /// });
+  ///
+  /// assert_eq!(region.items[0], 1);
+  /// assert_eq!(region.items[1], 2);
+  /// assert_eq!(region.items[2], 3);
+  /// ```
+  #[cfg(feature = "alloc")]
+  pub fn sort_list<U: Flat>(
+    &mut self,
+    r: Ref<'id, NearList<U>>,
+    mut cmp: impl FnMut(&U, &U) -> core::cmp::Ordering,
+  ) {
+    let list: &NearList<U> = self.at(r);
+    let count = list.len();
+
+    if count <= 1 {
+      return;
+    }
+
+    // Collect element positions before mutation.
+    let base_ptr = self.region.deref_raw();
+    let base = base_ptr as usize;
+    let mut positions: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(count);
+    for elem in list {
+      let offset = (core::ptr::from_ref(elem) as usize) - base;
+      positions.push(offset as u32);
+    }
+
+    // Sort positions by comparing the values they point to.
+    // SAFETY: All positions were collected from valid elements in the region.
+    // The buffer is not mutated during the sort.
+    positions.sort_by(|&a_pos, &b_pos| unsafe {
+      let a = &*core::ptr::with_exposed_provenance::<U>(base_ptr.add(a_pos as usize).addr());
+      let b = &*core::ptr::with_exposed_provenance::<U>(base_ptr.add(b_pos as usize).addr());
+      cmp(a, b)
+    });
+
+    let list_pos = r.pos;
+    let len = count as u32;
+
+    // Pre-reserve so the buffer does not reallocate during deep-copy writes.
+    let seg_overhead = size_of::<Segment<U>>() + count * size_of::<U>() + align_of::<Segment<U>>();
+    self.region.reserve_internal((self.region.byte_len() + seg_overhead) as u32);
+
+    let seg_pos = self.region.alloc_segment_internal::<U>(len);
+    let values_offset = size_of::<Segment<U>>();
+    for (i, &pos) in positions.iter().enumerate() {
+      let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
+      // SAFETY: Pre-reserve guarantees no reallocation. We recover provenance
+      // via `with_exposed_provenance` so the read is not derived from
+      // `self.region` — avoiding Stacked Borrows violation.
+      unsafe {
+        let addr = self.region.deref_raw().add(pos as usize).addr();
+        let val = &*core::ptr::with_exposed_provenance::<U>(addr);
+        Emit::<U>::write_at(val, self.region, val_pos);
+      }
+    }
+    // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`), and
+    // `seg_pos` was just allocated by `alloc_segment_internal`.
+    unsafe { self.region.patch_list_header_internal(list_pos, seg_pos, len) };
+  }
+
+  /// Remove consecutive duplicate elements from a [`NearList<U>`].
+  ///
+  /// Two elements are considered equal when `eq` returns `true`. Only the
+  /// first element of each run of equal elements is kept — identical to
+  /// `[T]::dedup_by` semantics. No-op on empty or
+  /// single-element lists.
+  ///
+  /// **Note**: Allocates a `Vec<u32>` of retained element positions as a
+  /// temporary snapshot.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region};
+  ///
+  /// #[derive(Flat)]
+  /// struct Root { items: NearList<u32> }
+  ///
+  /// let mut region = Region::new(Root::make([1u32, 1, 2, 3, 3, 3, 2]));
+  ///
+  /// region.session(|s| {
+  ///   let items = s.nav(s.root(), |r| &r.items);
+  ///   s.dedup_list(items, |a, b| a == b);
+  /// });
+  ///
+  /// assert_eq!(region.items.len(), 4);
+  /// assert_eq!(region.items[0], 1);
+  /// assert_eq!(region.items[1], 2);
+  /// assert_eq!(region.items[2], 3);
+  /// assert_eq!(region.items[3], 2);
+  /// ```
+  #[cfg(feature = "alloc")]
+  pub fn dedup_list<U: Flat>(
+    &mut self,
+    r: Ref<'id, NearList<U>>,
+    mut eq: impl FnMut(&U, &U) -> bool,
+  ) {
+    let list: &NearList<U> = self.at(r);
+    let count = list.len();
+
+    if count <= 1 {
+      return;
+    }
+
+    // Collect positions of elements to keep (first of each dedup run).
+    let base = self.region.deref_raw() as usize;
+    let mut positions: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(count);
+    let mut prev: Option<&U> = None;
+    for elem in list {
+      if prev.is_none_or(|p| !eq(p, elem)) {
+        let offset = (core::ptr::from_ref(elem) as usize) - base;
+        positions.push(offset as u32);
+      }
+      prev = Some(elem);
+    }
+
+    // If nothing was deduped, no work needed.
+    if positions.len() == count {
+      return;
+    }
+
+    let list_pos = r.pos;
+    let len = positions.len() as u32;
+
+    if len == 0 {
+      // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`).
+      unsafe { self.region.patch_list_header_internal(list_pos, Pos::ZERO, 0) };
+      return;
+    }
+
+    // Pre-reserve so the buffer does not reallocate during deep-copy writes.
+    let seg_overhead =
+      size_of::<Segment<U>>() + positions.len() * size_of::<U>() + align_of::<Segment<U>>();
+    self.region.reserve_internal((self.region.byte_len() + seg_overhead) as u32);
+
+    let seg_pos = self.region.alloc_segment_internal::<U>(len);
+    let values_offset = size_of::<Segment<U>>();
+    for (i, &pos) in positions.iter().enumerate() {
+      let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
+      // SAFETY: Pre-reserve guarantees no reallocation. We recover provenance
+      // via `with_exposed_provenance` so the read is not derived from
+      // `self.region` — avoiding Stacked Borrows violation.
+      unsafe {
+        let addr = self.region.deref_raw().add(pos as usize).addr();
+        let val = &*core::ptr::with_exposed_provenance::<U>(addr);
+        Emit::<U>::write_at(val, self.region, val_pos);
+      }
+    }
+    // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`), and
+    // `seg_pos` was just allocated by `alloc_segment_internal`.
+    unsafe { self.region.patch_list_header_internal(list_pos, seg_pos, len) };
+  }
+
   /// Get a [`Ref`] to a list element by index.
   ///
   /// **O(1)** when all elements are in a single segment (always true after
