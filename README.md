@@ -52,6 +52,8 @@ assert_eq!(cloned.items[0], 40);
   for tree-shaped data
 - **Compaction** — `Region::trim` reclaims dead bytes left by append-only
   mutations
+- **Serialization** — `as_bytes` / `from_bytes` round-trip with validation;
+  optional `serde` feature for `Serialize`/`Deserialize`
 - **Miri-validated** — all unsafe code tested under Miri with permissive
   provenance
 
@@ -61,7 +63,7 @@ Requires **nightly** Rust due to `#![feature(offset_of_enum)]`.
 
 ```toml
 [dependencies]
-nearest = "0.1"
+nearest = "0.2"
 ```
 
 See the [API documentation](https://docs.rs/nearest) for comprehensive guides

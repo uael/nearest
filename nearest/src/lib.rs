@@ -215,6 +215,48 @@
 //! assert_eq!(region.entry.id, 99);
 //! ```
 //!
+//! # Serialization
+//!
+//! [`Region::as_bytes`] returns the raw buffer contents as a `&[u8]`, suitable
+//! for writing to a file or sending over the network. [`Region::from_bytes`]
+//! copies the bytes into an aligned buffer, then runs [`Flat::validate`] to
+//! check bounds, alignment, pointer validity, and type-specific invariants
+//! (e.g. enum discriminants, `bool` values) before reconstructing the region.
+//!
+//! ```
+//! # use nearest::{Flat, NearList, Region};
+//! #[derive(Flat, Debug)]
+//! struct Node {
+//!   id: u32,
+//!   children: NearList<u32>,
+//! }
+//!
+//! let original = Region::new(Node::make(1, [10u32, 20, 30]));
+//! let bytes = original.as_bytes();
+//!
+//! // bytes can be persisted to disk, sent over the network, etc.
+//! let restored: Region<Node> = Region::from_bytes(bytes).unwrap();
+//! assert_eq!(restored.id, 1);
+//! assert_eq!(restored.children.len(), 3);
+//! ```
+//!
+//! Invalid or corrupted data is rejected with a [`ValidateError`]:
+//!
+//! ```
+//! use nearest::{Flat, Near, Region, ValidateError};
+//!
+//! #[derive(Flat, Debug)]
+//! struct Flags {
+//!   active: bool,
+//!   label: Near<u32>,
+//! }
+//!
+//! let region = Region::new(Flags::make(true, 42u32));
+//! let mut bytes = region.as_bytes().to_vec();
+//! bytes[core::mem::offset_of!(Flags, active)] = 2; // corrupt the bool
+//! assert!(Region::<Flags>::from_bytes(&bytes).is_err());
+//! ```
+//!
 //! # Compaction
 //!
 //! Mutations are append-only — replaced data becomes dead bytes in the
@@ -257,6 +299,53 @@
 //!
 //! assert_eq!(cloned.id, region.id);
 //! assert_eq!(cloned.items[0], region.items[0]);
+//! ```
+//!
+//! # Features
+//!
+//! | Feature | Default | Enables |
+//! |---------|---------|---------|
+//! | **`alloc`** | yes | Heap-backed [`AlignedBuf`], `Region::new`, `Region::trim`, growable sessions |
+//! | **`std`** | no | Implies `alloc`; reserved for future `std`-only APIs |
+//! | **`serde`** | no | [`Serialize`](::serde::Serialize) / [`Deserialize`](::serde::Deserialize) for `Region<T>` |
+//!
+//! ## `no_std` support
+//!
+//! `nearest` is `#![no_std]` by default. Disabling the `alloc` feature
+//! removes all heap allocation — use [`FixedBuf<N>`] for stack-backed
+//! regions with a compile-time capacity:
+//!
+//! ```toml
+//! [dependencies]
+//! nearest = { version = "0.2", default-features = false }
+//! ```
+//!
+//! ```
+//! use nearest::{Flat, NearList, Region, FixedBuf, empty};
+//!
+//! #[derive(Flat, Debug)]
+//! struct Msg {
+//!   id: u32,
+//!   tags: NearList<u32>,
+//! }
+//!
+//! // 128-byte inline buffer, no heap allocation.
+//! let region: Region<Msg, FixedBuf<128>> =
+//!   Region::new_in(Msg::make(1, [10u32, 20]));
+//! assert_eq!(region.id, 1);
+//! assert_eq!(region.tags.len(), 2);
+//! ```
+//!
+//! ## `serde`
+//!
+//! With the **`serde`** feature, `Region<T>` implements `Serialize` and
+//! `Deserialize`. The region is serialized as its raw byte buffer (via
+//! [`as_bytes`](Region::as_bytes)), and deserialization runs
+//! [`from_bytes`](Region::from_bytes) validation automatically.
+//!
+//! ```toml
+//! [dependencies]
+//! nearest = { version = "0.2", features = ["serde"] }
 //! ```
 //!
 //! # Safety model
