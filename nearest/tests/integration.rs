@@ -2245,6 +2245,119 @@ fn region_from_bytes_fixed_buf() {
 }
 
 // ===========================================================================
+// Region::validate() tests
+// ===========================================================================
+
+#[test]
+fn region_validate_fresh_primitive() {
+  let region: Region<u32> = Region::new(42u32);
+  assert!(region.validate().is_ok());
+}
+
+#[test]
+fn region_validate_fresh_struct_with_near() {
+  let region = build_simple_func(1);
+  assert!(region.validate().is_ok());
+}
+
+#[test]
+fn region_validate_fresh_struct_with_near_list() {
+  let region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20)]));
+  assert!(region.validate().is_ok());
+}
+
+#[test]
+fn region_validate_fresh_empty_list() {
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  assert!(region.validate().is_ok());
+}
+
+#[test]
+fn region_validate_after_set_mutation() {
+  let mut region = build_simple_func(1);
+  region.session(|s| {
+    let name = s.nav(s.root(), |f| &f.name);
+    s.set(name, Symbol(99));
+  });
+  assert!(region.validate().is_ok());
+}
+
+#[test]
+fn region_validate_after_splice_list() {
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20)]));
+  region.session(|s| {
+    let items = s.nav(s.root(), |b| &b.items);
+    s.splice_list(items, [Value::Const(99)]);
+  });
+  assert!(region.validate().is_ok());
+}
+
+#[test]
+fn region_validate_after_trim() {
+  let mut region = build_simple_func(1);
+  region.session(|s| {
+    let name = s.nav(s.root(), |f| &f.name);
+    s.set(name, Symbol(50));
+  });
+  region.trim();
+  assert!(region.validate().is_ok());
+}
+
+#[test]
+fn region_validate_matches_from_bytes() {
+  // A valid region should give the same result through validate() and
+  // from_bytes().
+  let region = build_simple_func(1);
+  assert!(region.validate().is_ok());
+  assert!(Region::<Func>::from_bytes(region.as_bytes()).is_ok());
+}
+
+#[test]
+fn region_validate_detects_corrupted_bool() {
+  #[derive(Flat, Debug)]
+  struct BoolNode {
+    flag: bool,
+    label: Near<u32>,
+  }
+
+  let region: Region<BoolNode> = Region::new(BoolNode::make(true, 42u32));
+  assert!(region.validate().is_ok());
+
+  // Corrupt the bool field via from_bytes_unchecked to create an invalid
+  // region, then check validate catches it.
+  let mut bytes = region.as_bytes().to_vec();
+  let bool_offset = core::mem::offset_of!(BoolNode, flag);
+  bytes[bool_offset] = 2;
+  // SAFETY: Intentionally constructing an invalid region to test validate().
+  let corrupted: Region<BoolNode> = unsafe { Region::from_bytes_unchecked(&bytes) };
+  assert!(matches!(corrupted.validate(), Err(ValidateError::InvalidBool { value: 2, .. })));
+}
+
+#[test]
+fn region_validate_detects_null_near() {
+  let region = build_simple_func(1);
+  let mut bytes = region.as_bytes().to_vec();
+
+  // Zero out the Near<Block> offset in Func (at offset of `entry` field).
+  let near_offset = core::mem::offset_of!(Func, entry);
+  bytes[near_offset..near_offset + 4].copy_from_slice(&0i32.to_ne_bytes());
+
+  // SAFETY: Intentionally constructing an invalid region to test validate().
+  let corrupted: Region<Func> = unsafe { Region::from_bytes_unchecked(&bytes) };
+  assert!(matches!(corrupted.validate(), Err(ValidateError::NullNear { .. })));
+}
+
+#[test]
+fn region_validate_fixed_buf() {
+  use nearest::FixedBuf;
+
+  let region: Region<u32, FixedBuf<64>> = Region::new_in(42u32);
+  assert!(region.validate().is_ok());
+}
+
+// ===========================================================================
 // serde roundtrip tests
 // ===========================================================================
 

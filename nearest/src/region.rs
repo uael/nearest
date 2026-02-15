@@ -523,6 +523,56 @@ impl<T: Flat, B: Buf> Region<T, B> {
     // SAFETY: Caller guarantees the bytes form a valid region buffer.
     unsafe { Self::from_buf(buf) }
   }
+
+  /// Re-validate the internal buffer.
+  ///
+  /// Runs [`T::validate`](Flat::validate) on the region's buffer, checking
+  /// bounds, alignment, pointer validity, and type-specific invariants for
+  /// the root `T` and all transitively reachable data.
+  ///
+  /// This is useful for:
+  /// - Verifying buffer integrity after [`session`](Self::session) mutations
+  /// - Debugging and assertions in tests
+  /// - Defense-in-depth checks before trusting region contents
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ValidateError`](crate::ValidateError) if the buffer does not
+  /// contain a valid representation of `T`.
+  ///
+  /// # Examples
+  ///
+  /// Freshly constructed regions always pass validation:
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region, empty};
+  ///
+  /// #[derive(Flat, Debug)]
+  /// struct Node {
+  ///   id: u32,
+  ///   children: NearList<u32>,
+  /// }
+  ///
+  /// let region = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// assert!(region.validate().is_ok());
+  /// ```
+  ///
+  /// Regions remain valid after session mutations:
+  ///
+  /// ```
+  /// # use nearest::{Flat, NearList, Region, empty};
+  /// # #[derive(Flat, Debug)]
+  /// # struct Node { id: u32, children: NearList<u32> }
+  /// let mut region = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// region.session(|s| {
+  ///   let id = s.nav(s.root(), |n| &n.id);
+  ///   s.set(id, 99);
+  /// });
+  /// assert!(region.validate().is_ok());
+  /// ```
+  pub fn validate(&self) -> Result<(), crate::ValidateError> {
+    T::validate(0, self.buf.as_bytes())
+  }
 }
 
 impl<T: Flat, B: Buf> Deref for Region<T, B> {
