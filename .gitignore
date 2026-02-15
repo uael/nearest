@@ -9,6 +9,7 @@
 !CHANGELOG.md
 !LICENSE-*
 !deny.toml
+!release-plz.toml
 !.github/
 !.github/workflows/
 !.github/**/*.yml

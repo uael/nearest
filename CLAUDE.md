@@ -66,6 +66,32 @@ Requires **nightly** Rust (`nightly-2026-02-10` pinned in `rust-toolchain`) for 
 - **No-Drop**: Derive macro emits `const { assert!(!needs_drop::<T>()) }` to reject types with `Drop`
 - **Alignment**: Buffer aligned to `max(align_of::<Root>(), 8)`
 
+## Releasing
+
+Releases are automated with [release-plz](https://release-plz.dev/). On every push to `main`, the GitHub Action opens (or updates) a release PR that bumps versions and updates `CHANGELOG.md`. Merging that PR publishes to crates.io and creates a GitHub release with a `v<version>` tag.
+
+- Config: `release-plz.toml`
+- Workflow: `.github/workflows/release-plz.yml`
+- Only `nearest` and `nearest-derive` are published; `xtask` is excluded
+- `nearest` owns the changelog and git tags (`v{{ version }}`); `nearest-derive` is bumped in lockstep without its own changelog or tags
+
+### Commit Message Format
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) — release-plz uses them to determine version bumps and generate changelog entries.
+
+```
+<type>[optional scope]: <description>
+
+[optional body]
+```
+
+| Type | Bump | Example |
+|------|------|---------|
+| `fix:` | patch | `fix: handle zero-length regions in trim` |
+| `feat:` | minor | `feat: add Region::into_vec conversion` |
+| `feat!:` / `BREAKING CHANGE:` | major | `feat!: rename Emitter to Builder` |
+| `docs:`, `ci:`, `chore:`, `refactor:`, `test:` | none | `ci: pin release-plz action version` |
+
 ## Code Style
 
 - 2-space indentation, max 100 columns
