@@ -1,6 +1,6 @@
 [package]
 name = "nearest"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0 OR MIT"
@@ -13,7 +13,7 @@ keywords = ["self-relative", "pointer", "region", "allocation", "arena"]
 categories = ["data-structures", "memory-management"]
 
 [dependencies]
-nearest-derive = { version = "=0.1.0", path = "../nearest-derive" }
+nearest-derive = { version = "=0.1.1", path = "../nearest-derive" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
