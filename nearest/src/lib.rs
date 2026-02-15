@@ -460,7 +460,7 @@ pub mod __private {
   }
 }
 pub use flat::Flat;
-pub use list::NearList;
+pub use list::{NearList, NearListIter};
 pub use near::Near;
 pub use nearest_derive::{Emit, Flat};
 pub use patch::Patch;

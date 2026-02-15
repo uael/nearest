@@ -1060,6 +1060,115 @@ fn near_list_exact_size_iterator() {
   assert_eq!(iter.len(), 3);
 }
 
+#[test]
+fn near_list_fused_iterator() {
+  let region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2)]));
+  let block: &ListBlock = &region;
+  let mut iter = block.items.iter();
+
+  // Exhaust the iterator.
+  assert!(iter.next().is_some());
+  assert!(iter.next().is_some());
+  assert!(iter.next().is_none());
+
+  // FusedIterator guarantee: keeps returning None.
+  assert!(iter.next().is_none());
+  assert!(iter.next().is_none());
+}
+
+#[test]
+fn near_list_fused_iterator_empty() {
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let block: &ListBlock = &region;
+  let mut iter = block.items.iter();
+
+  // Empty list: returns None immediately and repeatedly.
+  assert!(iter.next().is_none());
+  assert!(iter.next().is_none());
+}
+
+#[test]
+fn near_list_last_single_segment() {
+  let region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20), Value::Const(30)]));
+  let block: &ListBlock = &region;
+  assert_eq!(block.items.last(), Some(&Value::Const(30)));
+}
+
+#[test]
+fn near_list_last_empty() {
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let block: &ListBlock = &region;
+  assert_eq!(block.items.last(), None);
+}
+
+#[test]
+fn near_list_last_single_element() {
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(42)]));
+  let block: &ListBlock = &region;
+  assert_eq!(block.items.last(), Some(&Value::Const(42)));
+  // first and last should be the same for a single-element list.
+  assert_eq!(block.items.first(), block.items.last());
+}
+
+#[test]
+fn near_list_last_multi_segment() {
+  // push_front creates a second segment, so last() must walk segments.
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(2), Value::Const(3)]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |b| &b.items);
+    s.push_front(items, Value::Const(1));
+  });
+
+  let block: &ListBlock = &region;
+  assert_eq!(block.items.segment_count(), 2);
+  // Last element should still be 3 (from the original segment).
+  assert_eq!(block.items.last(), Some(&Value::Const(3)));
+}
+
+#[test]
+fn near_list_last_multi_segment_after_trim() {
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(2), Value::Const(3)]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |b| &b.items);
+    s.push_front(items, Value::Const(1));
+  });
+
+  region.trim();
+  let block: &ListBlock = &region;
+  assert_eq!(block.items.segment_count(), 1);
+  assert_eq!(block.items.last(), Some(&Value::Const(3)));
+}
+
+#[test]
+fn near_list_fused_iterator_multi_segment() {
+  // FusedIterator should hold across segment boundaries.
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(2), Value::Const(3)]));
+
+  region.session(|s| {
+    let items = s.nav(s.root(), |b| &b.items);
+    s.push_front(items, Value::Const(1));
+  });
+
+  let block: &ListBlock = &region;
+  assert_eq!(block.items.segment_count(), 2);
+
+  let mut iter = block.items.iter();
+  assert_eq!(iter.len(), 3);
+  assert_eq!(iter.next(), Some(&Value::Const(1)));
+  assert_eq!(iter.next(), Some(&Value::Const(2)));
+  assert_eq!(iter.next(), Some(&Value::Const(3)));
+  assert!(iter.next().is_none());
+  // Fused: stays None.
+  assert!(iter.next().is_none());
+}
+
 // ===========================================================================
 // extend_list tests
 // ===========================================================================
