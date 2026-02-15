@@ -2245,6 +2245,150 @@ fn region_from_bytes_fixed_buf() {
 }
 
 // ===========================================================================
+// Ref ordering tests (PartialOrd / Ord)
+// ===========================================================================
+
+#[test]
+fn ref_ord_list_elements_ordered_by_position() {
+  let mut region = Region::new(Block::make(
+    Symbol(0),
+    empty(),
+    [Inst::make(1, Type(0), empty()), Inst::make(2, Type(1), empty())],
+    Term::make_ret(empty()),
+  ));
+  region.session(|s| {
+    let insts = s.nav(s.root(), |b| &b.insts);
+    let first = s.list_item(insts, 0);
+    let second = s.list_item(insts, 1);
+    // First element is at a lower byte position than the second.
+    assert!(first < second);
+    assert!(second > first);
+    assert!(first <= first);
+    assert!(first >= first);
+  });
+}
+
+#[test]
+fn ref_ord_list_refs_sorted() {
+  let mut region = Region::new(Block::make(
+    Symbol(0),
+    empty(),
+    [
+      Inst::make(1, Type(0), [Value::Const(10)]),
+      Inst::make(2, Type(1), [Value::Const(20)]),
+      Inst::make(3, Type(2), [Value::Const(30)]),
+    ],
+    Term::make_ret(empty()),
+  ));
+  region.session(|s| {
+    let insts = s.nav(s.root(), |b| &b.insts);
+    let refs = s.list_refs(insts);
+    // Elements are laid out sequentially — refs should already be sorted.
+    for window in refs.windows(2) {
+      assert!(window[0] < window[1]);
+    }
+  });
+}
+
+#[test]
+fn ref_ord_in_btree_set() {
+  use std::collections::BTreeSet;
+
+  let mut region = Region::new(Block::make(
+    Symbol(0),
+    empty(),
+    [
+      Inst::make(1, Type(0), [Value::Const(10)]),
+      Inst::make(2, Type(1), [Value::Const(20)]),
+      Inst::make(3, Type(2), [Value::Const(30)]),
+    ],
+    Term::make_ret(empty()),
+  ));
+  region.session(|s| {
+    let insts = s.nav(s.root(), |b| &b.insts);
+    let refs = s.list_refs(insts);
+
+    let mut set = BTreeSet::new();
+    for r in &refs {
+      set.insert(*r);
+    }
+    assert_eq!(set.len(), 3);
+
+    // Inserting the same refs again should not change the set size.
+    for r in &refs {
+      set.insert(*r);
+    }
+    assert_eq!(set.len(), 3);
+  });
+}
+
+#[test]
+fn ref_ord_in_btree_map() {
+  use std::collections::BTreeMap;
+
+  let mut region = Region::new(Block::make(
+    Symbol(0),
+    empty(),
+    [Inst::make(1, Type(0), [Value::Const(10)]), Inst::make(2, Type(1), [Value::Const(20)])],
+    Term::make_ret(empty()),
+  ));
+  region.session(|s| {
+    let insts = s.nav(s.root(), |b| &b.insts);
+    let refs = s.list_refs(insts);
+
+    let mut map = BTreeMap::new();
+    for (i, r) in refs.iter().enumerate() {
+      map.insert(*r, i);
+    }
+    assert_eq!(map.len(), 2);
+    assert_eq!(map[&refs[0]], 0);
+    assert_eq!(map[&refs[1]], 1);
+  });
+}
+
+#[test]
+fn ref_ord_sorting() {
+  let mut region = Region::new(Block::make(
+    Symbol(0),
+    empty(),
+    [
+      Inst::make(1, Type(0), [Value::Const(10)]),
+      Inst::make(2, Type(1), [Value::Const(20)]),
+      Inst::make(3, Type(2), [Value::Const(30)]),
+    ],
+    Term::make_ret(empty()),
+  ));
+  region.session(|s| {
+    let insts = s.nav(s.root(), |b| &b.insts);
+    let refs = s.list_refs(insts);
+
+    // Reverse, then sort — should recover original order.
+    let mut reversed: Vec<Ref<'_, Inst>> = refs.iter().rev().copied().collect();
+    reversed.sort();
+    assert_eq!(reversed.len(), refs.len());
+    for (a, b) in reversed.iter().zip(refs.iter()) {
+      assert!(a == b);
+    }
+  });
+}
+
+#[test]
+fn ref_ord_equal_refs_are_equal_order() {
+  let mut region = Region::new(Block::make(
+    Symbol(0),
+    empty(),
+    [Inst::make(1, Type(0), empty())],
+    Term::make_ret(empty()),
+  ));
+  region.session(|s| {
+    let root1 = s.root();
+    let root2 = s.root();
+    assert_eq!(root1.cmp(&root2), std::cmp::Ordering::Equal);
+    assert_eq!(root1.partial_cmp(&root2), Some(std::cmp::Ordering::Equal));
+  });
+}
+
+// ===========================================================================
 // serde roundtrip tests
 // ===========================================================================
 

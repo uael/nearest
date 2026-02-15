@@ -69,6 +69,18 @@ impl<T: Flat> Hash for Ref<'_, T> {
   }
 }
 
+impl<T: Flat> PartialOrd for Ref<'_, T> {
+  fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    Some(self.cmp(other))
+  }
+}
+
+impl<T: Flat> Ord for Ref<'_, T> {
+  fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    self.pos.0.cmp(&other.pos.0)
+  }
+}
+
 impl<'id, T: Flat> Ref<'id, T> {
   const fn new(pos: Pos, brand: Brand<'id>) -> Self {
     Self { pos, brand, _type: PhantomData }
