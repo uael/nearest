@@ -57,5 +57,8 @@ fn lint(sh: &Shell, fix: bool) -> Result<()> {
   let args =
     if fix { ["--fix", "--allow-dirty", "--allow-staged"] } else { ["--", "-D", "warnings"] };
   cmd!(sh, "cargo clippy --tests --all-features {args...}").run_echo()?;
+  cmd!(sh, "cargo clippy -p nearest --no-default-features {args...}").run_echo()?;
+  cmd!(sh, "cargo clippy -p nearest --no-default-features --features alloc {args...}")
+    .run_echo()?;
   fmt(sh, !fix)
 }
