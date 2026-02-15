@@ -23,5 +23,8 @@ trybuild = "1"
 name = "region"
 harness = false
 
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lints]
 workspace = true
