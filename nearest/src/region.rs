@@ -420,8 +420,10 @@ impl<T: Flat, B: Buf> Region<T, B> {
 
   /// Validate and reconstruct a region from raw bytes.
   ///
-  /// Runs [`T::validate`](Flat::validate) on the byte slice. If validation
-  /// succeeds, copies the bytes into a fresh buffer to produce a `Region`.
+  /// Copies the bytes into an aligned buffer first, then runs
+  /// [`T::validate`](Flat::validate) on the copy. This copy-then-validate
+  /// order means the input is read only once (during the copy), and
+  /// validation reads the cache-hot aligned buffer instead.
   ///
   /// # Errors
   ///
@@ -470,9 +472,9 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// ));
   /// ```
   pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::ValidateError> {
-    T::validate(0, bytes)?;
     let mut buf = B::empty();
     buf.extend_from_slice(bytes);
+    T::validate(0, buf.as_bytes())?;
     Ok(Self::from_buf(buf))
   }
 
@@ -546,19 +548,6 @@ impl<'de, T: Flat, B: Buf> serde::Deserialize<'de> for Region<T, B> {
 
       fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
         Region::from_bytes(v).map_err(E::custom)
-      }
-
-      fn visit_byte_buf<E: serde::de::Error>(
-        self,
-        v: alloc::vec::Vec<u8>,
-      ) -> Result<Self::Value, E> {
-        // Validate in place, then copy into an aligned buffer.
-        // The copy is unavoidable: `Buf` requires alignment guarantees
-        // that a `Vec<u8>` allocation (align 1) cannot provide.
-        T::validate(0, &v).map_err(E::custom)?;
-        let mut buf = B::empty();
-        buf.extend_from_slice(&v);
-        Ok(Region::from_buf(buf))
       }
 
       fn visit_seq<A: serde::de::SeqAccess<'de>>(
