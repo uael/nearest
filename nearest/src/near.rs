@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData, num::NonZero, ops::Deref};
+use core::{fmt, marker::PhantomData, num::NonZero, ops::Deref};
 
 use crate::{Flat, Patch, emitter::Pos};
 
@@ -44,7 +44,7 @@ unsafe impl<T> Flat for Near<T> {
     // SAFETY: Caller guarantees `at` was allocated for `Near<T>`.
     // Byte-copy the 4-byte offset. Containing struct's deep_copy handles pointer following.
     unsafe {
-      p.write_bytes(at, std::ptr::from_ref(self).cast(), size_of::<Self>());
+      p.write_bytes(at, core::ptr::from_ref(self).cast(), size_of::<Self>());
     }
   }
 }
@@ -81,9 +81,9 @@ impl<T: Flat> Near<T> {
     // provenance (exposed by `AlignedBuf::grow`). This triggers Miri
     // int-to-ptr cast warnings but is not UB.
     unsafe {
-      let base = std::ptr::from_ref(&self.off).cast::<u8>();
+      let base = core::ptr::from_ref(&self.off).cast::<u8>();
       let target = base.addr().wrapping_add_signed(self.off.get() as isize);
-      &*std::ptr::with_exposed_provenance::<T>(target)
+      &*core::ptr::with_exposed_provenance::<T>(target)
     }
   }
 }

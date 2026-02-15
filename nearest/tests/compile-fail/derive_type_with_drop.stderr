@@ -1,4 +1,4 @@
-error[E0080]: evaluation panicked: assertion failed: !std::mem::needs_drop::<Bad>()
+error[E0080]: evaluation panicked: assertion failed: !::core::mem::needs_drop::<Bad>()
  --> tests/compile-fail/derive_type_with_drop.rs:5:10
   |
 5 | #[derive(Flat)]

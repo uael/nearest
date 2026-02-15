@@ -1,5 +1,6 @@
 use crate::{
   Flat, Region,
+  buf::Buf,
   emitter::{Emitter, Pos},
 };
 
@@ -82,7 +83,7 @@ pub trait Patch {
   fn reserve(&mut self, additional: u32);
 }
 
-impl<R: Flat> Patch for Emitter<R> {
+impl<R: Flat, B: Buf> Patch for Emitter<R, B> {
   fn alloc<T: Flat>(&mut self) -> Pos {
     self.reserve::<T>()
   }
@@ -116,8 +117,8 @@ impl<R: Flat> Patch for Emitter<R> {
     // SAFETY: Bounds checked above. The `next` field is at offset 0 of
     // `Segment<T>`, and we write exactly `size_of::<i32>()` bytes.
     unsafe {
-      std::ptr::copy_nonoverlapping(
-        std::ptr::from_ref(&rel_i32).cast::<u8>(),
+      core::ptr::copy_nonoverlapping(
+        core::ptr::from_ref(&rel_i32).cast::<u8>(),
         self.buf_mut_ptr().add(start),
         size_of::<i32>(),
       );
@@ -137,7 +138,7 @@ impl<R: Flat> Patch for Emitter<R> {
   }
 }
 
-impl<R: Flat> Patch for Region<R> {
+impl<R: Flat, B: Buf> Patch for Region<R, B> {
   fn alloc<T: Flat>(&mut self) -> Pos {
     self.alloc_internal::<T>()
   }

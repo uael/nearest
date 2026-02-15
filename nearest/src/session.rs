@@ -1,6 +1,6 @@
-use std::{hash::Hash, marker::PhantomData};
+use core::{hash::Hash, marker::PhantomData};
 
-use crate::{Emit, Flat, Near, NearList, Patch, Region, emitter::Pos, list::Segment};
+use crate::{Emit, Flat, Near, NearList, Patch, Region, buf::Buf, emitter::Pos, list::Segment};
 
 /// Invariant phantom lifetime brand. Zero-sized.
 ///
@@ -64,7 +64,7 @@ impl<T: Flat> PartialEq for Ref<'_, T> {
 impl<T: Flat> Eq for Ref<'_, T> {}
 
 impl<T: Flat> Hash for Ref<'_, T> {
-  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+  fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
     self.pos.0.hash(state);
   }
 }
@@ -99,7 +99,7 @@ unsafe impl<T: Flat> Emit<T> for Ref<'_, T> {
     // that Stacked Borrows would reject.
     unsafe {
       let addr = p.raw_ptr().add(self.pos.0 as usize).addr();
-      let val = &*std::ptr::with_exposed_provenance::<T>(addr);
+      let val = &*core::ptr::with_exposed_provenance::<T>(addr);
       Emit::<T>::write_at(val, p, at);
     }
   }
@@ -161,15 +161,23 @@ impl<U: Flat> Clone for ListTail<'_, U> {
 /// [`re_splice_list`]: Self::re_splice_list
 /// [`map_list`]: Self::map_list
 /// [`filter_list`]: Self::filter_list
-/// [`with_exposed_provenance`]: std::ptr::with_exposed_provenance
-pub struct Session<'id, 'a, Root: Flat> {
-  region: &'a mut Region<Root>,
+/// [`with_exposed_provenance`]: core::ptr::with_exposed_provenance
+#[cfg(feature = "alloc")]
+pub struct Session<'id, 'a, Root: Flat, B: Buf = crate::buf::AlignedBuf<Root>> {
+  region: &'a mut Region<Root, B>,
   brand: Brand<'id>,
 }
 
-impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
+/// See the `#[cfg(feature = "alloc")]` variant above for full documentation.
+#[cfg(not(feature = "alloc"))]
+pub struct Session<'id, 'a, Root: Flat, B: Buf> {
+  region: &'a mut Region<Root, B>,
+  brand: Brand<'id>,
+}
+
+impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// Create a session (called by `Region::session`).
-  pub(crate) const fn new(region: &'a mut Region<Root>, brand: Brand<'id>) -> Self {
+  pub(crate) const fn new(region: &'a mut Region<Root, B>, brand: Brand<'id>) -> Self {
     Self { region, brand }
   }
 
@@ -261,7 +269,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   pub fn nav<T: Flat, U: Flat>(&self, r: Ref<'id, T>, f: impl FnOnce(&T) -> &U) -> Ref<'id, U> {
     let base = self.region.deref_raw() as usize;
     let val = self.at(r);
-    let field_ptr = std::ptr::from_ref::<U>(f(val)) as usize;
+    let field_ptr = core::ptr::from_ref::<U>(f(val)) as usize;
     let offset =
       field_ptr.checked_sub(base).expect("navigated field is not within this region's buffer");
     assert!(offset + size_of::<U>() <= self.region.byte_len(), "navigated field out of bounds");
@@ -293,7 +301,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   pub fn follow<U: Flat>(&self, r: Ref<'id, Near<U>>) -> Ref<'id, U> {
     let base = self.region.deref_raw() as usize;
     let near = self.at(r);
-    let target_ptr = std::ptr::from_ref::<U>(near.get()) as usize;
+    let target_ptr = core::ptr::from_ref::<U>(near.get()) as usize;
     let offset = target_ptr.checked_sub(base).expect("Near target outside region");
     Ref::new(Pos(offset as u32), self.brand)
   }
@@ -326,7 +334,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   #[must_use]
   pub fn ref_of<U: Flat>(&self, val: &U) -> Ref<'id, U> {
     let base = self.region.deref_raw() as usize;
-    let ptr = std::ptr::from_ref(val) as usize;
+    let ptr = core::ptr::from_ref(val) as usize;
     let offset = ptr.checked_sub(base).expect("ref_of: value not within region");
     assert!(offset + size_of::<U>() <= self.region.byte_len(), "ref_of: value out of bounds");
     Ref::new(Pos(offset as u32), self.brand)
@@ -430,9 +438,9 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   /// });
   /// assert_eq!(region.items.len(), 0);
   /// ```
-  pub fn splice_list<U: Flat, B: Emit<U>, I>(&mut self, r: Ref<'id, NearList<U>>, items: I)
+  pub fn splice_list<U: Flat, E: Emit<U>, I>(&mut self, r: Ref<'id, NearList<U>>, items: I)
   where
-    I: IntoIterator<Item = B>,
+    I: IntoIterator<Item = E>,
     I::IntoIter: ExactSizeIterator,
   {
     let list_pos = r.pos;
@@ -469,8 +477,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   /// Capacity is pre-reserved so the buffer does not reallocate during the
   /// deep-copy writes. Reads use [`with_exposed_provenance`] to recover a `&U`
   /// that is *not* derived from `&mut Region`, avoiding a Stacked Borrows
-  /// violation. Writes target freshly allocated positions that do not overlap
-  /// with the read sources.
+  /// violation.
   ///
   /// # Examples
   ///
@@ -496,7 +503,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   /// assert_eq!(region.items[2], 1);
   /// ```
   ///
-  /// [`with_exposed_provenance`]: std::ptr::with_exposed_provenance
+  /// [`with_exposed_provenance`]: core::ptr::with_exposed_provenance
   pub fn re_splice_list<U: Flat>(&mut self, r: Ref<'id, NearList<U>>, refs: &[Ref<'id, U>]) {
     let list_pos = r.pos;
     let count = refs.len();
@@ -523,7 +530,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
       // `&U` / `&mut Region` pair that Stacked Borrows would reject.
       unsafe {
         let addr = self.region.deref_raw().add(item_ref.pos.0 as usize).addr();
-        let val = &*std::ptr::with_exposed_provenance::<U>(addr);
+        let val = &*core::ptr::with_exposed_provenance::<U>(addr);
         Emit::<U>::write_at(val, self.region, val_pos);
       }
     }
@@ -560,6 +567,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   /// assert_eq!(region.items[1], 20);
   /// assert_eq!(region.items[2], 30);
   /// ```
+  #[cfg(feature = "alloc")]
   pub fn map_list<U: Flat + Copy>(&mut self, r: Ref<'id, NearList<U>>, mut f: impl FnMut(U) -> U) {
     let list_pos = r.pos;
     let list: &NearList<U> = self.at(r);
@@ -572,9 +580,9 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
 
     // Collect element positions before any mutation.
     let base = self.region.deref_raw() as usize;
-    let mut positions: Vec<u32> = Vec::with_capacity(count);
+    let mut positions: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(count);
     for elem in list {
-      let offset = (std::ptr::from_ref(elem) as usize) - base;
+      let offset = (core::ptr::from_ref(elem) as usize) - base;
       positions.push(offset as u32);
     }
 
@@ -590,7 +598,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
       // `self.region` — avoiding Stacked Borrows violation.
       let mapped = unsafe {
         let addr = self.region.deref_raw().add(pos as usize).addr();
-        let val = std::ptr::with_exposed_provenance::<U>(addr).read();
+        let val = core::ptr::with_exposed_provenance::<U>(addr).read();
         f(val)
       };
       let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
@@ -719,7 +727,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
           loop {
             // SAFETY: `seg_abs` points to a valid `Segment<U>` in the region
             // buffer. The `next` field at offset 0 is an `i32`.
-            let next_rel = unsafe { std::ptr::read_unaligned(base.add(seg_abs).cast::<i32>()) };
+            let next_rel = unsafe { core::ptr::read_unaligned(base.add(seg_abs).cast::<i32>()) };
             if next_rel == 0 {
               break;
             }
@@ -763,9 +771,9 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   /// assert_eq!(region.items[2], 3);
   /// assert_eq!(region.items[3], 4);
   /// ```
-  pub fn extend_list<U: Flat, B: Emit<U>, I>(&mut self, r: Ref<'id, NearList<U>>, extra: I)
+  pub fn extend_list<U: Flat, E: Emit<U>, I>(&mut self, r: Ref<'id, NearList<U>>, extra: I)
   where
-    I: IntoIterator<Item = B>,
+    I: IntoIterator<Item = E>,
     I::IntoIter: ExactSizeIterator,
   {
     // Read header before any mutation.
@@ -783,7 +791,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
       loop {
         // SAFETY: `seg_abs` points to a valid `Segment<U>` in the region
         // buffer. The `next` field at offset 0 is an `i32`.
-        let next_rel = unsafe { std::ptr::read_unaligned(base.add(seg_abs).cast::<i32>()) };
+        let next_rel = unsafe { core::ptr::read_unaligned(base.add(seg_abs).cast::<i32>()) };
         if next_rel == 0 {
           break;
         }
@@ -849,7 +857,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   /// });
   /// ```
   #[must_use]
-  pub fn graft<U: Flat>(&mut self, src: &Region<U>) -> Ref<'id, U> {
+  pub fn graft<U: Flat, B2: Buf>(&mut self, src: &Region<U, B2>) -> Ref<'id, U> {
     let pos = self.region.graft_internal(src);
     Ref::new(pos, self.brand)
   }
@@ -877,17 +885,18 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   ///   assert_eq!(*s.at(refs[2]), 30);
   /// });
   /// ```
+  #[cfg(feature = "alloc")]
   #[must_use]
-  pub fn list_refs<T: Flat>(&self, list: Ref<'id, NearList<T>>) -> Vec<Ref<'id, T>> {
+  pub fn list_refs<T: Flat>(&self, list: Ref<'id, NearList<T>>) -> alloc::vec::Vec<Ref<'id, T>> {
     let nl = self.at(list);
     let len = nl.len();
     if len == 0 {
-      return Vec::new();
+      return alloc::vec::Vec::new();
     }
     let base = self.region.deref_raw() as usize;
-    let mut refs = Vec::with_capacity(len);
+    let mut refs = alloc::vec::Vec::with_capacity(len);
     for elem in nl {
-      let offset = (std::ptr::from_ref(elem) as usize) - base;
+      let offset = (core::ptr::from_ref(elem) as usize) - base;
       refs.push(Ref::new(Pos(offset as u32), self.brand));
     }
     refs
@@ -922,6 +931,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   /// assert_eq!(region.items[0], 2);
   /// assert_eq!(region.items[1], 4);
   /// ```
+  #[cfg(feature = "alloc")]
   pub fn filter_list<U: Flat>(
     &mut self,
     r: Ref<'id, NearList<U>>,
@@ -936,10 +946,10 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
 
     // Collect byte positions of elements that match the predicate.
     let base = self.region.deref_raw() as usize;
-    let mut positions: Vec<u32> = Vec::with_capacity(count);
+    let mut positions: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(count);
     for elem in list {
       if pred(elem) {
-        let offset = (std::ptr::from_ref(elem) as usize) - base;
+        let offset = (core::ptr::from_ref(elem) as usize) - base;
         positions.push(offset as u32);
       }
     }
@@ -971,7 +981,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
       // `self.region` — avoiding Stacked Borrows violation.
       unsafe {
         let addr = self.region.deref_raw().add(pos as usize).addr();
-        let val = &*std::ptr::with_exposed_provenance::<U>(addr);
+        let val = &*core::ptr::with_exposed_provenance::<U>(addr);
         Emit::<U>::write_at(val, self.region, val_pos);
       }
     }
@@ -1027,7 +1037,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   /// assert_eq!(region.id, 99);
   /// ```
   #[must_use]
-  pub const fn cursor<'s>(&'s mut self) -> Cursor<'id, 's, 'a, Root, Root> {
+  pub const fn cursor<'s>(&'s mut self) -> Cursor<'id, 's, 'a, Root, Root, B> {
     let r = self.root();
     Cursor { session: self, r }
   }
@@ -1054,7 +1064,7 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
   pub const fn cursor_at<'s, T: Flat>(
     &'s mut self,
     r: Ref<'id, T>,
-  ) -> Cursor<'id, 's, 'a, T, Root> {
+  ) -> Cursor<'id, 's, 'a, T, Root, B> {
     Cursor { session: self, r }
   }
 }
@@ -1086,15 +1096,15 @@ impl<'id, 'a, Root: Flat> Session<'id, 'a, Root> {
 ///
 /// assert_eq!(region.inner.get().value, 42);
 /// ```
-pub struct Cursor<'id, 's, 'a, T: Flat, Root: Flat> {
-  session: &'s mut Session<'id, 'a, Root>,
+pub struct Cursor<'id, 's, 'a, T: Flat, Root: Flat, B: Buf> {
+  session: &'s mut Session<'id, 'a, Root, B>,
   r: Ref<'id, T>,
 }
 
-impl<'id, 's, 'a, T: Flat, Root: Flat> Cursor<'id, 's, 'a, T, Root> {
+impl<'id, 's, 'a, T: Flat, Root: Flat, B: Buf> Cursor<'id, 's, 'a, T, Root, B> {
   /// Navigate to a sub-field.
   #[must_use]
-  pub fn at<U: Flat>(self, f: impl FnOnce(&T) -> &U) -> Cursor<'id, 's, 'a, U, Root> {
+  pub fn at<U: Flat>(self, f: impl FnOnce(&T) -> &U) -> Cursor<'id, 's, 'a, U, Root, B> {
     let r = self.session.nav(self.r, f);
     Cursor { session: self.session, r }
   }
@@ -1112,14 +1122,14 @@ impl<'id, 's, 'a, T: Flat, Root: Flat> Cursor<'id, 's, 'a, T, Root> {
   }
 }
 
-impl<T: Flat + Copy, Root: Flat> Cursor<'_, '_, '_, T, Root> {
+impl<T: Flat + Copy, Root: Flat, B: Buf> Cursor<'_, '_, '_, T, Root, B> {
   /// Overwrite the value at this cursor's position.
   pub fn set(self, val: T) {
     self.session.set(self.r, val);
   }
 }
 
-impl<T: Flat, Root: Flat> Cursor<'_, '_, '_, T, Root> {
+impl<T: Flat, Root: Flat, B: Buf> Cursor<'_, '_, '_, T, Root, B> {
   /// Overwrite the value at this cursor's position using a builder.
   pub fn write_with(self, builder: impl Emit<T>) {
     self.session.write(self.r, builder);
@@ -1128,7 +1138,7 @@ impl<T: Flat, Root: Flat> Cursor<'_, '_, '_, T, Root> {
 
 // --- Near<U>: splice, follow ---
 
-impl<'id, 's, 'a, U: Flat, Root: Flat> Cursor<'id, 's, 'a, Near<U>, Root> {
+impl<'id, 's, 'a, U: Flat, Root: Flat, B: Buf> Cursor<'id, 's, 'a, Near<U>, Root, B> {
   /// Replace the target of this [`Near<U>`] pointer with freshly emitted data.
   pub fn splice(self, builder: impl Emit<U>) {
     self.session.splice(self.r, builder);
@@ -1136,7 +1146,7 @@ impl<'id, 's, 'a, U: Flat, Root: Flat> Cursor<'id, 's, 'a, Near<U>, Root> {
 
   /// Follow the [`Near`] pointer, returning a cursor at the target.
   #[must_use]
-  pub fn follow(self) -> Cursor<'id, 's, 'a, U, Root> {
+  pub fn follow(self) -> Cursor<'id, 's, 'a, U, Root, B> {
     let r = self.session.follow(self.r);
     Cursor { session: self.session, r }
   }
@@ -1144,17 +1154,18 @@ impl<'id, 's, 'a, U: Flat, Root: Flat> Cursor<'id, 's, 'a, Near<U>, Root> {
 
 // --- NearList<U>: splice_list, push_front ---
 
-impl<U: Flat, Root: Flat> Cursor<'_, '_, '_, NearList<U>, Root> {
+impl<U: Flat, Root: Flat, B: Buf> Cursor<'_, '_, '_, NearList<U>, Root, B> {
   /// Replace the elements of this [`NearList<U>`].
-  pub fn splice_list<B: Emit<U>, I>(self, items: I)
+  pub fn splice_list<E: Emit<U>, I>(self, items: I)
   where
-    I: IntoIterator<Item = B>,
+    I: IntoIterator<Item = E>,
     I::IntoIter: ExactSizeIterator,
   {
     self.session.splice_list(self.r, items);
   }
 
   /// Remove elements that do not satisfy a predicate.
+  #[cfg(feature = "alloc")]
   pub fn filter_list(self, pred: impl FnMut(&U) -> bool) {
     self.session.filter_list(self.r, pred);
   }

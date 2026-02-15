@@ -1,6 +1,6 @@
-use std::{mem, num::NonZero};
+use core::{mem, num::NonZero};
 
-use crate::{Flat, Region, buf::AlignedBuf};
+use crate::{Flat, buf::Buf};
 
 #[doc(hidden)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -17,7 +17,7 @@ impl Pos {
   }
 }
 
-/// Builder for a [`Region<T>`].
+/// Builder for a [`Region<T>`](crate::Region).
 ///
 /// Values are appended to an internal byte buffer. Self-relative pointers
 /// ([`Near`](crate::Near)/[`NearList`](crate::NearList)) are written in a
@@ -25,32 +25,44 @@ impl Pos {
 /// pointer, then call [`patch_near`](Self::patch_near) /
 /// [`patch_list_header`](Self::patch_list_header) once the target position is known.
 ///
-/// Consumed by [`Emitter::finish`] to produce an immutable [`Region<T>`].
+/// Consumed by [`Emitter::finish`] to produce an immutable [`Region<T>`](crate::Region).
 /// The emitter is also used internally by [`Region::trim`](crate::Region::trim)
 /// for deep-copy compaction.
-pub struct Emitter<T: Flat> {
-  buf: AlignedBuf<T>,
+#[cfg(feature = "alloc")]
+pub struct Emitter<T: Flat, B: Buf = crate::buf::AlignedBuf<T>> {
+  buf: B,
+  _type: core::marker::PhantomData<T>,
 }
 
-impl<T: Flat> Emitter<T> {
+#[cfg(not(feature = "alloc"))]
+pub struct Emitter<T: Flat, B: Buf> {
+  buf: B,
+  _type: core::marker::PhantomData<T>,
+}
+
+impl<T: Flat, B: Buf> Emitter<T, B> {
   /// Create an empty emitter.
   #[doc(hidden)]
   #[must_use]
-  pub const fn new() -> Self {
-    Self { buf: AlignedBuf::new() }
+  pub fn new() -> Self {
+    Self { buf: B::empty(), _type: core::marker::PhantomData }
   }
 
   /// Create an emitter pre-allocated to hold at least `capacity` bytes.
   #[doc(hidden)]
   #[must_use]
   pub fn with_capacity(capacity: u32) -> Self {
-    Self { buf: AlignedBuf::with_capacity(capacity) }
+    let mut em = Self::new();
+    if capacity > 0 {
+      em.buf.reserve(capacity);
+    }
+    em
   }
 
   /// Current write-cursor position.
   #[doc(hidden)]
   #[must_use]
-  pub const fn pos(&self) -> Pos {
+  pub fn pos(&self) -> Pos {
     Pos(self.buf.len())
   }
 
@@ -79,8 +91,8 @@ impl<T: Flat> Emitter<T> {
     // `reserve::<U>()` which ensures correct alignment. The source pointer is
     // valid for `size` bytes, and `mem::forget` prevents double-drop.
     unsafe {
-      let src = std::ptr::from_ref(&val).cast::<u8>();
-      std::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), size);
+      let src = core::ptr::from_ref(&val).cast::<u8>();
+      core::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), size);
     }
     mem::forget(val);
   }
@@ -104,8 +116,8 @@ impl<T: Flat> Emitter<T> {
     // SAFETY: Bounds checked above. `at` points to an allocated `Near<U>` field
     // whose first 4 bytes are the `NonZero<i32>` offset.
     unsafe {
-      let src = std::ptr::from_ref(&nz).cast::<u8>();
-      std::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), size);
+      let src = core::ptr::from_ref(&nz).cast::<u8>();
+      core::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), size);
     }
   }
 
@@ -126,7 +138,7 @@ impl<T: Flat> Emitter<T> {
     // SAFETY: Bounds checked above. `src` is valid for `len` bytes (caller
     // contract). The destination range does not overlap with the source.
     unsafe {
-      std::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), len);
+      core::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), len);
     }
   }
 
@@ -157,34 +169,34 @@ impl<T: Flat> Emitter<T> {
     // `[i32 offset, u32 len]`, and both writes are within bounds.
     unsafe {
       let buf_ptr = self.buf.as_mut_ptr();
-      std::ptr::copy_nonoverlapping(
-        std::ptr::from_ref(&rel).cast::<u8>(),
+      core::ptr::copy_nonoverlapping(
+        core::ptr::from_ref(&rel).cast::<u8>(),
         buf_ptr.add(off_field_pos),
         mem::size_of::<i32>(),
       );
-      std::ptr::copy_nonoverlapping(
-        std::ptr::from_ref(&len).cast::<u8>(),
+      core::ptr::copy_nonoverlapping(
+        core::ptr::from_ref(&len).cast::<u8>(),
         buf_ptr.add(len_field_pos),
         mem::size_of::<u32>(),
       );
     }
   }
 
-  /// Consume the emitter and produce an aligned [`Region<T>`].
+  /// Consume the emitter and produce an aligned [`Region<T>`](crate::Region).
   ///
-  /// Zero-copy: moves the `AlignedBuf` directly into the `Region`.
+  /// Zero-copy: moves the buffer directly into the `Region`.
   #[doc(hidden)]
-  pub fn finish(self) -> Region<T> {
-    Region::from_buf(self.buf)
+  pub fn finish(self) -> crate::Region<T, B> {
+    crate::Region::from_buf(self.buf)
   }
 
   /// Mutable pointer to buffer start (for Patch impls).
-  pub(crate) const fn buf_mut_ptr(&self) -> *mut u8 {
+  pub(crate) fn buf_mut_ptr(&mut self) -> *mut u8 {
     self.buf.as_mut_ptr()
   }
 
   /// Const pointer to buffer start.
-  pub(crate) const fn buf_ptr(&self) -> *const u8 {
+  pub(crate) fn buf_ptr(&self) -> *const u8 {
     self.buf.as_ptr()
   }
 
@@ -212,8 +224,8 @@ impl<T: Flat> Emitter<T> {
     // SAFETY: `resize` just allocated `total` bytes starting at `pos`.
     // The `len` field is at `pos + 4`, within the freshly allocated region.
     unsafe {
-      std::ptr::copy_nonoverlapping(
-        std::ptr::from_ref(&count).cast::<u8>(),
+      core::ptr::copy_nonoverlapping(
+        core::ptr::from_ref(&count).cast::<u8>(),
         self.buf.as_mut_ptr().add(len_offset),
         size_of::<u32>(),
       );
@@ -221,13 +233,13 @@ impl<T: Flat> Emitter<T> {
     pos
   }
 
-  /// Extract the underlying buffer (used by [`Region::trim`]).
-  pub(crate) fn into_buf(self) -> AlignedBuf<T> {
+  /// Extract the underlying buffer (used by [`Region::trim`](crate::Region::trim)).
+  pub(crate) fn into_buf(self) -> B {
     self.buf
   }
 }
 
-impl<T: Flat> Default for Emitter<T> {
+impl<T: Flat, B: Buf> Default for Emitter<T, B> {
   fn default() -> Self {
     Self::new()
   }

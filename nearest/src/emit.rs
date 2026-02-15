@@ -1,4 +1,4 @@
-use std::{convert::Infallible, mem::size_of};
+use core::{convert::Infallible, mem::size_of};
 
 use crate::{Flat, Patch, emitter::Pos};
 
@@ -70,8 +70,8 @@ unsafe impl<A: Flat, B: Flat, BA: Emit<A>, BB: Emit<B>> Emit<(A, B)> for (BA, BB
     // SAFETY: caller guarantees `at` was allocated for `(A, B)`.
     // The offsets are computed by `offset_of!` so the sub-positions are valid.
     unsafe {
-      self.0.write_at(p, at.offset(std::mem::offset_of!((A, B), 0)));
-      self.1.write_at(p, at.offset(std::mem::offset_of!((A, B), 1)));
+      self.0.write_at(p, at.offset(core::mem::offset_of!((A, B), 0)));
+      self.1.write_at(p, at.offset(core::mem::offset_of!((A, B), 1)));
     }
   }
 }

@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use core::convert::Infallible;
 
 use crate::{Patch, emitter::Pos};
 
@@ -72,8 +72,8 @@ unsafe impl<A: Flat, B: Flat> Flat for (A, B) {
     // SAFETY: Caller guarantees `at` was allocated for `(A, B)`.
     // Sub-positions are computed by `offset_of!` so they are valid.
     unsafe {
-      self.0.deep_copy(p, at.offset(std::mem::offset_of!((A, B), 0)));
-      self.1.deep_copy(p, at.offset(std::mem::offset_of!((A, B), 1)));
+      self.0.deep_copy(p, at.offset(core::mem::offset_of!((A, B), 0)));
+      self.1.deep_copy(p, at.offset(core::mem::offset_of!((A, B), 1)));
     }
   }
 }
@@ -99,13 +99,13 @@ unsafe impl<T: Flat> Flat for Option<T> {
     // SAFETY: Caller guarantees `at` was allocated for `Option<T>`.
     // Byte-copy the full Option<T> (handles discriminant/niche layout).
     unsafe {
-      p.write_bytes(at, std::ptr::from_ref(self).cast(), size_of::<Self>());
+      p.write_bytes(at, core::ptr::from_ref(self).cast(), size_of::<Self>());
     }
     // Step 2: For Some, deep-copy the inner T to fix up self-relative pointers.
     // The inner offset is computed at runtime via pointer subtraction, which
     // correctly handles any niche-optimized layout.
     if let Some(val) = self {
-      let inner_offset = (std::ptr::from_ref(val) as usize) - (std::ptr::from_ref(self) as usize);
+      let inner_offset = (core::ptr::from_ref(val) as usize) - (core::ptr::from_ref(self) as usize);
       // SAFETY: `at` was allocated for `Option<T>` and `inner_offset`
       // is the runtime-computed offset of the `Some` payload.
       unsafe { val.deep_copy(p, at.offset(inner_offset)) };

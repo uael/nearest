@@ -201,13 +201,13 @@ fn builder_generics(
   let phantom_field = if outer_type_idents.is_empty() {
     quote! {}
   } else {
-    quote! { _phantom: std::marker::PhantomData<fn() -> (#(#outer_type_idents,)*)>, }
+    quote! { _phantom: ::core::marker::PhantomData<fn() -> (#(#outer_type_idents,)*)>, }
   };
 
   let phantom_init = if outer_type_idents.is_empty() {
     quote! {}
   } else {
-    quote! { _phantom: std::marker::PhantomData, }
+    quote! { _phantom: ::core::marker::PhantomData, }
   };
 
   let mut all_preds: Vec<TokenStream> = input_generics
@@ -249,7 +249,7 @@ fn gen_emit_struct(input: &DeriveInput, data: &DataStruct) -> TokenStream {
         let field_ty = &f.ty;
         let param_name = format_ident!("__{}", capitalize(&field_name.to_string()));
         let value_expr = quote! { self.#field_name };
-        let offset_expr = quote! { std::mem::offset_of!(#name #ty_generics, #field_name) };
+        let offset_expr = quote! { ::core::mem::offset_of!(#name #ty_generics, #field_name) };
         let info = analyze_field(&value_expr, field_ty, &param_name, &offset_expr);
 
         let fn_pt = &info.fn_param_type;
@@ -318,7 +318,7 @@ fn gen_emit_struct(input: &DeriveInput, data: &DataStruct) -> TokenStream {
         let param_name = format_ident!("__F{}", i);
         let idx = syn::Index::from(i);
         let value_expr = quote! { self.#field_ident };
-        let offset_expr = quote! { std::mem::offset_of!(#name #ty_generics, #idx) };
+        let offset_expr = quote! { ::core::mem::offset_of!(#name #ty_generics, #idx) };
         let info = analyze_field(&value_expr, field_ty, &param_name, &offset_expr);
 
         let fn_pt = &info.fn_param_type;
@@ -431,7 +431,7 @@ fn gen_variant_emitter(
         let param_name = format_ident!("__{}", capitalize(&field_name.to_string()));
         let value_expr = quote! { self.#field_name };
         let offset_expr =
-          quote! { std::mem::offset_of!(#enum_name #ty_generics, #vname.#field_name) };
+          quote! { ::core::mem::offset_of!(#enum_name #ty_generics, #vname.#field_name) };
         let info = analyze_field(&value_expr, field_ty, &param_name, &offset_expr);
 
         let fn_pt = &info.fn_param_type;
@@ -499,7 +499,7 @@ fn gen_variant_emitter(
         let param_name = format_ident!("__F{}", i);
         let idx = syn::Index::from(i);
         let value_expr = quote! { self.#field_ident };
-        let offset_expr = quote! { std::mem::offset_of!(#enum_name #ty_generics, #vname.#idx) };
+        let offset_expr = quote! { ::core::mem::offset_of!(#enum_name #ty_generics, #vname.#idx) };
         let info = analyze_field(&value_expr, field_ty, &param_name, &offset_expr);
 
         let fn_pt = &info.fn_param_type;
@@ -610,7 +610,7 @@ fn gen_near_list_write_at(
           unsafe {
             nearest_item.write_at(
               nearest_p,
-              nearest_seg_pos.offset(nearest_values_offset + nearest_i * std::mem::size_of::<#inner>()),
+              nearest_seg_pos.offset(nearest_values_offset + nearest_i * ::core::mem::size_of::<#inner>()),
             );
           }
         }

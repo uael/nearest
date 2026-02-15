@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData};
+use core::{fmt, marker::PhantomData};
 
 use crate::{Flat, Patch, emitter::Pos};
 
@@ -59,7 +59,7 @@ unsafe impl<T> Flat for NearList<T> {
     // Byte-copy the 8-byte header (head offset + len). Containing struct's
     // deep_copy handles walking and deep-copying list elements.
     unsafe {
-      p.write_bytes(at, std::ptr::from_ref(self).cast(), size_of::<Self>());
+      p.write_bytes(at, core::ptr::from_ref(self).cast(), size_of::<Self>());
     }
   }
 }
@@ -168,15 +168,15 @@ impl<T: Flat> NearList<T> {
     }
     let mut count = 1usize;
     let mut seg_addr =
-      std::ptr::from_ref(&self.head).cast::<u8>().addr().wrapping_add_signed(self.head as isize);
+      core::ptr::from_ref(&self.head).cast::<u8>().addr().wrapping_add_signed(self.head as isize);
     loop {
       // SAFETY: seg_addr points to a valid Segment<T> in the region buffer.
-      let seg = unsafe { &*std::ptr::with_exposed_provenance::<Segment<T>>(seg_addr) };
+      let seg = unsafe { &*core::ptr::with_exposed_provenance::<Segment<T>>(seg_addr) };
       if seg.next == 0 {
         break;
       }
       seg_addr =
-        std::ptr::from_ref(&seg.next).cast::<u8>().addr().wrapping_add_signed(seg.next as isize);
+        core::ptr::from_ref(&seg.next).cast::<u8>().addr().wrapping_add_signed(seg.next as isize);
       count += 1;
     }
     count
@@ -207,9 +207,9 @@ impl<T: Flat> NearList<T> {
     // The first value is at seg_addr + size_of::<Segment<T>>().
     unsafe {
       let addr =
-        std::ptr::from_ref(&self.head).cast::<u8>().addr().wrapping_add_signed(self.head as isize);
+        core::ptr::from_ref(&self.head).cast::<u8>().addr().wrapping_add_signed(self.head as isize);
       let val_ptr =
-        std::ptr::with_exposed_provenance::<T>(addr.wrapping_add(size_of::<Segment<T>>()));
+        core::ptr::with_exposed_provenance::<T>(addr.wrapping_add(size_of::<Segment<T>>()));
       Some(&*val_ptr)
     }
   }
@@ -244,22 +244,22 @@ impl<T: Flat> NearList<T> {
   pub fn iter(&self) -> NearListIter<'_, T> {
     if self.len == 0 {
       return NearListIter {
-        current_value: std::ptr::null(),
+        current_value: core::ptr::null(),
         remaining_in_seg: 0,
-        current_seg: std::ptr::null(),
+        current_seg: core::ptr::null(),
         remaining_total: 0,
         _type: PhantomData,
       };
     }
     // SAFETY: head offset was written by the emitter, pointing to a valid Segment<T>.
     let seg_addr =
-      std::ptr::from_ref(&self.head).cast::<u8>().addr().wrapping_add_signed(self.head as isize);
-    let seg_ptr = std::ptr::with_exposed_provenance::<Segment<T>>(seg_addr);
+      core::ptr::from_ref(&self.head).cast::<u8>().addr().wrapping_add_signed(self.head as isize);
+    let seg_ptr = core::ptr::with_exposed_provenance::<Segment<T>>(seg_addr);
     // SAFETY: `seg_ptr` points to a valid `Segment<T>` in the region buffer,
     // reached via the head offset written by the emitter.
     let seg = unsafe { &*seg_ptr };
     let val_ptr =
-      std::ptr::with_exposed_provenance::<T>(seg_addr.wrapping_add(size_of::<Segment<T>>()));
+      core::ptr::with_exposed_provenance::<T>(seg_addr.wrapping_add(size_of::<Segment<T>>()));
     NearListIter {
       current_value: val_ptr,
       remaining_in_seg: seg.len,
@@ -296,12 +296,12 @@ impl<'a, T: Flat> Iterator for NearListIter<'a, T> {
       unsafe {
         let seg = &*self.current_seg;
         let next_addr =
-          std::ptr::from_ref(&seg.next).cast::<u8>().addr().wrapping_add_signed(seg.next as isize);
-        self.current_seg = std::ptr::with_exposed_provenance::<Segment<T>>(next_addr);
+          core::ptr::from_ref(&seg.next).cast::<u8>().addr().wrapping_add_signed(seg.next as isize);
+        self.current_seg = core::ptr::with_exposed_provenance::<Segment<T>>(next_addr);
         let new_seg = &*self.current_seg;
         self.remaining_in_seg = new_seg.len;
         self.current_value =
-          std::ptr::with_exposed_provenance::<T>(next_addr.wrapping_add(size_of::<Segment<T>>()));
+          core::ptr::with_exposed_provenance::<T>(next_addr.wrapping_add(size_of::<Segment<T>>()));
       }
     }
 
@@ -367,13 +367,13 @@ impl<T: Flat> NearList<T> {
     // SAFETY: head offset was written by the emitter, pointing to a valid Segment<T>.
     unsafe {
       let seg_addr =
-        std::ptr::from_ref(&self.head).cast::<u8>().addr().wrapping_add_signed(self.head as isize);
-      let seg = &*std::ptr::with_exposed_provenance::<Segment<T>>(seg_addr);
+        core::ptr::from_ref(&self.head).cast::<u8>().addr().wrapping_add_signed(self.head as isize);
+      let seg = &*core::ptr::with_exposed_provenance::<Segment<T>>(seg_addr);
       // Fast path: all elements in first segment (always true after trim).
       if (seg.len as usize) > index {
         let val_addr =
           seg_addr.wrapping_add(size_of::<Segment<T>>()).wrapping_add(index * size_of::<T>());
-        return Some(&*std::ptr::with_exposed_provenance::<T>(val_addr));
+        return Some(&*core::ptr::with_exposed_provenance::<T>(val_addr));
       }
     }
     // Slow path: multi-segment walk.
@@ -381,7 +381,7 @@ impl<T: Flat> NearList<T> {
   }
 }
 
-impl<T: Flat> std::ops::Index<usize> for NearList<T> {
+impl<T: Flat> core::ops::Index<usize> for NearList<T> {
   type Output = T;
 
   /// Access the element at `index`.

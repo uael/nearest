@@ -317,8 +317,12 @@
 //! This crate requires **nightly** Rust (pinned to `nightly-2026-02-10`)
 //! due to [`offset_of_enum`](https://github.com/rust-lang/rust/issues/120141).
 
+#![no_std]
 #![feature(offset_of_enum)]
 #![deny(missing_docs)]
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 mod buf;
 mod emit;
@@ -336,6 +340,9 @@ mod region;
 /// with **zero runtime cost** — `Ref` is just a `u32` position + phantom brand.
 pub mod session;
 
+#[cfg(feature = "alloc")]
+pub use buf::AlignedBuf;
+pub use buf::{Buf, FixedBuf};
 pub use emit::Emit;
 
 /// Not part of the public API. Used by the derive macro.
@@ -349,7 +356,7 @@ pub mod __private {
   /// compute value positions without exposing `Segment` publicly.
   #[must_use]
   pub const fn segment_values_offset<T>() -> usize {
-    std::mem::size_of::<crate::list::Segment<T>>()
+    core::mem::size_of::<crate::list::Segment<T>>()
   }
 }
 pub use flat::Flat;
@@ -362,7 +369,7 @@ pub use session::{ListTail, Ref, Session};
 
 /// Returns an empty iterator suitable for any `NearList<T>` emitter parameter.
 ///
-/// Since [`Infallible`](std::convert::Infallible) implements [`Emit<T>`] for all
+/// Since [`Infallible`](core::convert::Infallible) implements [`Emit<T>`] for all
 /// `T: Flat`, an `Empty<Infallible>` satisfies any `IntoIterator<Item: Emit<T>>` bound.
 ///
 /// # Examples
@@ -377,6 +384,6 @@ pub use session::{ListTail, Ref, Session};
 /// let region = Region::new(Root::make(empty()));
 /// assert!(region.items.is_empty());
 /// ```
-pub const fn empty() -> std::iter::Empty<std::convert::Infallible> {
-  std::iter::empty()
+pub const fn empty() -> core::iter::Empty<core::convert::Infallible> {
+  core::iter::empty()
 }

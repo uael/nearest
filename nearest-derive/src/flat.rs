@@ -109,7 +109,7 @@ pub fn gen_flat_impl(input: &DeriveInput) -> TokenStream {
     // SAFETY: All fields are bounded by `Flat`, and the const assert ensures no `Drop` impl.
     unsafe impl #impl_generics ::nearest::Flat for #name #ty_generics #combined_where {
       const _ASSERT_NO_DROP: () = {
-        const { assert!(!std::mem::needs_drop::<#name #ty_generics>()) };
+        const { assert!(!::core::mem::needs_drop::<#name #ty_generics>()) };
       };
 
       unsafe fn deep_copy(&self, nearest_p: &mut impl ::nearest::Patch, nearest_at: ::nearest::__private::Pos) {
@@ -142,7 +142,7 @@ fn gen_deep_copy_struct(input: &DeriveInput, data: &DataStruct) -> TokenStream {
       .map(|f| {
         let field_name = f.ident.as_ref().unwrap();
         let field_ty = &f.ty;
-        let offset_expr = quote! { std::mem::offset_of!(#name #ty_generics, #field_name) };
+        let offset_expr = quote! { ::core::mem::offset_of!(#name #ty_generics, #field_name) };
         let ref_expr = quote! { &self.#field_name };
         gen_deep_copy_field(&ref_expr, field_ty, &offset_expr)
       })
@@ -154,7 +154,7 @@ fn gen_deep_copy_struct(input: &DeriveInput, data: &DataStruct) -> TokenStream {
       .map(|(i, f)| {
         let idx = syn::Index::from(i);
         let field_ty = &f.ty;
-        let offset_expr = quote! { std::mem::offset_of!(#name #ty_generics, #idx) };
+        let offset_expr = quote! { ::core::mem::offset_of!(#name #ty_generics, #idx) };
         let ref_expr = quote! { &self.#idx };
         gen_deep_copy_field(&ref_expr, field_ty, &offset_expr)
       })
@@ -187,7 +187,7 @@ fn gen_deep_copy_enum(input: &DeriveInput, data: &DataEnum) -> TokenStream {
               let field_name = f.ident.as_ref().unwrap();
               let field_ty = &f.ty;
               let offset_expr =
-                quote! { std::mem::offset_of!(#name #ty_generics, #vname.#field_name) };
+                quote! { ::core::mem::offset_of!(#name #ty_generics, #vname.#field_name) };
               let ref_expr = quote! { #field_name };
               gen_deep_copy_field(&ref_expr, field_ty, &offset_expr)
             })
@@ -211,7 +211,7 @@ fn gen_deep_copy_enum(input: &DeriveInput, data: &DataEnum) -> TokenStream {
               let field_ident = quote::format_ident!("f{}", i);
               let field_ty = &f.ty;
               let idx = syn::Index::from(i);
-              let offset_expr = quote! { std::mem::offset_of!(#name #ty_generics, #vname.#idx) };
+              let offset_expr = quote! { ::core::mem::offset_of!(#name #ty_generics, #vname.#idx) };
               let ref_expr = quote! { #field_ident };
               gen_deep_copy_field(&ref_expr, field_ty, &offset_expr)
             })
@@ -257,8 +257,8 @@ fn gen_deep_copy_field(
       unsafe {
         nearest_p.write_bytes(
           nearest_at.offset(#offset_expr),
-          std::ptr::from_ref(#ref_expr).cast::<u8>(),
-          std::mem::size_of::<#field_ty>(),
+          ::core::ptr::from_ref(#ref_expr).cast::<u8>(),
+          ::core::mem::size_of::<#field_ty>(),
         );
       }
     },
@@ -285,7 +285,7 @@ fn gen_deep_copy_field(
               ::nearest::Emit::<#inner>::write_at(
                 nearest_elem,
                 nearest_p,
-                nearest_seg_pos.offset(nearest_values_offset + nearest_i * std::mem::size_of::<#inner>()),
+                nearest_seg_pos.offset(nearest_values_offset + nearest_i * ::core::mem::size_of::<#inner>()),
               );
             }
           }

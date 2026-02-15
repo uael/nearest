@@ -12,6 +12,11 @@ readme = "../README.md"
 keywords = ["self-relative", "pointer", "region", "allocation", "arena"]
 categories = ["data-structures", "memory-management"]
 
+[features]
+default = ["alloc"]
+alloc = []
+std = ["alloc"]
+
 [dependencies]
 nearest-derive = { version = "=0.1.2", path = "../nearest-derive" }
 

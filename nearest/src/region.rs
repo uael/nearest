@@ -1,8 +1,8 @@
-use std::{fmt, mem, num::NonZero, ops::Deref};
+use core::{fmt, mem, num::NonZero, ops::Deref};
 
 use crate::{
   Emit, Flat,
-  buf::AlignedBuf,
+  buf::Buf,
   emitter::{Emitter, Pos},
   list::Segment,
   session::{Brand, Session},
@@ -33,7 +33,7 @@ use crate::{
 ///
 /// # Soundness
 ///
-/// **Ownership**: A `Region` exclusively owns its `AlignedBuf`. There is no
+/// **Ownership**: A `Region` exclusively owns its buffer. There is no
 /// shared mutable state. `Clone` performs a byte-for-byte copy of the buffer;
 /// all self-relative offsets remain valid because they are position-independent.
 ///
@@ -49,13 +49,24 @@ use crate::{
 /// defense-in-depth. All `Flat` types are `Send + Sync` by construction
 /// (no heap pointers, no interior mutability), but the bounds let the
 /// compiler verify this.
+#[cfg(feature = "alloc")]
 #[must_use]
-pub struct Region<T: Flat> {
-  buf: AlignedBuf<T>,
+pub struct Region<T: Flat, B: Buf = crate::buf::AlignedBuf<T>> {
+  buf: B,
+  _type: core::marker::PhantomData<T>,
 }
 
+/// See the `#[cfg(feature = "alloc")]` variant above for full documentation.
+#[cfg(not(feature = "alloc"))]
+#[must_use]
+pub struct Region<T: Flat, B: Buf> {
+  buf: B,
+  _type: core::marker::PhantomData<T>,
+}
+
+#[cfg(feature = "alloc")]
 impl<T: Flat> Region<T> {
-  /// Construct a region from a builder.
+  /// Construct a region from a builder using the default [`AlignedBuf`](crate::AlignedBuf).
   ///
   /// The builder emits the root `T` (and any nested data) into a fresh
   /// emitter, producing an immutable `Region`.
@@ -81,24 +92,38 @@ impl<T: Flat> Region<T> {
   /// assert_eq!(region.children.len(), 0);
   /// ```
   pub fn new(builder: impl Emit<T>) -> Self {
-    let mut em = Emitter::<T>::new();
-    builder.emit(&mut em);
-    em.finish()
+    Self::new_in(builder)
   }
 
   /// Construct a region with a pre-allocated buffer of at least `capacity` bytes.
   ///
   /// Avoids repeated reallocations when the final size is approximately known.
   pub fn with_capacity(capacity: u32, builder: impl Emit<T>) -> Self {
-    let mut em = Emitter::<T>::with_capacity(capacity);
+    Self::with_capacity_in(capacity, builder)
+  }
+}
+
+impl<T: Flat, B: Buf> Region<T, B> {
+  /// Construct a region from a builder using an explicit buffer type `B`.
+  ///
+  /// For the default heap-backed buffer, use [`Region::new`] instead.
+  pub fn new_in(builder: impl Emit<T>) -> Self {
+    let mut em = Emitter::<T, B>::new();
     builder.emit(&mut em);
     em.finish()
   }
 
-  /// Create a region from an `AlignedBuf`.
-  pub(crate) fn from_buf(buf: AlignedBuf<T>) -> Self {
+  /// Construct a region with a pre-allocated buffer of at least `capacity` bytes.
+  pub fn with_capacity_in(capacity: u32, builder: impl Emit<T>) -> Self {
+    let mut em = Emitter::<T, B>::with_capacity(capacity);
+    builder.emit(&mut em);
+    em.finish()
+  }
+
+  /// Create a region from a buffer.
+  pub(crate) fn from_buf(buf: B) -> Self {
     debug_assert!(buf.len() as usize >= mem::size_of::<T>(), "buffer too small for root type");
-    Self { buf }
+    Self { buf, _type: core::marker::PhantomData }
   }
 
   /// Open a branded session. [`Ref`](crate::Ref)s created inside the closure
@@ -130,7 +155,8 @@ impl<T: Flat> Region<T> {
   /// assert_eq!(region.children.len(), 1);
   /// assert_eq!(region.children[0], 99);
   /// ```
-  pub fn session<R>(&mut self, f: impl for<'id> FnOnce(&mut Session<'id, '_, T>) -> R) -> R {
+  pub fn session<R>(&mut self, f: impl for<'id> FnOnce(&mut Session<'id, '_, T, B>) -> R) -> R {
+    self.buf.expose_provenance();
     let brand = Brand::new();
     let mut session = Session::new(self, brand);
     f(&mut session)
@@ -143,11 +169,11 @@ impl<T: Flat> Region<T> {
   /// the entire source is copied as a contiguous block. The graft position is
   /// aligned to the source region's maximum internal alignment so that all
   /// transitively referenced data maintains correct alignment.
-  pub(crate) fn graft_internal<U: Flat>(&mut self, src: &Region<U>) -> Pos {
+  pub(crate) fn graft_internal<U: Flat, B2: Buf>(&mut self, src: &Region<U, B2>) -> Pos {
     // All types within `src` have alignment ≤ BUF_ALIGN (enforced by
-    // AlignedBuf::alloc). Both regions share the same BUF_ALIGN (≥ 8), so
-    // aligning the graft offset to BUF_ALIGN preserves alignment for all data.
-    self.buf.align_to(crate::buf::AlignedBuf::<U>::BUF_ALIGN);
+    // Buf::alloc). Both regions share alignment ≥ 8, so aligning the graft
+    // offset to B2::ALIGN preserves alignment for all data.
+    self.buf.align_to(B2::ALIGN);
     let pos = Pos(self.buf.len());
     self.buf.extend_from_slice(src.buf.as_bytes());
     pos
@@ -164,15 +190,16 @@ impl<T: Flat> Region<T> {
   /// struct Node { id: u32, items: NearList<u32> }
   ///
   /// let region = Region::new(Node::make(1, empty()));
-  /// assert!(region.byte_len() >= std::mem::size_of::<Node>());
+  /// assert!(region.byte_len() >= core::mem::size_of::<Node>());
   /// ```
   #[must_use]
-  pub const fn byte_len(&self) -> usize {
+  pub fn byte_len(&self) -> usize {
     self.buf.len() as usize
   }
 
   /// Raw const pointer to the buffer (for Cursor reads).
-  pub(crate) const fn deref_raw(&self) -> *const u8 {
+  pub(crate) fn deref_raw(&self) -> *const u8 {
+    self.buf.expose_provenance();
     self.buf.as_ptr()
   }
 
@@ -210,7 +237,7 @@ impl<T: Flat> Region<T> {
   pub fn trim(&mut self) {
     let new_buf = {
       let root: &T = self;
-      let mut em = Emitter::<T>::new();
+      let mut em = Emitter::<T, B>::new();
       Emit::<T>::emit(root, &mut em);
       em.into_buf()
     };
@@ -244,8 +271,8 @@ impl<T: Flat> Region<T> {
     // `alloc_internal::<U>()`, ensuring correct alignment. `mem::forget`
     // prevents double-drop.
     unsafe {
-      let src = std::ptr::from_ref(&val).cast::<u8>();
-      std::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), size);
+      let src = core::ptr::from_ref(&val).cast::<u8>();
+      core::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), size);
     }
     mem::forget(val);
   }
@@ -262,8 +289,8 @@ impl<T: Flat> Region<T> {
     // SAFETY: Bounds checked above. `at` points to the `Near<U>` field whose
     // first 4 bytes hold a `NonZero<i32>` offset.
     unsafe {
-      let src = std::ptr::from_ref(&nz).cast::<u8>();
-      std::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), size);
+      let src = core::ptr::from_ref(&nz).cast::<u8>();
+      core::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), size);
     }
   }
 
@@ -288,13 +315,13 @@ impl<T: Flat> Region<T> {
     // `[i32 offset, u32 len]`, and both writes are within bounds.
     unsafe {
       let buf = self.buf.as_mut_ptr();
-      std::ptr::copy_nonoverlapping(
-        std::ptr::from_ref(&rel).cast::<u8>(),
+      core::ptr::copy_nonoverlapping(
+        core::ptr::from_ref(&rel).cast::<u8>(),
         buf.add(off_pos),
         mem::size_of::<i32>(),
       );
-      std::ptr::copy_nonoverlapping(
-        std::ptr::from_ref(&len).cast::<u8>(),
+      core::ptr::copy_nonoverlapping(
+        core::ptr::from_ref(&len).cast::<u8>(),
         buf.add(len_pos),
         mem::size_of::<u32>(),
       );
@@ -319,8 +346,8 @@ impl<T: Flat> Region<T> {
     // SAFETY: `resize` just allocated `total` bytes at `pos`. The `len` field
     // is at `pos + 4`, within the freshly allocated region.
     unsafe {
-      std::ptr::copy_nonoverlapping(
-        std::ptr::from_ref(&count).cast::<u8>(),
+      core::ptr::copy_nonoverlapping(
+        core::ptr::from_ref(&count).cast::<u8>(),
         self.buf.as_mut_ptr().add(len_offset),
         mem::size_of::<u32>(),
       );
@@ -341,8 +368,8 @@ impl<T: Flat> Region<T> {
     // SAFETY: Bounds checked above. The `next` field is at offset 0 of
     // `Segment<T>`, and we write exactly `size_of::<i32>()` bytes.
     unsafe {
-      std::ptr::copy_nonoverlapping(
-        std::ptr::from_ref(&rel_i32).cast::<u8>(),
+      core::ptr::copy_nonoverlapping(
+        core::ptr::from_ref(&rel_i32).cast::<u8>(),
         self.buf.as_mut_ptr().add(start),
         mem::size_of::<i32>(),
       );
@@ -362,37 +389,38 @@ impl<T: Flat> Region<T> {
     // SAFETY: Bounds checked above. `src` is valid for `len` bytes (caller
     // contract). The destination does not overlap the source.
     unsafe {
-      std::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), len);
+      core::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), len);
     }
   }
 }
 
-impl<T: Flat> Deref for Region<T> {
+impl<T: Flat, B: Buf> Deref for Region<T, B> {
   type Target = T;
 
   fn deref(&self) -> &T {
+    self.buf.expose_provenance();
     // SAFETY: The buffer is aligned to `align_of::<T>()` and at least
     // `size_of::<T>()` bytes. The root `T` starts at byte 0.
     unsafe { &*self.buf.as_ptr().cast::<T>() }
   }
 }
 
-impl<T: Flat> Clone for Region<T> {
+impl<T: Flat, B: Buf + Clone> Clone for Region<T, B> {
   fn clone(&self) -> Self {
-    Self { buf: self.buf.clone() }
+    Self { buf: self.buf.clone(), _type: core::marker::PhantomData }
   }
 }
 
-impl<T: Flat + fmt::Debug> fmt::Debug for Region<T> {
+impl<T: Flat + fmt::Debug, B: Buf> fmt::Debug for Region<T, B> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("Region").field("root", &**self).finish()
   }
 }
 
-// SAFETY: Region owns its buffer exclusively via AlignedBuf which is Send+Sync.
+// SAFETY: Region owns its buffer exclusively via Buf which is Send+Sync.
 // The `Send + Sync` bounds on `T` are defense-in-depth: all `Flat` types are
 // `Send + Sync` by construction (no heap pointers, no interior mutability),
 // but we add the bounds explicitly so the compiler checks this invariant.
-unsafe impl<T: Flat + Send + Sync> Send for Region<T> {}
+unsafe impl<T: Flat + Send + Sync, B: Buf + Send> Send for Region<T, B> {}
 // SAFETY: See above — Region owns its buffer exclusively.
-unsafe impl<T: Flat + Send + Sync> Sync for Region<T> {}
+unsafe impl<T: Flat + Send + Sync, B: Buf + Sync> Sync for Region<T, B> {}
