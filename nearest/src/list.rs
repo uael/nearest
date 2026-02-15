@@ -62,6 +62,19 @@ unsafe impl<T> Flat for NearList<T> {
       p.write_bytes(at, core::ptr::from_ref(self).cast(), size_of::<Self>());
     }
   }
+
+  fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+    crate::ValidateError::check::<Self>(addr, buf)?;
+    let head = i32::from_ne_bytes(buf[addr..addr + 4].try_into().unwrap());
+    let len = u32::from_ne_bytes(buf[addr + 4..addr + 8].try_into().unwrap());
+    // Invariant: len == 0 ⟺ head == 0
+    if (len == 0) != (head == 0) {
+      return Err(crate::ValidateError::InvalidListHeader { addr });
+    }
+    // Does NOT walk segments — derive code calls __private::validate_list::<T>()
+    // for that (mirrors the deep_copy pattern).
+    Ok(())
+  }
 }
 
 /// A contiguous segment of values in a [`NearList`]. Stored in the Region buffer.

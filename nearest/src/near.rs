@@ -47,6 +47,17 @@ unsafe impl<T> Flat for Near<T> {
       p.write_bytes(at, core::ptr::from_ref(self).cast(), size_of::<Self>());
     }
   }
+
+  fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+    crate::ValidateError::check::<Self>(addr, buf)?;
+    let off = i32::from_ne_bytes(buf[addr..addr + 4].try_into().unwrap());
+    if off == 0 {
+      return Err(crate::ValidateError::NullNear { addr });
+    }
+    // Does NOT follow the offset — containing struct's derive code does that
+    // (mirrors the deep_copy pattern).
+    Ok(())
+  }
 }
 
 impl<T: Flat> Near<T> {

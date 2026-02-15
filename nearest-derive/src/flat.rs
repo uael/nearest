@@ -4,7 +4,7 @@ use syn::{Data, DataEnum, DataStruct, DeriveInput, Fields};
 
 use crate::util::{
   FieldKind, classify_field, collect_field_types, combine_where, flat_bounded_param_names,
-  is_type_param_ident,
+  is_bool_type, is_type_param_ident,
 };
 
 // ---------------------------------------------------------------------------
@@ -103,6 +103,7 @@ pub fn gen_flat_impl(input: &DeriveInput) -> TokenStream {
   }
 
   let deep_copy_body = gen_deep_copy_body(input);
+  let validate_body = gen_validate_body(input);
   let combined_where = combine_where(where_clause, &where_predicates);
 
   quote! {
@@ -114,6 +115,10 @@ pub fn gen_flat_impl(input: &DeriveInput) -> TokenStream {
 
       unsafe fn deep_copy(&self, nearest_p: &mut impl ::nearest::Patch, nearest_at: ::nearest::__private::Pos) {
         #deep_copy_body
+      }
+
+      fn validate(nearest_addr: usize, nearest_buf: &[u8]) -> ::core::result::Result<(), ::nearest::ValidateError> {
+        #validate_body
       }
     }
   }
@@ -237,6 +242,169 @@ fn gen_deep_copy_enum(input: &DeriveInput, data: &DataEnum) -> TokenStream {
     match self {
       #(#match_arms)*
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// validate body generation
+// ---------------------------------------------------------------------------
+
+fn gen_validate_body(input: &DeriveInput) -> TokenStream {
+  match &input.data {
+    Data::Struct(s) => gen_validate_struct(input, s),
+    Data::Enum(e) => gen_validate_enum(input, e),
+    Data::Union(_) => quote! { Ok(()) },
+  }
+}
+
+fn gen_validate_struct(input: &DeriveInput, data: &DataStruct) -> TokenStream {
+  let name = &input.ident;
+  let (_, ty_generics, _) = input.generics.split_for_impl();
+
+  let field_codes: Vec<_> = match &data.fields {
+    Fields::Named(named) => named
+      .named
+      .iter()
+      .map(|f| {
+        let field_name = f.ident.as_ref().unwrap();
+        let field_ty = &f.ty;
+        let offset_expr = quote! { ::core::mem::offset_of!(#name #ty_generics, #field_name) };
+        gen_validate_field(field_ty, &offset_expr)
+      })
+      .collect(),
+    Fields::Unnamed(unnamed) => unnamed
+      .unnamed
+      .iter()
+      .enumerate()
+      .map(|(i, f)| {
+        let idx = syn::Index::from(i);
+        let field_ty = &f.ty;
+        let offset_expr = quote! { ::core::mem::offset_of!(#name #ty_generics, #idx) };
+        gen_validate_field(field_ty, &offset_expr)
+      })
+      .collect(),
+    Fields::Unit => vec![],
+  };
+
+  quote! {
+    ::nearest::ValidateError::check::<Self>(nearest_addr, nearest_buf)?;
+    #(#field_codes)*
+    Ok(())
+  }
+}
+
+fn gen_validate_enum(input: &DeriveInput, data: &DataEnum) -> TokenStream {
+  let name = &input.ident;
+  let (_, ty_generics, _) = input.generics.split_for_impl();
+  let variant_count = data.variants.len();
+  let max_disc = if variant_count == 0 { 0u8 } else { (variant_count - 1) as u8 };
+
+  let match_arms: Vec<_> = data
+    .variants
+    .iter()
+    .enumerate()
+    .map(|(idx, variant)| {
+      let vname = &variant.ident;
+      let disc = idx as u8;
+
+      let field_codes: Vec<_> = match &variant.fields {
+        Fields::Named(named) => named
+          .named
+          .iter()
+          .map(|f| {
+            let field_name = f.ident.as_ref().unwrap();
+            let field_ty = &f.ty;
+            let offset_expr =
+              quote! { ::core::mem::offset_of!(#name #ty_generics, #vname.#field_name) };
+            gen_validate_field(field_ty, &offset_expr)
+          })
+          .collect(),
+        Fields::Unnamed(unnamed) => unnamed
+          .unnamed
+          .iter()
+          .enumerate()
+          .map(|(i, f)| {
+            let idx = syn::Index::from(i);
+            let field_ty = &f.ty;
+            let offset_expr = quote! { ::core::mem::offset_of!(#name #ty_generics, #vname.#idx) };
+            gen_validate_field(field_ty, &offset_expr)
+          })
+          .collect(),
+        Fields::Unit => vec![],
+      };
+
+      quote! {
+        #disc => { #(#field_codes)* }
+      }
+    })
+    .collect();
+
+  quote! {
+    ::nearest::ValidateError::check::<Self>(nearest_addr, nearest_buf)?;
+    let nearest_disc = nearest_buf[nearest_addr];
+    if nearest_disc > #max_disc {
+      return Err(::nearest::ValidateError::InvalidDiscriminant {
+        addr: nearest_addr,
+        value: nearest_disc,
+        max: #max_disc,
+      });
+    }
+    match nearest_disc {
+      #(#match_arms)*
+      _ => unreachable!(),
+    }
+    Ok(())
+  }
+}
+
+/// Generate validate code for a single field.
+fn gen_validate_field(field_ty: &syn::Type, offset_expr: &TokenStream) -> TokenStream {
+  match classify_field(field_ty) {
+    FieldKind::Primitive => {
+      if is_bool_type(field_ty) {
+        quote! {
+          <bool as ::nearest::Flat>::validate(nearest_addr + #offset_expr, nearest_buf)?;
+        }
+      } else {
+        // Covered by the struct/enum bounds check — no extra validation needed.
+        quote! {}
+      }
+    }
+    FieldKind::Near { inner } => quote! {
+      {
+        let nearest_off_addr = nearest_addr + #offset_expr;
+        ::nearest::ValidateError::check::<::nearest::Near<#inner>>(nearest_off_addr, nearest_buf)?;
+        let nearest_off = i32::from_ne_bytes(
+          nearest_buf[nearest_off_addr..nearest_off_addr + 4].try_into().unwrap()
+        );
+        if nearest_off == 0 {
+          return Err(::nearest::ValidateError::NullNear { addr: nearest_off_addr });
+        }
+        let nearest_target_addr = (nearest_off_addr as isize).wrapping_add(nearest_off as isize) as usize;
+        ::nearest::ValidateError::check::<#inner>(nearest_target_addr, nearest_buf)?;
+        <#inner as ::nearest::Flat>::validate(nearest_target_addr, nearest_buf)?;
+      }
+    },
+    FieldKind::NearList { inner } => quote! {
+      ::nearest::__private::validate_list::<#inner>(nearest_addr + #offset_expr, nearest_buf)?;
+    },
+    FieldKind::OptionNear { inner } => quote! {
+      {
+        let nearest_off_addr = nearest_addr + #offset_expr;
+        ::nearest::ValidateError::check::<i32>(nearest_off_addr, nearest_buf)?;
+        let nearest_off = i32::from_ne_bytes(
+          nearest_buf[nearest_off_addr..nearest_off_addr + 4].try_into().unwrap()
+        );
+        if nearest_off != 0 {
+          let nearest_target_addr = (nearest_off_addr as isize).wrapping_add(nearest_off as isize) as usize;
+          ::nearest::ValidateError::check::<#inner>(nearest_target_addr, nearest_buf)?;
+          <#inner as ::nearest::Flat>::validate(nearest_target_addr, nearest_buf)?;
+        }
+      }
+    },
+    FieldKind::Other => quote! {
+      <#field_ty as ::nearest::Flat>::validate(nearest_addr + #offset_expr, nearest_buf)?;
+    },
   }
 }
 

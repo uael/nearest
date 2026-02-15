@@ -1,6 +1,6 @@
 #![feature(offset_of_enum)]
 
-use nearest::{Flat, Near, NearList, Ref, Region, empty};
+use nearest::{Flat, Near, NearList, Ref, Region, ValidateError, empty};
 
 // --- IR type definitions using derive(Flat) ---
 
@@ -1909,4 +1909,337 @@ fn near_list_index_out_of_bounds_panics() {
   let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(10)]));
   let block: &ListBlock = &region;
   let _ = block.items[5]; // only 1 element, index 5 is OOB
+}
+
+// ===========================================================================
+// Validation success tests
+// ===========================================================================
+
+#[test]
+fn validate_primitive_region() {
+  let region: Region<u32> = Region::new(42u32);
+  let bytes = region.as_bytes();
+  u32::validate(0, bytes).unwrap();
+}
+
+#[test]
+fn validate_struct_with_near() {
+  let region = build_simple_func(1);
+  let bytes = region.as_bytes();
+  Func::validate(0, bytes).unwrap();
+}
+
+#[test]
+fn validate_struct_with_near_list() {
+  let region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20)]));
+  let bytes = region.as_bytes();
+  ListBlock::validate(0, bytes).unwrap();
+}
+
+#[test]
+fn validate_struct_with_option_near_some() {
+  let region: Region<OptBlock> = Region::new(OptBlock::make(
+    Symbol(1),
+    Some(Block::make(Symbol(2), empty(), empty(), Term::make_ret([Value::Const(42)]))),
+  ));
+  let bytes = region.as_bytes();
+  OptBlock::validate(0, bytes).unwrap();
+}
+
+#[test]
+fn validate_struct_with_option_near_none() {
+  let region: Region<OptBlock> =
+    Region::new(OptBlock::make(Symbol(1), None::<std::convert::Infallible>));
+  let bytes = region.as_bytes();
+  OptBlock::validate(0, bytes).unwrap();
+}
+
+#[test]
+fn validate_nested_structs() {
+  let region: Region<Func> = Region::new(Func::make(
+    Symbol(1),
+    Block::make(
+      Symbol(0),
+      [(Symbol(1), Type(0))],
+      [
+        Inst::make(1, Type(0), [Value::Const(10), Value::Const(11)]),
+        Inst::make(2, Type(1), [Value::Const(20), Value::Const(21)]),
+      ],
+      Term::make_jmp(Jmp::make(
+        [Value::Const(1)],
+        Block::make(Symbol(1), empty(), empty(), Term::make_ret([Value::Const(42)])),
+      )),
+    ),
+  ));
+  let bytes = region.as_bytes();
+  Func::validate(0, bytes).unwrap();
+}
+
+#[test]
+fn validate_enum_all_variants() {
+  // Test Ret variant
+  let region: Region<Func> = Region::new(Func::make(
+    Symbol(1),
+    Block::make(Symbol(0), empty(), empty(), Term::make_ret([Value::Const(1)])),
+  ));
+  Func::validate(0, region.as_bytes()).unwrap();
+
+  // Test Jmp variant
+  let region: Region<Func> = Region::new(Func::make(
+    Symbol(1),
+    Block::make(
+      Symbol(0),
+      empty(),
+      empty(),
+      Term::make_jmp(Jmp::make(
+        empty(),
+        Block::make(Symbol(1), empty(), empty(), Term::make_ret(empty())),
+      )),
+    ),
+  ));
+  Func::validate(0, region.as_bytes()).unwrap();
+}
+
+#[test]
+fn validate_generic_struct() {
+  let region: Region<Signature<u32>> =
+    Region::new(Signature::<u32>::make([Type(1)], [Type(2)], [10u32, 20]));
+  Signature::<u32>::validate(0, region.as_bytes()).unwrap();
+}
+
+#[test]
+fn validate_after_mutation() {
+  let mut region = build_simple_func(1);
+  region.session(|s| {
+    let name = s.nav(s.root(), |f| &f.name);
+    s.set(name, Symbol(99));
+  });
+  Func::validate(0, region.as_bytes()).unwrap();
+}
+
+#[test]
+fn validate_after_trim() {
+  let mut region = build_simple_func(1);
+  region.session(|s| {
+    let jmp_target = s.nav(s.root(), |f| match &f.entry.term {
+      Term::Jmp(jmp) => &jmp.target,
+      Term::Ret { .. } => panic!("expected Jmp"),
+    });
+    s.splice(
+      jmp_target,
+      Block::make(Symbol(50), empty(), empty(), Term::make_ret([Value::Const(0)])),
+    );
+  });
+  region.trim();
+  Func::validate(0, region.as_bytes()).unwrap();
+}
+
+#[test]
+fn validate_empty_list() {
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  ListBlock::validate(0, region.as_bytes()).unwrap();
+}
+
+// ===========================================================================
+// Validation failure tests
+// ===========================================================================
+
+#[test]
+fn validate_empty_buffer() {
+  let result = u32::validate(0, &[]);
+  assert!(matches!(result, Err(ValidateError::OutOfBounds { .. })));
+}
+
+#[test]
+fn validate_truncated_buffer() {
+  let region = build_simple_func(1);
+  let bytes = region.as_bytes();
+  // Truncate to just 2 bytes — too small for Func root.
+  let result = Func::validate(0, &bytes[..2]);
+  assert!(matches!(result, Err(ValidateError::OutOfBounds { .. })));
+}
+
+#[test]
+fn validate_bad_near_offset_oob() {
+  let region = build_simple_func(1);
+  let mut bytes = region.as_bytes().to_vec();
+  // The Near<Block> field (entry) is at offset_of!(Func, entry) which is
+  // right after the Symbol(u32) name field = 4 bytes.
+  let near_offset = core::mem::offset_of!(Func, entry);
+  // Write an offset that points way past the buffer.
+  let bad_off: i32 = i32::try_from(bytes.len()).unwrap() * 2;
+  bytes[near_offset..near_offset + 4].copy_from_slice(&bad_off.to_ne_bytes());
+  let result = Func::validate(0, &bytes);
+  assert!(matches!(result, Err(ValidateError::OutOfBounds { .. })));
+}
+
+#[test]
+fn validate_bad_near_offset_zero() {
+  let region = build_simple_func(1);
+  let mut bytes = region.as_bytes().to_vec();
+  let near_offset = core::mem::offset_of!(Func, entry);
+  // Zero out the Near offset → NullNear.
+  bytes[near_offset..near_offset + 4].copy_from_slice(&0i32.to_ne_bytes());
+  let result = Func::validate(0, &bytes);
+  assert!(matches!(result, Err(ValidateError::NullNear { .. })));
+}
+
+#[test]
+fn validate_bad_near_alignment() {
+  let region = build_simple_func(1);
+  let mut bytes = region.as_bytes().to_vec();
+  let near_offset = core::mem::offset_of!(Func, entry);
+  // Set offset to point to an odd address (misaligned for Block which needs
+  // at least align_of::<i32>() = 4).
+  let bad_off: i32 = 1; // points to addr (near_offset + 1) which is odd.
+  bytes[near_offset..near_offset + 4].copy_from_slice(&bad_off.to_ne_bytes());
+  let result = Func::validate(0, &bytes);
+  // Should fail with either Misaligned or OutOfBounds depending on position.
+  assert!(result.is_err());
+}
+
+#[test]
+fn validate_bad_list_header_inconsistent() {
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(10)]));
+  let mut bytes = region.as_bytes().to_vec();
+  let list_offset = core::mem::offset_of!(ListBlock, items);
+  // Set head to non-zero but len to 0 → inconsistent.
+  bytes[list_offset..list_offset + 4].copy_from_slice(&42i32.to_ne_bytes());
+  bytes[list_offset + 4..list_offset + 8].copy_from_slice(&0u32.to_ne_bytes());
+  let result = ListBlock::validate(0, &bytes);
+  assert!(matches!(result, Err(ValidateError::InvalidListHeader { .. })));
+}
+
+#[test]
+fn validate_bad_list_len_mismatch() {
+  let region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20)]));
+  let mut bytes = region.as_bytes().to_vec();
+  let list_offset = core::mem::offset_of!(ListBlock, items);
+  // Change the total len to 99 while segment has only 2 elements.
+  bytes[list_offset + 4..list_offset + 8].copy_from_slice(&99u32.to_ne_bytes());
+  let result = ListBlock::validate(0, &bytes);
+  assert!(matches!(result, Err(ValidateError::ListLenMismatch { .. })));
+}
+
+#[test]
+fn validate_bad_enum_discriminant() {
+  let region: Region<Func> = Region::new(Func::make(
+    Symbol(1),
+    Block::make(Symbol(0), empty(), empty(), Term::make_ret([Value::Const(42)])),
+  ));
+  let mut bytes = region.as_bytes().to_vec();
+  // Find the Term's address: it's at the entry block's term field offset.
+  // We need to follow the Near pointer first.
+  let near_offset = core::mem::offset_of!(Func, entry);
+  let near_off = i32::from_ne_bytes(bytes[near_offset..near_offset + 4].try_into().unwrap());
+  let block_addr = near_offset.cast_signed().wrapping_add(near_off as isize).cast_unsigned();
+  let term_offset = core::mem::offset_of!(Block, term);
+  let disc_addr = block_addr + term_offset;
+  // Set discriminant to 255 (only 2 valid variants: 0 and 1).
+  bytes[disc_addr] = 255;
+  let result = Func::validate(0, &bytes);
+  assert!(matches!(result, Err(ValidateError::InvalidDiscriminant { .. })));
+}
+
+#[derive(Flat, Debug)]
+struct BoolStruct {
+  flag: bool,
+  id: u32,
+}
+
+#[test]
+fn validate_bad_bool() {
+  let region: Region<BoolStruct> = Region::new(BoolStruct { flag: true, id: 42 });
+  let mut bytes = region.as_bytes().to_vec();
+  // Set the bool byte to 2 (invalid).
+  let bool_offset = core::mem::offset_of!(BoolStruct, flag);
+  bytes[bool_offset] = 2;
+  let result = BoolStruct::validate(0, &bytes);
+  assert!(matches!(result, Err(ValidateError::InvalidBool { value: 2, .. })));
+}
+
+// ===========================================================================
+// Roundtrip tests (as_bytes / from_bytes)
+// ===========================================================================
+
+#[test]
+fn region_as_bytes_from_bytes_roundtrip() {
+  let region = build_simple_func(42);
+  let bytes = region.as_bytes();
+  let restored: Region<Func> = Region::from_bytes(bytes).unwrap();
+
+  assert_eq!(restored.name, Symbol(42));
+  let block = restored.entry.get();
+  assert_eq!(block.insts.len(), 1);
+  assert_eq!(block.insts[0].args[0], Value::Const(42));
+}
+
+#[test]
+fn region_from_bytes_unchecked_roundtrip() {
+  let region = build_simple_func(7);
+  let bytes = region.as_bytes();
+  // SAFETY: `bytes` came from `region.as_bytes()` on a valid `Region<Func>`.
+  let restored: Region<Func> = unsafe { Region::from_bytes_unchecked(bytes) };
+
+  assert_eq!(restored.name, Symbol(7));
+  let block = restored.entry.get();
+  assert_eq!(block.insts[0].op, 1);
+}
+
+#[test]
+fn region_from_bytes_complex() {
+  let region: Region<Func> = Region::new(Func::make(
+    Symbol(100),
+    Block::make(
+      Symbol(0),
+      [(Symbol(1), Type(0)), (Symbol(2), Type(1))],
+      [
+        Inst::make(1, Type(0), [Value::Const(10), Value::Const(11)]),
+        Inst::make(2, Type(1), [Value::Const(20), Value::Const(21)]),
+      ],
+      Term::make_jmp(Jmp::make(
+        [Value::Const(1)],
+        Block::make(Symbol(1), empty(), empty(), Term::make_ret([Value::Const(42)])),
+      )),
+    ),
+  ));
+
+  let bytes = region.as_bytes();
+  let restored: Region<Func> = Region::from_bytes(bytes).unwrap();
+
+  assert_eq!(restored.name, Symbol(100));
+  let block = restored.entry.get();
+  assert_eq!(block.params.len(), 2);
+  assert_eq!(block.insts.len(), 2);
+  assert_eq!(block.insts[0].args[0], Value::Const(10));
+  match &block.term {
+    Term::Jmp(jmp) => {
+      assert_eq!(jmp.target.get().name, Symbol(1));
+    }
+    Term::Ret { .. } => panic!("expected Jmp"),
+  }
+}
+
+#[test]
+fn region_from_bytes_clone_equivalence() {
+  let region = build_simple_func(5);
+  let cloned = region.clone();
+  let from_bytes: Region<Func> = Region::from_bytes(region.as_bytes()).unwrap();
+
+  // Both should produce equivalent regions.
+  assert_eq!(cloned.name, from_bytes.name);
+  assert_eq!(cloned.entry.get().name, from_bytes.entry.get().name);
+  assert_eq!(cloned.entry.get().insts.len(), from_bytes.entry.get().insts.len());
+}
+
+#[test]
+fn region_from_bytes_fixed_buf() {
+  use nearest::FixedBuf;
+
+  let region: Region<u32, FixedBuf<64>> = Region::new_in(42u32);
+  let bytes = region.as_bytes();
+  let restored: Region<u32, FixedBuf<64>> = Region::from_bytes(bytes).unwrap();
+  assert_eq!(*restored, 42);
 }

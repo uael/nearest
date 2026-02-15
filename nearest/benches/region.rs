@@ -194,6 +194,36 @@ fn bench_re_splice_list(c: &mut Criterion) {
   });
 }
 
+fn bench_validate(c: &mut Criterion) {
+  let region = build_func();
+  let bytes = region.as_bytes().to_vec();
+  c.bench_function("validate", |b| {
+    b.iter(|| {
+      black_box(Func::validate(0, black_box(&bytes)).unwrap());
+    });
+  });
+}
+
+fn bench_from_bytes(c: &mut Criterion) {
+  let region = build_func();
+  let bytes = region.as_bytes().to_vec();
+  c.bench_function("from_bytes", |b| {
+    b.iter(|| {
+      black_box(Region::<Func>::from_bytes(black_box(&bytes)).unwrap());
+    });
+  });
+}
+
+fn bench_as_bytes_roundtrip(c: &mut Criterion) {
+  let region = build_func();
+  c.bench_function("as_bytes_roundtrip", |b| {
+    b.iter(|| {
+      let bytes = black_box(&region).as_bytes();
+      black_box(Region::<Func>::from_bytes(bytes).unwrap());
+    });
+  });
+}
+
 criterion_group!(
   benches,
   bench_build,
@@ -204,5 +234,8 @@ criterion_group!(
   bench_iterate,
   bench_graft,
   bench_re_splice_list,
+  bench_validate,
+  bench_from_bytes,
+  bench_as_bytes_roundtrip,
 );
 criterion_main!(benches);

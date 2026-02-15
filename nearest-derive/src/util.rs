@@ -48,6 +48,15 @@ pub fn classify_field(ty: &syn::Type) -> FieldKind {
   FieldKind::Other
 }
 
+pub fn is_bool_type(ty: &syn::Type) -> bool {
+  if let syn::Type::Path(p) = ty
+    && let Some(ident) = p.path.get_ident()
+  {
+    return ident == "bool";
+  }
+  false
+}
+
 pub fn is_primitive_type(ty: &syn::Type) -> bool {
   if let syn::Type::Path(p) = ty
     && let Some(ident) = p.path.get_ident()

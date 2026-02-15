@@ -392,6 +392,102 @@ impl<T: Flat, B: Buf> Region<T, B> {
       core::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), len);
     }
   }
+
+  /// Return the raw byte contents of this region.
+  ///
+  /// The returned slice can be persisted (e.g. written to a file) and later
+  /// restored via [`from_bytes`](Self::from_bytes).
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region, empty};
+  ///
+  /// #[derive(Flat, Debug)]
+  /// struct Node {
+  ///   id: u32,
+  ///   children: NearList<u32>,
+  /// }
+  ///
+  /// let region = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let bytes = region.as_bytes();
+  /// assert!(bytes.len() >= core::mem::size_of::<Node>());
+  /// ```
+  #[must_use]
+  pub fn as_bytes(&self) -> &[u8] {
+    self.buf.as_bytes()
+  }
+
+  /// Validate and reconstruct a region from raw bytes.
+  ///
+  /// Runs [`T::validate`](Flat::validate) on the byte slice. If validation
+  /// succeeds, copies the bytes into a fresh buffer to produce a `Region`.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ValidateError`](crate::ValidateError) if the bytes do not
+  /// form a valid representation of `T` and its transitively reachable data.
+  ///
+  /// # Examples
+  ///
+  /// Round-trip through bytes:
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region, empty};
+  ///
+  /// #[derive(Flat, Debug)]
+  /// struct Node {
+  ///   id: u32,
+  ///   children: NearList<u32>,
+  /// }
+  ///
+  /// let original = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let bytes = original.as_bytes();
+  /// let restored: Region<Node> = Region::from_bytes(bytes).unwrap();
+  /// assert_eq!(restored.id, 1);
+  /// assert_eq!(restored.children.len(), 3);
+  /// ```
+  ///
+  /// Validation catches invalid data — here a `bool` field with value `2`:
+  ///
+  /// ```
+  /// use nearest::{Flat, Near, Region, ValidateError};
+  ///
+  /// #[derive(Flat, Debug)]
+  /// struct Flags {
+  ///   active: bool,
+  ///   label: Near<u32>,
+  /// }
+  ///
+  /// let region = Region::new(Flags::make(true, 42u32));
+  /// let mut bytes = region.as_bytes().to_vec();
+  /// // Corrupt the bool — its offset is computed from the struct layout.
+  /// let bool_offset = core::mem::offset_of!(Flags, active);
+  /// bytes[bool_offset] = 2;
+  /// assert!(matches!(
+  ///   Region::<Flags>::from_bytes(&bytes),
+  ///   Err(ValidateError::InvalidBool { .. })
+  /// ));
+  /// ```
+  pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::ValidateError> {
+    T::validate(0, bytes)?;
+    let mut buf = B::empty();
+    buf.extend_from_slice(bytes);
+    Ok(Self::from_buf(buf))
+  }
+
+  /// Reconstruct a region from raw bytes **without validation**.
+  ///
+  /// # Safety
+  ///
+  /// The caller must guarantee that `bytes` is a valid region buffer for `T`
+  /// (e.g. produced by [`as_bytes`](Self::as_bytes) on a valid `Region<T>`).
+  /// Passing arbitrary bytes is immediate UB.
+  pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self {
+    let mut buf = B::empty();
+    buf.extend_from_slice(bytes);
+    Self::from_buf(buf)
+  }
 }
 
 impl<T: Flat, B: Buf> Deref for Region<T, B> {

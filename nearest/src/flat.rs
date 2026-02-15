@@ -41,6 +41,20 @@ pub unsafe trait Flat: Sized {
   ///
   /// `at` must be a position previously allocated for `Self` in the same buffer.
   unsafe fn deep_copy(&self, p: &mut impl Patch, at: Pos);
+
+  /// Validate that `buf[addr..]` contains a valid representation of `Self`.
+  ///
+  /// Checks bounds, alignment, and type-specific invariants (e.g. enum
+  /// discriminants, `Near<T>` non-null offsets, `NearList<T>` consistency).
+  ///
+  /// For types with `Near<T>` or `NearList<T>` fields, the derive macro
+  /// generates code that recursively validates targets.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ValidateError`](crate::ValidateError) if the bytes at `addr`
+  /// do not form a valid `Self`.
+  fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError>;
 }
 
 macro_rules! impl_flat {
@@ -52,17 +66,43 @@ macro_rules! impl_flat {
           // SAFETY: caller guarantees `at` was allocated for this type.
           unsafe { p.write_flat(at, *self) };
         }
+
+        fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+          crate::ValidateError::check::<Self>(addr, buf)
+        }
       }
     )*
   };
 }
 
-impl_flat!(u8, u16, u32, i32, u64, i64, bool);
+impl_flat!(u8, u16, u32, i32, u64, i64);
+
+// SAFETY: bool is a primitive, no Drop, no heap pointers, and is Copy.
+// Standalone impl to add value validation (must be 0 or 1).
+unsafe impl Flat for bool {
+  unsafe fn deep_copy(&self, p: &mut impl Patch, at: Pos) {
+    // SAFETY: caller guarantees `at` was allocated for this type.
+    unsafe { p.write_flat(at, *self) };
+  }
+
+  fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+    crate::ValidateError::check::<Self>(addr, buf)?;
+    let value = buf[addr];
+    if value > 1 {
+      return Err(crate::ValidateError::InvalidBool { addr, value });
+    }
+    Ok(())
+  }
+}
 
 // SAFETY: Infallible is uninhabited — deep_copy is unreachable.
 unsafe impl Flat for Infallible {
   unsafe fn deep_copy(&self, _p: &mut impl Patch, _at: Pos) {
     match *self {}
+  }
+
+  fn validate(_addr: usize, _buf: &[u8]) -> Result<(), crate::ValidateError> {
+    Err(crate::ValidateError::Uninhabited)
   }
 }
 
@@ -76,6 +116,13 @@ unsafe impl<A: Flat, B: Flat> Flat for (A, B) {
       self.1.deep_copy(p, at.offset(core::mem::offset_of!((A, B), 1)));
     }
   }
+
+  fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+    crate::ValidateError::check::<Self>(addr, buf)?;
+    A::validate(addr + core::mem::offset_of!((A, B), 0), buf)?;
+    B::validate(addr + core::mem::offset_of!((A, B), 1), buf)?;
+    Ok(())
+  }
 }
 
 // SAFETY: If T is Flat, then [T; N] is also Flat (no Drop, no heap).
@@ -86,6 +133,14 @@ unsafe impl<T: Flat, const N: usize> Flat for [T; N] {
       // Each element offset `i * size_of::<T>()` is within the allocation.
       unsafe { elem.deep_copy(p, at.offset(i * size_of::<T>())) };
     }
+  }
+
+  fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+    crate::ValidateError::check::<Self>(addr, buf)?;
+    for i in 0..N {
+      T::validate(addr + i * size_of::<T>(), buf)?;
+    }
+    Ok(())
   }
 }
 
@@ -110,5 +165,11 @@ unsafe impl<T: Flat> Flat for Option<T> {
       // is the runtime-computed offset of the `Some` payload.
       unsafe { val.deep_copy(p, at.offset(inner_offset)) };
     }
+  }
+
+  fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+    // Option<T> has opaque niche layout — we can only validate bounds.
+    // For Option<Near<T>>, the derive macro handles validation via FieldKind::OptionNear.
+    crate::ValidateError::check::<Self>(addr, buf)
   }
 }

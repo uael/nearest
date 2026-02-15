@@ -339,6 +339,7 @@ mod region;
 /// or be used across different sessions. This gives **compile-time** safety
 /// with **zero runtime cost** — `Ref` is just a `u32` position + phantom brand.
 pub mod session;
+mod validate;
 
 #[cfg(feature = "alloc")]
 pub use buf::AlignedBuf;
@@ -358,6 +359,16 @@ pub mod __private {
   pub const fn segment_values_offset<T>() -> usize {
     core::mem::size_of::<crate::list::Segment<T>>()
   }
+
+  /// Validate a `NearList<T>` segment chain starting at `hdr_addr`.
+  ///
+  /// Used by the derive macro to validate list fields.
+  pub fn validate_list<T: crate::Flat>(
+    hdr_addr: usize,
+    buf: &[u8],
+  ) -> Result<(), crate::ValidateError> {
+    crate::validate::validate_list_impl::<T>(hdr_addr, buf)
+  }
 }
 pub use flat::Flat;
 pub use list::NearList;
@@ -366,6 +377,7 @@ pub use nearest_derive::{Emit, Flat};
 pub use patch::Patch;
 pub use region::Region;
 pub use session::{ListTail, Ref, Session};
+pub use validate::ValidateError;
 
 /// Returns an empty iterator suitable for any `NearList<T>` emitter parameter.
 ///
