@@ -1,9 +1,9 @@
 # nearest
 
-[![Rust](https://github.com/uael/nearest/workflows/CI/badge.svg)](https://github.com/uael/nearest/actions)
-![docs.rs](https://img.shields.io/docsrs/nearest)
-![Crates.io Version](https://img.shields.io/crates/v/nearest)
-![Crates.io License](https://img.shields.io/crates/l/nearest)
+[![CI](https://github.com/uael/nearest/workflows/CI/badge.svg)](https://github.com/uael/nearest/actions)
+[![docs.rs](https://img.shields.io/docsrs/nearest)](https://docs.rs/nearest)
+[![crates.io](https://img.shields.io/crates/v/nearest)](https://crates.io/crates/nearest)
+[![license](https://img.shields.io/crates/l/nearest)](LICENSE-MIT)
 
 Self-relative pointers and region-based allocation for Rust.
 
