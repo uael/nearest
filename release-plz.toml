@@ -5,6 +5,7 @@ git_release_enable = true
 [[package]]
 name = "nearest"
 changelog_path = "CHANGELOG.md"
+changelog_include = ["nearest-derive"]
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 
