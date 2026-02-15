@@ -229,7 +229,7 @@ unsafe impl<const N: usize> Sync for FixedBuf<N> {}
 /// (never returns null silently).
 ///
 /// **Provenance exposure**: After every `grow` or `clone`, the new pointer's
-/// provenance is exposed via [`expose_provenance`](pointer::expose_provenance).
+/// provenance is exposed via `expose_provenance`.
 /// This allows [`Near::get`](crate::Near::get) and session operations to
 /// recover the full allocation's provenance using
 /// [`with_exposed_provenance`](core::ptr::with_exposed_provenance) when

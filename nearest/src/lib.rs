@@ -104,7 +104,7 @@
 //!
 //! # Reading data
 //!
-//! [`Region<T>`] implements [`Deref<Target = T>`](std::ops::Deref), giving
+//! [`Region<T>`] implements [`Deref<Target = T>`](core::ops::Deref), giving
 //! direct access to the root value. [`Near<T>`] also dereferences to `&T`:
 //!
 //! ```
