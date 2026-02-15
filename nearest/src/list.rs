@@ -347,6 +347,14 @@ impl<'a, T: Flat> IntoIterator for &'a NearList<T> {
   }
 }
 
+impl<T: Flat + PartialEq> PartialEq for NearList<T> {
+  fn eq(&self, other: &Self) -> bool {
+    self.len() == other.len() && self.iter().zip(other.iter()).all(|(a, b)| a == b)
+  }
+}
+
+impl<T: Flat + Eq> Eq for NearList<T> {}
+
 impl<T: Flat + fmt::Debug> fmt::Debug for NearList<T> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_list().entries(self.iter()).finish()

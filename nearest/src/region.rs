@@ -542,6 +542,14 @@ impl<T: Flat, B: Buf + Clone> Clone for Region<T, B> {
   }
 }
 
+impl<T: Flat + PartialEq, B: Buf> PartialEq for Region<T, B> {
+  fn eq(&self, other: &Self) -> bool {
+    **self == **other
+  }
+}
+
+impl<T: Flat + Eq, B: Buf> Eq for Region<T, B> {}
+
 impl<T: Flat + fmt::Debug, B: Buf> fmt::Debug for Region<T, B> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("Region").field("root", &**self).finish()
