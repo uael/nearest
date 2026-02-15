@@ -1,0 +1,19 @@
+[workspace]
+members = ["nearest", "nearest-derive", "xtask"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.93.0"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+missing_safety_doc = "deny"
+undocumented_unsafe_blocks = "deny"
+too_many_lines = "allow"
+uninhabited_references = "allow"
+cast_possible_truncation = "allow"

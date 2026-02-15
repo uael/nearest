@@ -1,0 +1,5 @@
+error: Flat derive: explicit discriminant values are not supported
+ --> tests/compile-fail/derive_enum_explicit_discriminant.rs:8:3
+  |
+8 |   A = 5,
+  |   ^

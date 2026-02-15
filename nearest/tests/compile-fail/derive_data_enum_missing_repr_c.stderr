@@ -1,0 +1,5 @@
+error: Flat derive: enums with data fields require #[repr(C, u8)] to guarantee discriminant layout
+ --> tests/compile-fail/derive_data_enum_missing_repr_c.rs:7:6
+  |
+7 | enum Bad {
+  |      ^^^

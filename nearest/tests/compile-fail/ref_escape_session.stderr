@@ -1,0 +1,13 @@
+error: lifetime may not live long enough
+  --> tests/compile-fail/ref_escape_session.rs:14:5
+   |
+13 |   let escaped: Ref<'_, Block> = region.session(|s| {
+   |                                                 -- return type of closure is nearest::Ref<'2, Block>
+   |                                                 |
+   |                                                 has type `&mut Session<'1, '_, Block>`
+14 |     s.root() // Ref escapes the closure — must not compile.
+   |     ^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+   |
+   = note: requirement occurs because of the type `nearest::Ref<'_, Block>`, which makes the generic argument `'_` invariant
+   = note: the struct `nearest::Ref<'id, T>` is invariant over the parameter `'id`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance

@@ -1,0 +1,5 @@
+error: Flat derive: enum requires #[repr(u8)] or #[repr(C, u8)]
+ --> tests/compile-fail/derive_enum_missing_repr.rs:6:6
+  |
+6 | enum Bad {
+  |      ^^^

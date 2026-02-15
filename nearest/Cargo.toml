@@ -1,0 +1,27 @@
+[package]
+name = "nearest"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0 OR MIT"
+description = "Self-relative pointer library for region-based allocation"
+repository = "https://github.com/uael/nearest"
+homepage = "https://github.com/uael/nearest"
+documentation = "https://docs.rs/nearest"
+readme = "../README.md"
+keywords = ["self-relative", "pointer", "region", "allocation", "arena"]
+categories = ["data-structures", "memory-management"]
+
+[dependencies]
+nearest-derive = { version = "=0.1.0", path = "../nearest-derive" }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+trybuild = "1"
+
+[[bench]]
+name = "region"
+harness = false
+
+[lints]
+workspace = true

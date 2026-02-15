@@ -1,0 +1,13 @@
+error[E0080]: evaluation panicked: assertion failed: !std::mem::needs_drop::<Bad>()
+ --> tests/compile-fail/derive_type_with_drop.rs:5:10
+  |
+5 | #[derive(Flat)]
+  |          ^^^^ evaluation of `<Bad as nearest::Flat>::_ASSERT_NO_DROP::{constant#0}` failed here
+
+note: erroneous constant encountered
+ --> tests/compile-fail/derive_type_with_drop.rs:5:10
+  |
+5 | #[derive(Flat)]
+  |          ^^^^
+  |
+  = note: this note originates in the derive macro `Flat` (in Nightly builds, run with -Z macro-backtrace for more info)
