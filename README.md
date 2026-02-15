@@ -1,9 +1,9 @@
 # nearest
 
-[![Crates.io](https://img.shields.io/crates/v/nearest.svg)](https://crates.io/crates/nearest)
+[![Rust](https://github.com/uael/nearest/workflows/Rust/badge.svg)](https://github.com/uael/nearest/actions)
+[![Latest version](https://img.shields.io/crates/v/nearest.svg)](https://crates.io/crates/nearest)
 [![Documentation](https://docs.rs/nearest/badge.svg)](https://docs.rs/nearest)
-[![CI](https://github.com/uael/nearest/actions/workflows/ci.yml/badge.svg)](https://github.com/uael/nearest/actions/workflows/ci.yml)
-[![License](https://img.shields.io/crates/l/nearest.svg)](LICENSE-APACHE)
+![License](https://img.shields.io/crates/l/nearest.svg)
 
 Self-relative pointer library for region-based allocation.
 
