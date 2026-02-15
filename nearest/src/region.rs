@@ -449,6 +449,59 @@ impl<T: Flat, B: Buf> Region<T, B> {
     self.buf.as_bytes()
   }
 
+  /// Consume the region and return the underlying buffer.
+  ///
+  /// This is a zero-copy operation — it simply unwraps the inner buffer.
+  /// The returned buffer can be passed to [`from_bytes`](Self::from_bytes)
+  /// (via [`Buf::as_bytes`]) for reconstruction, or converted to bytes.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region, empty};
+  ///
+  /// #[derive(Flat, Debug)]
+  /// struct Node {
+  ///   id: u32,
+  ///   children: NearList<u32>,
+  /// }
+  ///
+  /// let region = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let buf = region.into_buf();
+  /// ```
+  pub fn into_buf(self) -> B {
+    self.buf
+  }
+
+  /// Consume the region and return its contents as a `Vec<u8>`.
+  ///
+  /// The returned vector contains the same bytes as [`as_bytes`](Self::as_bytes).
+  /// This is useful for APIs that need an owned byte buffer (e.g. I/O,
+  /// network transmission, or storage). The bytes can later be restored
+  /// via [`Region::from_bytes`].
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region};
+  ///
+  /// #[derive(Flat, Debug)]
+  /// struct Node {
+  ///   id: u32,
+  ///   children: NearList<u32>,
+  /// }
+  ///
+  /// let region = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let bytes: Vec<u8> = region.into_vec();
+  /// let restored: Region<Node> = Region::from_bytes(&bytes).unwrap();
+  /// assert_eq!(restored.id, 1);
+  /// assert_eq!(restored.children.len(), 3);
+  /// ```
+  #[cfg(feature = "alloc")]
+  pub fn into_vec(self) -> alloc::vec::Vec<u8> {
+    self.buf.as_bytes().to_vec()
+  }
+
   /// Validate and reconstruct a region from raw bytes.
   ///
   /// Copies the bytes into an aligned buffer first, then runs
@@ -670,6 +723,19 @@ impl<T: Flat + fmt::Display, B: Buf> fmt::Display for Region<T, B> {
 unsafe impl<T: Flat + Send + Sync, B: Buf + Send> Send for Region<T, B> {}
 // SAFETY: See above — Region owns its buffer exclusively.
 unsafe impl<T: Flat + Send + Sync, B: Buf + Sync> Sync for Region<T, B> {}
+
+impl<T: Flat, B: Buf> AsRef<[u8]> for Region<T, B> {
+  fn as_ref(&self) -> &[u8] {
+    self.as_bytes()
+  }
+}
+
+#[cfg(feature = "alloc")]
+impl<T: Flat, B: Buf> From<Region<T, B>> for alloc::vec::Vec<u8> {
+  fn from(region: Region<T, B>) -> Self {
+    region.into_vec()
+  }
+}
 
 // ---------------------------------------------------------------------------
 // serde support
