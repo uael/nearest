@@ -63,7 +63,7 @@ Requires **nightly** Rust due to `#![feature(offset_of_enum)]`.
 
 ```toml
 [dependencies]
-nearest = "0.2"
+nearest = "0.3"
 ```
 
 See the [API documentation](https://docs.rs/nearest) for comprehensive guides
