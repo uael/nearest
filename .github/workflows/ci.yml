@@ -70,7 +70,7 @@ jobs:
         with:
           toolchain: nightly-2026-02-10
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --no-deps --all
+      - run: cargo doc --no-deps --all --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
