@@ -17,6 +17,7 @@ default = ["alloc"]
 alloc = []
 std = ["alloc"]
 serde = ["dep:serde"]
+checksum = []
 
 [dependencies]
 nearest-derive = { version = "=0.2.0", path = "../nearest-derive" }

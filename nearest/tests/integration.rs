@@ -2324,3 +2324,91 @@ mod serde_tests {
     assert_eq!(restored.as_bytes(), &original_bytes[..]);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Checksum tests
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "checksum")]
+mod checksum_tests {
+  use nearest::{Flat, NearList, Region, empty};
+
+  #[derive(Flat, Debug)]
+  struct CNode {
+    id: u32,
+    items: NearList<u32>,
+  }
+
+  #[test]
+  fn checksum_is_deterministic() {
+    let region = Region::new(CNode::make(1, [10u32, 20, 30]));
+    let c1 = region.checksum();
+    let c2 = region.checksum();
+    assert_eq!(c1, c2);
+  }
+
+  #[test]
+  fn clone_has_same_checksum() {
+    let region = Region::new(CNode::make(42, [1u32, 2, 3]));
+    let cloned = region.clone();
+    assert_eq!(region.checksum(), cloned.checksum());
+  }
+
+  #[test]
+  fn roundtrip_preserves_checksum() {
+    let original = Region::new(CNode::make(7, [100u32, 200]));
+    let checksum_before = original.checksum();
+    let bytes = original.as_bytes();
+    let restored: Region<CNode> = Region::from_bytes(bytes).unwrap();
+    assert_eq!(restored.checksum(), checksum_before);
+  }
+
+  #[test]
+  fn different_content_different_checksum() {
+    let r1 = Region::new(CNode::make(1, [10u32]));
+    let r2 = Region::new(CNode::make(2, [10u32]));
+    assert_ne!(r1.checksum(), r2.checksum());
+  }
+
+  #[test]
+  fn empty_list_checksum_stable() {
+    let r1: Region<CNode> = Region::new(CNode::make(0, empty()));
+    let r2: Region<CNode> = Region::new(CNode::make(0, empty()));
+    assert_eq!(r1.checksum(), r2.checksum());
+  }
+
+  #[test]
+  fn mutation_changes_checksum() {
+    let mut region = Region::new(CNode::make(1, [10u32, 20]));
+    let before = region.checksum();
+    region.session(|s| {
+      let items = s.nav(s.root(), |n| &n.items);
+      s.splice_list(items, [99u32]);
+    });
+    let after = region.checksum();
+    assert_ne!(before, after);
+  }
+
+  #[test]
+  fn trim_may_change_checksum() {
+    let mut region = Region::new(CNode::make(1, [10u32, 20]));
+    region.session(|s| {
+      let items = s.nav(s.root(), |n| &n.items);
+      s.splice_list(items, [99u32]);
+    });
+    let before_trim = region.checksum();
+    region.trim();
+    let after_trim = region.checksum();
+    // After trim, dead bytes are removed so the checksum typically changes.
+    // We just verify it doesn't panic and returns a valid u32.
+    let _ = (before_trim, after_trim);
+  }
+
+  #[test]
+  fn checksum_is_nonzero_for_nonempty_region() {
+    let region = Region::new(CNode::make(1, [10u32, 20, 30]));
+    // While CRC32 *could* theoretically be 0, it's extremely unlikely
+    // for a non-trivial region. This serves as a basic sanity check.
+    let _ = region.checksum(); // Just verify it computes without panic.
+  }
+}

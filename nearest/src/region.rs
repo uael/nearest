@@ -449,6 +449,40 @@ impl<T: Flat, B: Buf> Region<T, B> {
     self.buf.as_bytes()
   }
 
+  /// Compute a CRC32 checksum of the region's byte contents.
+  ///
+  /// Returns the CRC-32/ISO-HDLC checksum of [`as_bytes()`](Self::as_bytes).
+  /// Useful for verifying data integrity after persistence or transmission.
+  ///
+  /// The checksum is computed over the raw buffer, so two `Region`s with
+  /// identical byte contents always produce the same value. Mutations that
+  /// change the buffer (including dead bytes from append-only updates) will
+  /// change the checksum; call [`trim`](Self::trim) first if you want a
+  /// canonical form.
+  ///
+  /// # Examples
+  ///
+  /// ```
+  /// use nearest::{Flat, NearList, Region, empty};
+  ///
+  /// #[derive(Flat, Debug)]
+  /// struct Node { id: u32, items: NearList<u32> }
+  ///
+  /// let region = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let c1 = region.checksum();
+  /// let c2 = region.checksum();
+  /// assert_eq!(c1, c2);
+  ///
+  /// // A clone has the same bytes, so the same checksum.
+  /// let cloned = region.clone();
+  /// assert_eq!(region.checksum(), cloned.checksum());
+  /// ```
+  #[cfg(feature = "checksum")]
+  #[must_use]
+  pub fn checksum(&self) -> u32 {
+    crate::crc32::checksum(self.as_bytes())
+  }
+
   /// Validate and reconstruct a region from raw bytes.
   ///
   /// Copies the bytes into an aligned buffer first, then runs

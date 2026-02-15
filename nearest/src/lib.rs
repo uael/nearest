@@ -308,6 +308,7 @@
 //! | **`alloc`** | yes | Heap-backed [`AlignedBuf`], `Region::new`, `Region::trim`, growable sessions |
 //! | **`std`** | no | Implies `alloc`; reserved for future `std`-only APIs |
 //! | **`serde`** | no | [`Serialize`](::serde::Serialize) / [`Deserialize`](::serde::Deserialize) for `Region<T>` |
+//! | **`checksum`** | no | [`Region::checksum`] — CRC32 integrity checksum of the buffer |
 //!
 //! ## `no_std` support
 //!
@@ -414,6 +415,8 @@
 extern crate alloc;
 
 mod buf;
+#[cfg(feature = "checksum")]
+mod crc32;
 mod emit;
 mod emitter;
 mod flat;
