@@ -2324,3 +2324,112 @@ mod serde_tests {
     assert_eq!(restored.as_bytes(), &original_bytes[..]);
   }
 }
+
+// ===========================================================================
+// PartialEq / Eq tests
+// ===========================================================================
+
+#[derive(Flat, Debug, PartialEq, Eq)]
+struct EqNode {
+  id: u32,
+  items: NearList<u32>,
+}
+
+#[derive(Flat, Debug, PartialEq, Eq)]
+struct EqNested {
+  label: u32,
+  child: Near<EqNode>,
+}
+
+#[test]
+fn region_eq_identical_builds() {
+  let a = Region::new(EqNode::make(1, [10u32, 20, 30]));
+  let b = Region::new(EqNode::make(1, [10u32, 20, 30]));
+  assert_eq!(a, b);
+}
+
+#[test]
+fn region_eq_clone() {
+  let a = Region::new(EqNode::make(42, [1u32, 2, 3]));
+  let b = a.clone();
+  assert_eq!(a, b);
+}
+
+#[test]
+fn region_ne_different_scalar() {
+  let a = Region::new(EqNode::make(1, [10u32, 20]));
+  let b = Region::new(EqNode::make(2, [10u32, 20]));
+  assert_ne!(a, b);
+}
+
+#[test]
+fn region_ne_different_list_len() {
+  let a = Region::new(EqNode::make(1, [10u32, 20]));
+  let b = Region::new(EqNode::make(1, [10u32, 20, 30]));
+  assert_ne!(a, b);
+}
+
+#[test]
+fn region_ne_different_list_values() {
+  let a = Region::new(EqNode::make(1, [10u32, 20, 30]));
+  let b = Region::new(EqNode::make(1, [10u32, 20, 99]));
+  assert_ne!(a, b);
+}
+
+#[test]
+fn region_eq_empty_lists() {
+  let a: Region<EqNode> = Region::new(EqNode::make(5, empty()));
+  let b: Region<EqNode> = Region::new(EqNode::make(5, empty()));
+  assert_eq!(a, b);
+}
+
+#[test]
+fn region_eq_after_trim_same_logical_content() {
+  // Build two regions with the same logical content but different buffer layouts.
+  // Region `a` is built fresh; region `b` is mutated then trimmed.
+  let a = Region::new(EqNode::make(1, [100u32]));
+
+  let mut b = Region::new(EqNode::make(1, [10u32, 20, 30]));
+  b.session(|s| {
+    let items = s.nav(s.root(), |n| &n.items);
+    s.splice_list(items, [100u32]);
+  });
+  // Before trim, buffer has dead bytes — byte_len differs.
+  assert!(b.byte_len() > a.byte_len());
+  b.trim();
+  // After trim, logical content matches.
+  assert_eq!(a, b);
+}
+
+#[test]
+fn region_eq_nested_near() {
+  let a = Region::new(EqNested::make(1, EqNode::make(2, [3u32, 4])));
+  let b = Region::new(EqNested::make(1, EqNode::make(2, [3u32, 4])));
+  assert_eq!(a, b);
+}
+
+#[test]
+fn region_ne_nested_near_different_child() {
+  let a = Region::new(EqNested::make(1, EqNode::make(2, [3u32, 4])));
+  let b = Region::new(EqNested::make(1, EqNode::make(9, [3u32, 4])));
+  assert_ne!(a, b);
+}
+
+#[test]
+fn region_eq_different_buffer_layouts() {
+  // Two regions with identical logical content but different buffer layouts
+  // due to mutation history. They should be equal when compared via root deref.
+  let mut a = Region::new(EqNode::make(7, [1u32, 2]));
+  a.session(|s| {
+    let items = s.nav(s.root(), |n| &n.items);
+    s.push_front(items, 0u32);
+  });
+  // a now has items [0, 1, 2] across 2 segments
+
+  let b = Region::new(EqNode::make(7, [0u32, 1, 2]));
+  // b has items [0, 1, 2] in 1 segment
+
+  // Different buffer layouts but same logical content.
+  assert_ne!(a.byte_len(), b.byte_len());
+  assert_eq!(a, b);
+}

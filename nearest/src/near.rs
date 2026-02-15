@@ -107,6 +107,14 @@ impl<T: Flat> Deref for Near<T> {
   }
 }
 
+impl<T: Flat + PartialEq> PartialEq for Near<T> {
+  fn eq(&self, other: &Self) -> bool {
+    *self.get() == *other.get()
+  }
+}
+
+impl<T: Flat + Eq> Eq for Near<T> {}
+
 impl<T: Flat + fmt::Debug> fmt::Debug for Near<T> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     fmt::Debug::fmt(self.get(), f)
