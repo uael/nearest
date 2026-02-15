@@ -2009,45 +2009,6 @@ fn list_item_oob_panics() {
 }
 
 // ===========================================================================
-// NearList::last tests
-// ===========================================================================
-
-#[test]
-fn near_list_last_non_empty() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20), Value::Const(30)]));
-  assert_eq!(region.items.last(), Some(&Value::Const(30)));
-}
-
-#[test]
-fn near_list_last_single() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(42)]));
-  assert_eq!(region.items.last(), Some(&Value::Const(42)));
-}
-
-#[test]
-fn near_list_last_empty() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-  assert_eq!(region.items.last(), None);
-}
-
-#[test]
-fn near_list_last_multi_segment() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2)]));
-
-  // push_front creates a new segment.
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.push_front(items, Value::Const(0));
-  });
-
-  assert_eq!(region.items.segment_count(), 2);
-  // Last element should still be the original last.
-  assert_eq!(region.items.last(), Some(&Value::Const(2)));
-}
-
-// ===========================================================================
 // NearList::contains tests
 // ===========================================================================
 

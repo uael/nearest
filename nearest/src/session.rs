@@ -1181,7 +1181,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   ///
   /// Two elements are considered equal when `eq` returns `true`. Only the
   /// first element of each run of equal elements is kept — identical to
-  /// [`[T]::dedup_by`](slice::dedup_by) semantics. No-op on empty or
+  /// `[T]::dedup_by` semantics. No-op on empty or
   /// single-element lists.
   ///
   /// **Note**: Allocates a `Vec<u32>` of retained element positions as a

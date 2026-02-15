@@ -295,51 +295,6 @@ impl<T: Flat> NearList<T> {
     }
   }
 
-  /// Returns a reference to the last element, or `None` if empty.
-  ///
-  /// Walks the entire segment chain to find the final element — O(n) in the
-  /// number of segments (O(1) after [`trim`](crate::Region::trim)).
-  ///
-  /// # Examples
-  ///
-  /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
-  ///
-  /// #[derive(Flat)]
-  /// struct Root { items: NearList<u32> }
-  ///
-  /// let region = Region::new(Root::make([10u32, 20, 30]));
-  /// assert_eq!(region.items.last(), Some(&30));
-  ///
-  /// let region = Region::new(Root::make(empty()));
-  /// assert_eq!(region.items.last(), None);
-  /// ```
-  #[must_use]
-  pub fn last(&self) -> Option<&T> {
-    if self.len == 0 {
-      return None;
-    }
-    // Walk to the final segment, then index its last value.
-    // SAFETY: head offset was written by the emitter, pointing to a valid
-    // Segment<T>. We follow `next` pointers until the chain terminates.
-    unsafe {
-      let mut seg_addr =
-        core::ptr::from_ref(&self.head).cast::<u8>().addr().wrapping_add_signed(self.head as isize);
-      loop {
-        let seg = &*core::ptr::with_exposed_provenance::<Segment<T>>(seg_addr);
-        if seg.next == 0 {
-          // Last segment: return the final value.
-          let val_addr = seg_addr
-            .wrapping_add(size_of::<Segment<T>>())
-            .wrapping_add((seg.len as usize - 1) * size_of::<T>());
-          return Some(&*core::ptr::with_exposed_provenance::<T>(val_addr));
-        }
-        seg_addr =
-          core::ptr::from_ref(&seg.next).cast::<u8>().addr().wrapping_add_signed(seg.next as isize);
-      }
-    }
-  }
-
   /// Returns an iterator over the elements.
   ///
   /// Construction is O(1). Within a segment, iteration is contiguous (`ptr.add(1)`).
