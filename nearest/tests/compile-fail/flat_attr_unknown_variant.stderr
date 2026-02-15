@@ -1,0 +1,5 @@
+error: expected `rename = "..."`
+ --> tests/compile-fail/flat_attr_unknown_variant.rs:8:10
+  |
+8 |   #[flat(skip)]
+  |          ^^^^

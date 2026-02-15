@@ -1,5 +1,6 @@
 //! Derive macros for the `nearest` crate.
 
+mod attrs;
 mod emit;
 mod emit_proxy;
 mod flat;
@@ -13,7 +14,46 @@ use syn::{Data, parse_macro_input};
 ///
 /// Generates implementations for both the `Flat` marker trait and the `Emit`
 /// builder trait, enabling declarative region construction.
-#[proc_macro_derive(Flat)]
+///
+/// # Field attributes
+///
+/// ## `#[flat(into)]`
+///
+/// On a primitive or `Other`-classified field, the generated `make()` builder
+/// accepts `impl Into<T>` instead of `T`. This allows callers to pass values
+/// that can be cheaply converted.
+///
+/// ```ignore
+/// #[derive(Flat)]
+/// struct Inst {
+///   #[flat(into)]
+///   op: u16,
+///   typ: Type,
+/// }
+///
+/// // Now `op` accepts any `impl Into<u16>`:
+/// Inst::make(42u8, Type(0))
+/// ```
+///
+/// # Variant attributes
+///
+/// ## `#[flat(rename = "name")]`
+///
+/// On an enum variant, overrides the generated `make_*` method name.
+///
+/// ```ignore
+/// #[derive(Flat)]
+/// #[repr(C, u8)]
+/// enum Term {
+///   #[flat(rename = "ret")]
+///   Return { values: NearList<Value> },
+///   Jmp(Jmp),
+/// }
+///
+/// // Instead of `Term::make_return(...)`:
+/// Term::ret(...)
+/// ```
+#[proc_macro_derive(Flat, attributes(flat))]
 pub fn derive_flat(input: TokenStream) -> TokenStream {
   let input = parse_macro_input!(input as syn::DeriveInput);
   if let Data::Union(ref u) = input.data {
@@ -21,6 +61,9 @@ pub fn derive_flat(input: TokenStream) -> TokenStream {
       syn::Error::new_spanned(u.union_token, "Flat cannot be derived for unions")
         .to_compile_error(),
     );
+  }
+  if let Err(err) = attrs::validate_all_attrs(&input) {
+    return TokenStream::from(err.to_compile_error());
   }
   if let Data::Enum(ref data) = input.data
     && let Some(err) = flat::validate_enum(&input, data)

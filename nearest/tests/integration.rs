@@ -3005,8 +3005,6 @@ fn region_eq_empty_lists() {
 
 #[test]
 fn region_eq_after_trim_same_logical_content() {
-  // Build two regions with the same logical content but different buffer layouts.
-  // Region `a` is built fresh; region `b` is mutated then trimmed.
   let a = Region::new(EqNode::make(1, [100u32]));
 
   let mut b = Region::new(EqNode::make(1, [10u32, 20, 30]));
@@ -3014,10 +3012,8 @@ fn region_eq_after_trim_same_logical_content() {
     let items = s.nav(s.root(), |n| &n.items);
     s.splice_list(items, [100u32]);
   });
-  // Before trim, buffer has dead bytes — byte_len differs.
   assert!(b.byte_len() > a.byte_len());
   b.trim();
-  // After trim, logical content matches.
   assert_eq!(a, b);
 }
 
@@ -3037,19 +3033,14 @@ fn region_ne_nested_near_different_child() {
 
 #[test]
 fn region_eq_different_buffer_layouts() {
-  // Two regions with identical logical content but different buffer layouts
-  // due to mutation history. They should be equal when compared via root deref.
   let mut a = Region::new(EqNode::make(7, [1u32, 2]));
   a.session(|s| {
     let items = s.nav(s.root(), |n| &n.items);
     s.push_front(items, 0u32);
   });
-  // a now has items [0, 1, 2] across 2 segments
 
   let b = Region::new(EqNode::make(7, [0u32, 1, 2]));
-  // b has items [0, 1, 2] in 1 segment
 
-  // Different buffer layouts but same logical content.
   assert_ne!(a.byte_len(), b.byte_len());
   assert_eq!(a, b);
 }
@@ -3109,4 +3100,156 @@ fn display_region_delegates_to_root() {
   let region: Region<u32> = Region::new(42u32);
   let output = format!("{region}");
   assert_eq!(output, "42");
+}
+
+// ===========================================================================
+// Derive attribute tests — #[flat(into)] and #[flat(rename = "...")]
+// ===========================================================================
+
+/// A struct using `#[flat(into)]` on primitive fields.
+#[derive(Flat, Debug)]
+struct IntoInst {
+  #[flat(into)]
+  op: u16,
+  typ: Type,
+  args: NearList<Value>,
+}
+
+/// A struct using `#[flat(into)]` on an `Other`-classified field (user type).
+#[derive(Flat, Debug)]
+struct IntoOther {
+  #[flat(into)]
+  sym: Symbol,
+  val: u32,
+}
+
+/// An enum using `#[flat(rename = "...")]` on variants.
+#[derive(Flat, Debug)]
+#[repr(C, u8)]
+#[expect(dead_code, reason = "variants constructed via renamed emitters")]
+enum RenamedTerm {
+  #[flat(rename = "ret")]
+  Return { values: NearList<Value> },
+  #[flat(rename = "br")]
+  Jump(Jmp),
+}
+
+/// An enum with a renamed unit variant — only useful when it has pointer fields.
+#[derive(Flat, Debug)]
+#[repr(C, u8)]
+#[expect(dead_code, reason = "variants constructed via renamed emitters")]
+enum Signal {
+  #[flat(rename = "on")]
+  Enabled,
+  #[flat(rename = "off")]
+  Disabled,
+  #[flat(rename = "val")]
+  WithPayload { data: Near<Type> },
+}
+
+#[test]
+fn flat_into_primitive_field() {
+  // `op` accepts `impl Into<u16>` — pass a u8 which converts to u16.
+  let region: Region<IntoInst> = Region::new(IntoInst::make(42u8, Type(1), [Value::Const(10)]));
+  let inst: &IntoInst = &region;
+  assert_eq!(inst.op, 42);
+  assert_eq!(inst.typ, Type(1));
+  assert_eq!(inst.args.len(), 1);
+  assert_eq!(inst.args[0], Value::Const(10));
+}
+
+#[test]
+fn flat_into_primitive_exact_type() {
+  // `#[flat(into)]` still accepts the exact type as well.
+  let region: Region<IntoInst> = Region::new(IntoInst::make(1000u16, Type(0), empty()));
+  let inst: &IntoInst = &region;
+  assert_eq!(inst.op, 1000);
+}
+
+#[test]
+fn flat_into_other_field() {
+  // `sym` is `Symbol(u32)` with `#[flat(into)]`, so it accepts `impl Into<Symbol>`.
+  // Since Symbol is a newtype, we just pass it directly (Into<Symbol> for Symbol).
+  let region: Region<IntoOther> = Region::new(IntoOther::make(Symbol(42), 7));
+  let other: &IntoOther = &region;
+  assert_eq!(other.sym, Symbol(42));
+  assert_eq!(other.val, 7);
+}
+
+#[test]
+fn flat_rename_enum_variant_named() {
+  // `#[flat(rename = "ret")]` changes `make_return` to `ret`.
+  let region: Region<RenamedTerm> = Region::new(RenamedTerm::ret([Value::Const(42)]));
+  let term: &RenamedTerm = &region;
+  match term {
+    RenamedTerm::Return { values } => {
+      assert_eq!(values.len(), 1);
+      assert_eq!(values[0], Value::Const(42));
+    }
+    RenamedTerm::Jump(_) => panic!("expected Return"),
+  }
+}
+
+#[test]
+fn flat_rename_enum_variant_unnamed() {
+  // `#[flat(rename = "br")]` changes `make_jump` to `br`.
+  let region: Region<RenamedTerm> = Region::new(RenamedTerm::br(Jmp::make(
+    [Value::Const(1)],
+    Block::make(Symbol(0), empty(), empty(), Term::make_ret([Value::Const(99)])),
+  )));
+  let term: &RenamedTerm = &region;
+  match term {
+    RenamedTerm::Jump(jmp) => {
+      assert_eq!(jmp.args.len(), 1);
+      assert_eq!(jmp.args[0], Value::Const(1));
+    }
+    RenamedTerm::Return { .. } => panic!("expected Jump"),
+  }
+}
+
+#[test]
+fn flat_rename_enum_unit_variant() {
+  // `#[flat(rename = "on")]` changes `make_enabled` to `on`.
+  let region: Region<Signal> = Region::new(Signal::on());
+  let sig: &Signal = &region;
+  assert!(matches!(sig, Signal::Enabled));
+}
+
+#[test]
+fn flat_rename_enum_all_variants() {
+  // Test all renamed variants of Signal.
+  let r1: Region<Signal> = Region::new(Signal::on());
+  assert!(matches!(&*r1, Signal::Enabled));
+
+  let r2: Region<Signal> = Region::new(Signal::off());
+  assert!(matches!(&*r2, Signal::Disabled));
+
+  let r3: Region<Signal> = Region::new(Signal::val(Type(7)));
+  match &*r3 {
+    Signal::WithPayload { data } => assert_eq!(*data.get(), Type(7)),
+    _ => panic!("expected WithPayload"),
+  }
+}
+
+#[test]
+fn flat_into_clone_preserves() {
+  let region: Region<IntoInst> = Region::new(IntoInst::make(100u8, Type(2), [Value::Const(5)]));
+  let cloned = region.clone();
+  let i1: &IntoInst = &region;
+  let i2: &IntoInst = &cloned;
+  assert_eq!(i1.op, i2.op);
+  assert_eq!(i1.typ, i2.typ);
+  assert_eq!(i1.args[0], i2.args[0]);
+}
+
+#[test]
+fn flat_into_trim_preserves() {
+  let mut region: Region<IntoInst> =
+    Region::new(IntoInst::make(200u8, Type(3), [Value::Const(7), Value::Const(8)]));
+  region.trim();
+  let inst: &IntoInst = &region;
+  assert_eq!(inst.op, 200);
+  assert_eq!(inst.args.len(), 2);
+  assert_eq!(inst.args[0], Value::Const(7));
+  assert_eq!(inst.args[1], Value::Const(8));
 }
