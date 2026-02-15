@@ -1,0 +1,5 @@
+error: expected `into`
+ --> tests/compile-fail/flat_attr_unknown_field.rs:7:10
+  |
+7 |   #[flat(skip)]
+  |          ^^^^

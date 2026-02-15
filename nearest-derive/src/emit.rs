@@ -2,10 +2,13 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Data, DataEnum, DataStruct, DeriveInput, Fields, Variant};
 
-use crate::util::{
-  FieldKind, capitalize, classify_field, collect_field_types, combine_where,
-  flat_bounded_param_names, has_flat_bound, has_no_pointer_fields, is_all_primitive,
-  is_type_param_ident, opt_where_clause, to_snake_case,
+use crate::{
+  attrs::{parse_field_attrs, parse_variant_attrs},
+  util::{
+    FieldKind, capitalize, classify_field, collect_field_types, combine_where,
+    flat_bounded_param_names, has_flat_bound, has_no_pointer_fields, is_all_primitive,
+    is_type_param_ident, opt_where_clause, to_snake_case,
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -46,8 +49,25 @@ fn analyze_field(
   field_ty: &syn::Type,
   param_name: &proc_macro2::Ident,
   offset_expr: &TokenStream,
+  use_into: bool,
 ) -> EmitterField {
   match classify_field(field_ty) {
+    FieldKind::Primitive if use_into => EmitterField {
+      fn_param_type: quote! { impl Into<#field_ty> },
+      builder_type: quote! { #param_name },
+      generic_param: Some(param_name.clone()),
+      where_pred: Some(quote! { #param_name: Into<#field_ty> }),
+      write_at_code: quote! {
+        unsafe {
+          ::nearest::Emit::<#field_ty>::write_at(
+            (#value_expr).into(),
+            nearest_p,
+            nearest_at.offset(#offset_expr),
+          );
+        }
+      },
+      fn_generic_decl: None,
+    },
     FieldKind::Primitive => EmitterField {
       fn_param_type: quote! { #field_ty },
       builder_type: quote! { #field_ty },
@@ -116,6 +136,23 @@ fn analyze_field(
         }
       },
       fn_generic_decl: Some(quote! { #param_name: ::nearest::Emit<#inner> }),
+    },
+    FieldKind::Other if use_into => EmitterField {
+      fn_param_type: quote! { impl Into<#field_ty> },
+      builder_type: quote! { #param_name },
+      generic_param: Some(param_name.clone()),
+      where_pred: Some(quote! { #param_name: Into<#field_ty> }),
+      write_at_code: quote! {
+        unsafe {
+          let nearest_val: #field_ty = (#value_expr).into();
+          ::nearest::Emit::<#field_ty>::write_at(
+            nearest_val,
+            nearest_p,
+            nearest_at.offset(#offset_expr),
+          );
+        }
+      },
+      fn_generic_decl: None,
     },
     FieldKind::Other => EmitterField {
       fn_param_type: quote! { impl ::nearest::Emit<#field_ty> },
@@ -247,10 +284,15 @@ fn gen_emit_struct(input: &DeriveInput, data: &DataStruct) -> TokenStream {
       for f in &named.named {
         let field_name = f.ident.as_ref().unwrap();
         let field_ty = &f.ty;
+        let field_attrs = match parse_field_attrs(&f.attrs) {
+          Ok(a) => a,
+          Err(e) => return e.to_compile_error(),
+        };
         let param_name = format_ident!("__{}", capitalize(&field_name.to_string()));
         let value_expr = quote! { self.#field_name };
         let offset_expr = quote! { ::core::mem::offset_of!(#name #ty_generics, #field_name) };
-        let info = analyze_field(&value_expr, field_ty, &param_name, &offset_expr);
+        let info =
+          analyze_field(&value_expr, field_ty, &param_name, &offset_expr, field_attrs.into);
 
         let fn_pt = &info.fn_param_type;
         fn_params.push(quote! { #field_name: #fn_pt });
@@ -314,12 +356,17 @@ fn gen_emit_struct(input: &DeriveInput, data: &DataStruct) -> TokenStream {
 
       for (i, f) in unnamed.unnamed.iter().enumerate() {
         let field_ty = &f.ty;
+        let field_attrs = match parse_field_attrs(&f.attrs) {
+          Ok(a) => a,
+          Err(e) => return e.to_compile_error(),
+        };
         let field_ident = format_ident!("f{}", i);
         let param_name = format_ident!("__F{}", i);
         let idx = syn::Index::from(i);
         let value_expr = quote! { self.#field_ident };
         let offset_expr = quote! { ::core::mem::offset_of!(#name #ty_generics, #idx) };
-        let info = analyze_field(&value_expr, field_ty, &param_name, &offset_expr);
+        let info =
+          analyze_field(&value_expr, field_ty, &param_name, &offset_expr, field_attrs.into);
 
         let fn_pt = &info.fn_param_type;
         fn_params.push(quote! { #field_ident: #fn_pt });
@@ -412,7 +459,13 @@ fn gen_variant_emitter(
 ) -> TokenStream {
   let (_, ty_generics, _) = generics.split_for_impl();
   let vname = &variant.ident;
-  let method_name = format_ident!("make_{}", to_snake_case(&vname.to_string()));
+  let variant_attrs = match parse_variant_attrs(&variant.attrs) {
+    Ok(a) => a,
+    Err(e) => return e.to_compile_error(),
+  };
+  let method_name = variant_attrs
+    .rename
+    .unwrap_or_else(|| format_ident!("make_{}", to_snake_case(&vname.to_string())));
   let disc = variant_idx as u8;
 
   match &variant.fields {
@@ -428,11 +481,16 @@ fn gen_variant_emitter(
       for f in &named.named {
         let field_name = f.ident.as_ref().unwrap();
         let field_ty = &f.ty;
+        let field_attrs = match parse_field_attrs(&f.attrs) {
+          Ok(a) => a,
+          Err(e) => return e.to_compile_error(),
+        };
         let param_name = format_ident!("__{}", capitalize(&field_name.to_string()));
         let value_expr = quote! { self.#field_name };
         let offset_expr =
           quote! { ::core::mem::offset_of!(#enum_name #ty_generics, #vname.#field_name) };
-        let info = analyze_field(&value_expr, field_ty, &param_name, &offset_expr);
+        let info =
+          analyze_field(&value_expr, field_ty, &param_name, &offset_expr, field_attrs.into);
 
         let fn_pt = &info.fn_param_type;
         fn_params.push(quote! { #field_name: #fn_pt });
@@ -495,12 +553,17 @@ fn gen_variant_emitter(
 
       for (i, f) in unnamed.unnamed.iter().enumerate() {
         let field_ty = &f.ty;
+        let field_attrs = match parse_field_attrs(&f.attrs) {
+          Ok(a) => a,
+          Err(e) => return e.to_compile_error(),
+        };
         let field_ident = format_ident!("f{}", i);
         let param_name = format_ident!("__F{}", i);
         let idx = syn::Index::from(i);
         let value_expr = quote! { self.#field_ident };
         let offset_expr = quote! { ::core::mem::offset_of!(#enum_name #ty_generics, #vname.#idx) };
-        let info = analyze_field(&value_expr, field_ty, &param_name, &offset_expr);
+        let info =
+          analyze_field(&value_expr, field_ty, &param_name, &offset_expr, field_attrs.into);
 
         let fn_pt = &info.fn_param_type;
         fn_params.push(quote! { #field_ident: #fn_pt });
