@@ -5,41 +5,13 @@
 ![Crates.io Version](https://img.shields.io/crates/v/nearest)
 ![Crates.io License](https://img.shields.io/crates/l/nearest)
 
-Self-relative pointer library for region-based allocation.
+Self-relative pointers and region-based allocation for Rust.
 
-`nearest` provides self-relative pointers (`Near<T>`) and segmented lists
-(`NearList<T>`) stored in a contiguous `Region<T>` buffer. All pointers are
-4-byte `i32` offsets relative to their own address -- cloning a region is a
-plain `memcpy` with no fixup.
+Store entire data graphs in a single contiguous byte buffer where all internal
+pointers are 4-byte `i32` offsets relative to their own address — cloning a
+region is a plain `memcpy` with no fixup.
 
-## Key types
-
-| Type | Description |
-|------|-------------|
-| `Region<T>` | Owning contiguous buffer; root `T` at byte 0 |
-| `Near<T>` | Self-relative pointer (4-byte `NonZero<i32>` offset) |
-| `NearList<T>` | Segmented list of `T` values (8-byte header) |
-| `Session` | Branded mutable session (ghost-cell pattern) |
-| `Ref<'id, T>` | Branded position token (4-byte, `Copy`, no borrow) |
-| `Flat` | Marker trait for region-storable types |
-| `Emit<T>` | Builder trait for declarative region construction |
-
-## Features
-
-- **Zero-cost cloning**: `Region::clone` is a `memcpy` -- all self-relative
-  offsets remain valid without fixup.
-- **Compile-time safety**: The `Session` API uses the ghost-cell pattern
-  (`for<'id>`) to prevent `Ref` tokens from escaping the session closure or
-  being used across sessions.
-- **Declarative construction**: `#[derive(Flat)]` generates builder types
-  (`T::make(...)`) that implement `Emit<T>`, enabling tree-shaped region
-  construction in a single expression.
-- **Compaction**: `Region::trim` re-emits only reachable data, eliminating
-  dead bytes left by mutations.
-- **Miri-validated**: All unsafe code is tested under Miri with permissive
-  provenance (`-Zmiri-permissive-provenance`).
-
-## Quick start
+## Example
 
 ```rust
 use nearest::{Flat, NearList, Region, empty};
@@ -50,25 +22,54 @@ struct Block {
   items: NearList<u32>,
 }
 
+// Build
 let mut region = Region::new(Block::make(1, [10u32, 20, 30]));
 assert_eq!(region.items.len(), 3);
+
+// Read (Region<T>: Deref<Target = T>)
+assert_eq!(region.id, 1);
 assert_eq!(region.items[0], 10);
 
-// Mutate via a branded session.
+// Mutate via branded session
 region.session(|s| {
   let items = s.nav(s.root(), |b| &b.items);
   s.splice_list(items, [40u32, 50]);
 });
-
 assert_eq!(region.items.len(), 2);
-assert_eq!(region.items[0], 40);
-assert_eq!(region.items[1], 50);
+
+// Clone is memcpy
+let cloned = region.clone();
+assert_eq!(cloned.items[0], 40);
 ```
+
+## Highlights
+
+- **Zero-cost clone** — `Region::clone` is a `memcpy`; self-relative offsets
+  need no fixup
+- **Compile-time safety** — ghost-cell branded sessions prevent `Ref` escape
+  or cross-session use
+- **Declarative construction** — `#[derive(Flat)]` generates `make()` builders
+  for tree-shaped data
+- **Compaction** — `Region::trim` reclaims dead bytes left by append-only
+  mutations
+- **Miri-validated** — all unsafe code tested under Miri with permissive
+  provenance
+
+## Getting started
+
+Requires **nightly** Rust due to `#![feature(offset_of_enum)]`.
+
+```toml
+[dependencies]
+nearest = "0.1"
+```
+
+See the [API documentation](https://docs.rs/nearest) for comprehensive guides
+and examples.
 
 ## Minimum Supported Rust Version
 
-This crate requires **nightly** Rust (`rust-version = "1.93.0"`) due to
-the use of `#![feature(offset_of_enum)]`.
+Nightly Rust (`rust-version = "1.93.0"`), pinned to `nightly-2026-02-10`.
 
 ## License
 
