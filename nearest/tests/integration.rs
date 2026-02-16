@@ -1360,7 +1360,7 @@ fn push_front_ref_primitive_list() {
 // Option<Near<T>> tests
 // ===========================================================================
 
-/// A struct with an `Option<Near<T>>` field for testing the `OptionNear` derive.
+/// A struct with an `Option<Near<T>>` field for testing Option-wrapped pointer derive.
 #[derive(Flat, Debug)]
 struct OptBlock {
   name: Symbol,
@@ -3364,4 +3364,132 @@ fn into_buf_fixed_buf() {
   assert_eq!(buf.len() as usize, byte_len);
   // u32 has no padding, raw bytes are safe to compare.
   assert_eq!(buf.as_bytes(), &42u32.to_ne_bytes());
+}
+
+// ===========================================================================
+// Option<NearList<T>> tests
+// ===========================================================================
+
+/// A struct with an `Option<NearList<T>>` field for testing.
+#[derive(Flat, Debug)]
+struct OptListBlock {
+  name: Symbol,
+  items: Option<NearList<u32>>,
+}
+
+#[test]
+fn option_near_list_some_roundtrip() {
+  let region: Region<OptListBlock> =
+    Region::new(OptListBlock::make(Symbol(1), Some([10u32, 20, 30])));
+
+  let ob: &OptListBlock = &region;
+  assert_eq!(ob.name, Symbol(1));
+  let list = ob.items.as_ref().expect("should be Some");
+  assert_eq!(list.len(), 3);
+  assert_eq!(list[0], 10);
+  assert_eq!(list[1], 20);
+  assert_eq!(list[2], 30);
+}
+
+#[test]
+fn option_near_list_none_roundtrip() {
+  let region: Region<OptListBlock> = Region::new(OptListBlock::make(Symbol(1), None::<[u32; 0]>));
+
+  let ob: &OptListBlock = &region;
+  assert_eq!(ob.name, Symbol(1));
+  assert!(ob.items.is_none());
+}
+
+#[test]
+fn option_near_list_some_empty_roundtrip() {
+  let region: Region<OptListBlock> = Region::new(OptListBlock::make(Symbol(1), Some(empty())));
+
+  let ob: &OptListBlock = &region;
+  assert_eq!(ob.name, Symbol(1));
+  let list = ob.items.as_ref().expect("should be Some (empty)");
+  assert_eq!(list.len(), 0);
+}
+
+#[test]
+fn option_near_list_trim() {
+  let mut region: Region<OptListBlock> =
+    Region::new(OptListBlock::make(Symbol(1), Some([10u32, 20, 30])));
+
+  let before = region.byte_len();
+  region.trim();
+  assert_eq!(region.byte_len(), before);
+
+  let ob: &OptListBlock = &region;
+  let list = ob.items.as_ref().expect("should be Some");
+  assert_eq!(list.len(), 3);
+  assert_eq!(list[0], 10);
+  assert_eq!(list[1], 20);
+  assert_eq!(list[2], 30);
+}
+
+#[test]
+fn option_near_list_validate_some() {
+  let region: Region<OptListBlock> =
+    Region::new(OptListBlock::make(Symbol(1), Some([10u32, 20, 30])));
+  let bytes = region.as_bytes();
+  OptListBlock::validate(0, bytes).unwrap();
+}
+
+#[test]
+fn option_near_list_validate_none() {
+  let region: Region<OptListBlock> = Region::new(OptListBlock::make(Symbol(1), None::<[u32; 0]>));
+  let bytes = region.as_bytes();
+  OptListBlock::validate(0, bytes).unwrap();
+}
+
+// ===========================================================================
+// from_bytes roundtrip for Option<Near<T>>
+// ===========================================================================
+
+#[test]
+fn from_bytes_option_near_some() {
+  let region: Region<OptBlock> = Region::new(OptBlock::make(
+    Symbol(1),
+    Some(Block::make(Symbol(2), empty(), empty(), Term::make_ret([Value::Const(42)]))),
+  ));
+  let bytes = region.as_bytes().to_vec();
+  let restored: Region<OptBlock> = Region::from_bytes(&bytes).unwrap();
+  let ob: &OptBlock = &restored;
+  assert_eq!(ob.name, Symbol(1));
+  let next = ob.next.as_ref().expect("should be Some");
+  assert_eq!(next.get().name, Symbol(2));
+}
+
+#[test]
+fn from_bytes_option_near_none() {
+  let region: Region<OptBlock> =
+    Region::new(OptBlock::make(Symbol(1), None::<std::convert::Infallible>));
+  let bytes = region.as_bytes().to_vec();
+  let restored: Region<OptBlock> = Region::from_bytes(&bytes).unwrap();
+  let ob: &OptBlock = &restored;
+  assert_eq!(ob.name, Symbol(1));
+  assert!(ob.next.is_none());
+}
+
+#[test]
+fn from_bytes_option_near_list_some() {
+  let region: Region<OptListBlock> =
+    Region::new(OptListBlock::make(Symbol(1), Some([10u32, 20, 30])));
+  let bytes = region.as_bytes().to_vec();
+  let restored: Region<OptListBlock> = Region::from_bytes(&bytes).unwrap();
+  let ob: &OptListBlock = &restored;
+  assert_eq!(ob.name, Symbol(1));
+  let list = ob.items.as_ref().expect("should be Some");
+  assert_eq!(list.len(), 3);
+  assert_eq!(list[0], 10);
+}
+
+#[test]
+fn from_bytes_option_near_list_none() {
+  let region: Region<OptListBlock> = Region::new(OptListBlock::make(Symbol(1), None::<[u32; 0]>));
+  let bytes = region.as_bytes().to_vec();
+  let restored: Region<OptListBlock> = Region::from_bytes(&bytes).unwrap();
+  let ob: &OptListBlock = &restored;
+  assert_eq!(ob.name, Symbol(1));
+  assert!(ob.items.is_none());
 }

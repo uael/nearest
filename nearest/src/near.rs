@@ -39,6 +39,9 @@ pub struct Near<T> {
 // SAFETY: Near contains only a NonZero<i32> and PhantomData — no Drop, no heap.
 // Unconditional impl: Near<T> is always Flat regardless of T, since it stores only
 // an offset, not an actual T. This avoids circular trait bounds in recursive types.
+//
+// validate_option exploits the NonZero<i32> niche (0 = None) for Option<Near<T>>.
+// Target validation is handled by the derive-generated code on the containing struct.
 unsafe impl<T> Flat for Near<T> {
   unsafe fn deep_copy(&self, p: &mut impl Patch, at: Pos) {
     // SAFETY: Caller guarantees `at` was allocated for `Near<T>`.
@@ -54,8 +57,22 @@ unsafe impl<T> Flat for Near<T> {
     if off == 0 {
       return Err(crate::ValidateError::NullNear { addr });
     }
-    // Does NOT follow the offset — containing struct's derive code does that
-    // (mirrors the deep_copy pattern).
+    // Does NOT follow the offset — containing struct's derive code does that.
+    Ok(())
+  }
+
+  fn validate_option(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+    // Option<Near<T>> has niche layout: NonZero<i32> means 0 represents None.
+    // Size is 4 bytes (same as Near<T>), no separate discriminant.
+    crate::ValidateError::check::<i32>(addr, buf)?;
+    let off = i32::from_ne_bytes(buf[addr..addr + 4].try_into().unwrap());
+    if off == 0 {
+      // None variant — valid.
+      return Ok(());
+    }
+    // Some: offset is non-zero — Near header is valid.
+    // Does NOT follow the offset to validate the target — the derive-generated
+    // code on the containing struct handles that.
     Ok(())
   }
 }

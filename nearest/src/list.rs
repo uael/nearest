@@ -53,6 +53,8 @@ pub struct NearList<T> {
 }
 
 // SAFETY: NearList contains only i32, u32, and PhantomData — no Drop, no heap.
+// Unconditional impl: NearList<T> is always Flat regardless of T (same reasoning
+// as Near<T>). Containing struct's deep_copy/validate handles segment walking.
 unsafe impl<T> Flat for NearList<T> {
   unsafe fn deep_copy(&self, p: &mut impl Patch, at: Pos) {
     // SAFETY: Caller guarantees `at` was allocated for `NearList<T>`.
