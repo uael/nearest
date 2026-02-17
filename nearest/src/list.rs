@@ -52,28 +52,42 @@ pub struct NearList<T> {
   _type: PhantomData<T>,
 }
 
-// SAFETY: NearList contains only i32, u32, and PhantomData — no Drop, no heap.
-unsafe impl<T> Flat for NearList<T> {
+// SAFETY: NearList<T> contains only i32, u32, and PhantomData — no Drop, no heap.
+// T: Flat bound enables self-sufficient deep_copy/validate that walk segments
+// and handle elements. Coinductive trait resolution handles recursive types.
+unsafe impl<T: Flat> Flat for NearList<T> {
   unsafe fn deep_copy(&self, p: &mut impl Patch, at: Pos) {
-    // SAFETY: Caller guarantees `at` was allocated for `NearList<T>`.
-    // Byte-copy the 8-byte header (head offset + len). Containing struct's
-    // deep_copy handles walking and deep-copying list elements.
-    unsafe {
-      p.write_bytes(at, core::ptr::from_ref(self).cast(), size_of::<Self>());
+    let len = self.len;
+    if len == 0 {
+      // SAFETY: Caller guarantees `at` was allocated for `NearList<T>`.
+      unsafe { p.patch_list_header::<T>(at, Pos::ZERO, 0) };
+      return;
     }
+    let seg_pos = p.alloc_segment::<T>(len);
+    let values_off = size_of::<Segment<T>>();
+    for (i, elem) in self.iter().enumerate() {
+      // SAFETY: seg_pos was just allocated with space for `len` elements.
+      unsafe { elem.deep_copy(p, seg_pos.offset(values_off + i * size_of::<T>())) };
+    }
+    // SAFETY: Caller guarantees `at` was allocated for `NearList<T>`.
+    unsafe { p.patch_list_header::<T>(at, seg_pos, len) };
   }
 
   fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
-    crate::ValidateError::check::<Self>(addr, buf)?;
-    let head = i32::from_ne_bytes(buf[addr..addr + 4].try_into().unwrap());
-    let len = u32::from_ne_bytes(buf[addr + 4..addr + 8].try_into().unwrap());
-    // Invariant: len == 0 ⟺ head == 0
-    if (len == 0) != (head == 0) {
-      return Err(crate::ValidateError::InvalidListHeader { addr });
+    crate::validate::validate_list_impl::<T>(addr, buf)
+  }
+
+  fn validate_option(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+    crate::ValidateError::check::<Option<Self>>(addr, buf)?;
+    let disc = buf[addr];
+    match disc {
+      0 => Ok(()), // None
+      1 => {
+        let inner = addr + core::mem::offset_of!(Option<Self>, Some.0);
+        crate::validate::validate_list_impl::<T>(inner, buf)
+      }
+      _ => Err(crate::ValidateError::InvalidDiscriminant { addr, value: disc, max: 1 }),
     }
-    // Does NOT walk segments — derive code calls __private::validate_list::<T>()
-    // for that (mirrors the deep_copy pattern).
-    Ok(())
   }
 }
 

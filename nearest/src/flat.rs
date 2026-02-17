@@ -55,6 +55,21 @@ pub unsafe trait Flat: Sized {
   /// Returns [`ValidateError`](crate::ValidateError) if the bytes at `addr`
   /// do not form a valid `Self`.
   fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError>;
+
+  /// Validate an `Option<Self>` at `addr` in `buf`.
+  ///
+  /// The default implementation just checks bounds and alignment for
+  /// `Option<Self>`. Types with niche layouts (e.g. [`Near<T>`](crate::Near)
+  /// using `NonZero<i32>`) override this to inspect the discriminant and
+  /// validate the inner value when present.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ValidateError`](crate::ValidateError) if the bytes at `addr`
+  /// do not form a valid `Option<Self>`.
+  fn validate_option(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+    crate::ValidateError::check::<Option<Self>>(addr, buf)
+  }
 }
 
 macro_rules! impl_flat {
@@ -168,8 +183,6 @@ unsafe impl<T: Flat> Flat for Option<T> {
   }
 
   fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
-    // Option<T> has opaque niche layout — we can only validate bounds.
-    // For Option<Near<T>>, the derive macro handles validation via FieldKind::OptionNear.
-    crate::ValidateError::check::<Self>(addr, buf)
+    T::validate_option(addr, buf)
   }
 }
