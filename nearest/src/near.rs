@@ -36,19 +36,18 @@ pub struct Near<T> {
   _type: PhantomData<T>,
 }
 
-// SAFETY: Near contains only a NonZero<i32> and PhantomData — no Drop, no heap.
-// Unconditional impl: Near<T> is always Flat regardless of T, since it stores only
-// an offset, not an actual T. This avoids circular trait bounds in recursive types.
+// SAFETY: Near<T> contains only a NonZero<i32> and PhantomData — no Drop, no heap.
+// T: Flat bound enables self-sufficient deep_copy/validate that follow the offset
+// to the target. Coinductive trait resolution handles recursive types (e.g.
+// Block → Near<Inst> → Inst → Near<Block>).
 //
 // validate_option exploits the NonZero<i32> niche (0 = None) for Option<Near<T>>.
-// Target validation is handled by the derive-generated code on the containing struct.
-unsafe impl<T> Flat for Near<T> {
+unsafe impl<T: Flat> Flat for Near<T> {
   unsafe fn deep_copy(&self, p: &mut impl Patch, at: Pos) {
+    // Emit the target value (deep-copies it into the buffer) and patch the offset.
+    let target_pos = crate::Emit::<T>::emit(self.get(), p);
     // SAFETY: Caller guarantees `at` was allocated for `Near<T>`.
-    // Byte-copy the 4-byte offset. Containing struct's deep_copy handles pointer following.
-    unsafe {
-      p.write_bytes(at, core::ptr::from_ref(self).cast(), size_of::<Self>());
-    }
+    unsafe { p.patch_near::<T>(at, target_pos) };
   }
 
   fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
@@ -57,8 +56,9 @@ unsafe impl<T> Flat for Near<T> {
     if off == 0 {
       return Err(crate::ValidateError::NullNear { addr });
     }
-    // Does NOT follow the offset — containing struct's derive code does that.
-    Ok(())
+    let target = addr.cast_signed().wrapping_add(off as isize).cast_unsigned();
+    crate::ValidateError::check::<T>(target, buf)?;
+    T::validate(target, buf)
   }
 
   fn validate_option(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
@@ -67,13 +67,11 @@ unsafe impl<T> Flat for Near<T> {
     crate::ValidateError::check::<i32>(addr, buf)?;
     let off = i32::from_ne_bytes(buf[addr..addr + 4].try_into().unwrap());
     if off == 0 {
-      // None variant — valid.
-      return Ok(());
+      return Ok(()); // None (niche: 0 = None)
     }
-    // Some: offset is non-zero — Near header is valid.
-    // Does NOT follow the offset to validate the target — the derive-generated
-    // code on the containing struct handles that.
-    Ok(())
+    let target = addr.cast_signed().wrapping_add(off as isize).cast_unsigned();
+    crate::ValidateError::check::<T>(target, buf)?;
+    T::validate(target, buf)
   }
 }
 
