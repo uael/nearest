@@ -550,13 +550,9 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// Replace the contents of a [`NearList<U>`] by mapping each element through
   /// a function.
   ///
-  /// This is the in-place-transform variant of [`splice_list`](Self::splice_list).
-  /// It snapshots element positions into a `Vec<u32>`, then rebuilds the list
-  /// from mapped values — avoiding the `&self` / `&mut self` borrow conflict
-  /// that would otherwise prevent reading and writing the region simultaneously.
-  ///
-  /// **Note**: Allocates a `Vec<u32>` of element positions (one `u32` per
-  /// element) as a temporary snapshot.
+  /// Walks the old segment chain via raw pointer arithmetic, reading each
+  /// element through exposed provenance, applying `f`, and writing the result
+  /// into a fresh contiguous segment. No heap allocation.
   ///
   /// # Examples
   ///
@@ -577,47 +573,43 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// assert_eq!(region.items[1], 20);
   /// assert_eq!(region.items[2], 30);
   /// ```
-  #[cfg(feature = "alloc")]
+  #[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "segment offset arithmetic: buffer positions are always non-negative and fit in i64"
+  )]
   pub fn map_list<U: Flat + Copy>(&mut self, r: Ref<'id, NearList<U>>, mut f: impl FnMut(U) -> U) {
-    let list_pos = r.pos;
-    let list: &NearList<U> = self.at(r);
-    let count = list.len();
-    let len = count as u32;
-
-    if len == 0 {
+    let (count, first_seg_off) = self.list_meta(r);
+    if count == 0 {
       return;
     }
 
-    // Collect element positions before any mutation.
-    let base = self.region.deref_raw() as usize;
-    let mut positions: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(count);
-    for elem in list {
-      let offset = (core::ptr::from_ref(elem) as usize) - base;
-      positions.push(offset as u32);
+    // Walk segments and overwrite each element in place. U: Copy guarantees
+    // same size, so no new segment or header patch is needed.
+    let mut seg_off = first_seg_off;
+    let mut remaining = count;
+    while remaining > 0 {
+      // SAFETY: We have `&mut self` (exclusive access). Reads use
+      // `with_exposed_provenance`; writes go through `write_flat_internal`
+      // at the same position — no aliasing conflict.
+      unsafe {
+        let seg_addr = self.region.deref_raw().add(seg_off).addr();
+        let seg = &*core::ptr::with_exposed_provenance::<Segment<U>>(seg_addr);
+        let seg_len = seg.len as usize;
+        let vals_base = seg_addr.wrapping_add(size_of::<Segment<U>>());
+        for j in 0..seg_len {
+          let val_addr = vals_base.wrapping_add(j * size_of::<U>());
+          let val = core::ptr::with_exposed_provenance::<U>(val_addr).read();
+          let mapped = f(val);
+          let val_off = val_addr - self.region.deref_raw().addr();
+          self.region.write_flat_internal(Pos(val_off as u32), mapped);
+        }
+        remaining -= seg_len;
+        if remaining > 0 {
+          seg_off = (seg_off as i64 + i64::from(seg.next)) as usize;
+        }
+      }
     }
-
-    // Pre-reserve so the buffer does not reallocate during writes.
-    let seg_overhead = size_of::<Segment<U>>() + count * size_of::<U>() + align_of::<Segment<U>>();
-    self.region.reserve_internal((self.region.byte_len() + seg_overhead) as u32);
-
-    let seg_pos = self.region.alloc_segment_internal::<U>(len);
-    let values_offset = size_of::<Segment<U>>();
-    for (i, &pos) in positions.iter().enumerate() {
-      // SAFETY: Pre-reserve guarantees no reallocation. We recover provenance
-      // via `with_exposed_provenance` so the read is not derived from
-      // `self.region` — avoiding Stacked Borrows violation.
-      let mapped = unsafe {
-        let addr = self.region.deref_raw().add(pos as usize).addr();
-        let val = core::ptr::with_exposed_provenance::<U>(addr).read();
-        f(val)
-      };
-      let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
-      // SAFETY: `val_pos` was allocated for `U` by `alloc_segment_internal`.
-      unsafe { self.region.write_flat_internal(val_pos, mapped) };
-    }
-    // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`), and
-    // `seg_pos` was just allocated by `alloc_segment_internal`.
-    unsafe { self.region.patch_list_header_internal(list_pos, seg_pos, len) };
   }
 
   /// Prepend an element to a [`NearList<U>`].
@@ -931,14 +923,59 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
     refs
   }
 
+  /// Read list metadata (count, head offset) and drop the borrow.
+  #[expect(clippy::cast_sign_loss, reason = "absolute positions are always non-negative")]
+  fn list_meta<U: Flat>(&self, r: Ref<'id, NearList<U>>) -> (usize, usize) {
+    let list: &NearList<U> = self.at(r);
+    let count = list.len();
+    if count == 0 {
+      return (0, 0);
+    }
+    let first_seg_off = (i64::from(r.pos.0) + i64::from(list.head_offset())) as usize;
+    (count, first_seg_off)
+  }
+
+  /// Collect element buffer offsets from a list into a `Vec`.
+  #[cfg(feature = "alloc")]
+  #[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "segment offset arithmetic: buffer positions are always non-negative and fit in i64"
+  )]
+  fn collect_list_positions<U: Flat>(&self, r: Ref<'id, NearList<U>>) -> alloc::vec::Vec<u32> {
+    let (count, first_seg_off) = self.list_meta(r);
+    if count == 0 {
+      return alloc::vec::Vec::new();
+    }
+
+    let mut positions = alloc::vec::Vec::with_capacity(count);
+    let mut seg_off = first_seg_off;
+    let mut remaining = count;
+    while remaining > 0 {
+      // SAFETY: Segment reads use `with_exposed_provenance`.
+      unsafe {
+        let seg_addr = self.region.deref_raw().add(seg_off).addr();
+        let seg = &*core::ptr::with_exposed_provenance::<Segment<U>>(seg_addr);
+        let seg_len = seg.len as usize;
+        let vals_base = seg_addr.wrapping_add(size_of::<Segment<U>>());
+        for j in 0..seg_len {
+          let val_off = vals_base.wrapping_add(j * size_of::<U>()) - self.region.deref_raw().addr();
+          positions.push(val_off as u32);
+        }
+        remaining -= seg_len;
+        if remaining > 0 {
+          seg_off = (seg_off as i64 + i64::from(seg.next)) as usize;
+        }
+      }
+    }
+    positions
+  }
+
   /// Remove elements from a [`NearList<U>`] that do not satisfy a predicate.
   ///
-  /// Iterates the list, collecting positions of matching elements, then
-  /// deep-copies them into a single contiguous segment. No-op when nothing
-  /// is filtered (all elements match).
-  ///
-  /// **Note**: Allocates a `Vec<u32>` of matching element positions as a
-  /// temporary snapshot.
+  /// Iterates the list, collecting positions of matching elements into
+  /// scratch space in the region buffer, then deep-copies them into a
+  /// single contiguous segment. No-op when nothing is filtered.
   ///
   /// # Examples
   ///
@@ -960,38 +997,59 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// assert_eq!(region.items[0], 2);
   /// assert_eq!(region.items[1], 4);
   /// ```
-  #[cfg(feature = "alloc")]
+  #[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "segment offset arithmetic: buffer positions are always non-negative and fit in i64"
+  )]
   pub fn filter_list<U: Flat>(
     &mut self,
     r: Ref<'id, NearList<U>>,
     mut pred: impl FnMut(&U) -> bool,
   ) {
-    let list: &NearList<U> = self.at(r);
-    let count = list.len();
-
+    let (count, first_seg_off) = self.list_meta(r);
     if count == 0 {
       return;
     }
 
-    // Collect byte positions of elements that match the predicate.
-    let base = self.region.deref_raw() as usize;
-    let mut positions: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(count);
-    for elem in list {
-      if pred(elem) {
-        let offset = (core::ptr::from_ref(elem) as usize) - base;
-        positions.push(offset as u32);
+    // First pass: count how many elements match the predicate.
+    // If all match, return early without allocating scratch.
+    let kept_count = {
+      let mut seg_off = first_seg_off;
+      let mut remaining = count;
+      let mut kept = 0usize;
+      while remaining > 0 {
+        // SAFETY: Segment reads use `with_exposed_provenance`.
+        unsafe {
+          let seg_addr = self.region.deref_raw().add(seg_off).addr();
+          let seg = &*core::ptr::with_exposed_provenance::<Segment<U>>(seg_addr);
+          let seg_len = seg.len as usize;
+          let vals_base = seg_addr.wrapping_add(size_of::<Segment<U>>());
+          for j in 0..seg_len {
+            let val_addr = vals_base.wrapping_add(j * size_of::<U>());
+            let val = &*core::ptr::with_exposed_provenance::<U>(val_addr);
+            if pred(val) {
+              kept += 1;
+            }
+          }
+          remaining -= seg_len;
+          if remaining > 0 {
+            seg_off = (seg_off as i64 + i64::from(seg.next)) as usize;
+          }
+        }
       }
-    }
+      kept
+    };
 
     // If nothing was filtered, no work needed.
-    if positions.len() == count {
+    if kept_count == count {
       return;
     }
 
     let list_pos = r.pos;
-    let len = positions.len() as u32;
+    let len = kept_count as u32;
 
-    if len == 0 {
+    if kept_count == 0 {
       // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`).
       unsafe { self.region.patch_list_header_internal(list_pos, Pos::ZERO, 0) };
       return;
@@ -999,20 +1057,38 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
 
     // Pre-reserve so the buffer does not reallocate during deep-copy writes.
     let seg_overhead =
-      size_of::<Segment<U>>() + positions.len() * size_of::<U>() + align_of::<Segment<U>>();
+      size_of::<Segment<U>>() + kept_count * size_of::<U>() + align_of::<Segment<U>>();
     self.region.reserve_internal((self.region.byte_len() + seg_overhead) as u32);
 
+    // Second pass: walk segments again, deep-copy matching elements directly
+    // into a fresh contiguous segment. No scratch needed.
     let seg_pos = self.region.alloc_segment_internal::<U>(len);
     let values_offset = size_of::<Segment<U>>();
-    for (i, &pos) in positions.iter().enumerate() {
-      let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
+    let mut seg_off = first_seg_off;
+    let mut remaining = count;
+    let mut dest_i = 0;
+    while remaining > 0 {
       // SAFETY: Pre-reserve guarantees no reallocation. We recover provenance
       // via `with_exposed_provenance` so the read is not derived from
       // `self.region` — avoiding Stacked Borrows violation.
       unsafe {
-        let addr = self.region.deref_raw().add(pos as usize).addr();
-        let val = &*core::ptr::with_exposed_provenance::<U>(addr);
-        Emit::<U>::write_at(val, self.region, val_pos);
+        let seg_addr = self.region.deref_raw().add(seg_off).addr();
+        let seg = &*core::ptr::with_exposed_provenance::<Segment<U>>(seg_addr);
+        let seg_len = seg.len as usize;
+        let vals_base = seg_addr.wrapping_add(size_of::<Segment<U>>());
+        for j in 0..seg_len {
+          let val_addr = vals_base.wrapping_add(j * size_of::<U>());
+          let val = &*core::ptr::with_exposed_provenance::<U>(val_addr);
+          if pred(val) {
+            let val_pos = seg_pos.offset(values_offset + dest_i * size_of::<U>());
+            Emit::<U>::write_at(val, self.region, val_pos);
+            dest_i += 1;
+          }
+        }
+        remaining -= seg_len;
+        if remaining > 0 {
+          seg_off = (seg_off as i64 + i64::from(seg.next)) as usize;
+        }
       }
     }
     // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`), and
@@ -1023,11 +1099,9 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// Replace the contents of a [`NearList<U>`] with its elements in reverse
   /// order.
   ///
-  /// Collects element positions, reverses them, then deep-copies into a
-  /// single contiguous segment. No-op on empty lists.
-  ///
-  /// **Note**: Allocates a `Vec<u32>` of element positions as a temporary
-  /// snapshot.
+  /// Collects element positions into scratch space in the region buffer,
+  /// reverses them, then deep-copies into a single contiguous segment.
+  /// No-op on empty or single-element lists. No heap allocation.
   ///
   /// # Examples
   ///
@@ -1048,43 +1122,54 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// assert_eq!(region.items[1], 2);
   /// assert_eq!(region.items[2], 1);
   /// ```
-  #[cfg(feature = "alloc")]
+  #[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "segment offset arithmetic: buffer positions are always non-negative and fit in i64"
+  )]
   pub fn reverse_list<U: Flat>(&mut self, r: Ref<'id, NearList<U>>) {
+    let list_pos = r.pos;
     let list: &NearList<U> = self.at(r);
     let count = list.len();
-
     if count <= 1 {
       return;
     }
-
-    // Collect element positions before mutation.
-    let base = self.region.deref_raw() as usize;
-    let mut positions: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(count);
-    for elem in list {
-      let offset = (core::ptr::from_ref(elem) as usize) - base;
-      positions.push(offset as u32);
-    }
-
-    positions.reverse();
-
-    let list_pos = r.pos;
+    let head_offset = list.head_offset();
     let len = count as u32;
 
-    // Pre-reserve so the buffer does not reallocate during deep-copy writes.
+    let first_seg_off = (i64::from(list_pos.0) + i64::from(head_offset)) as usize;
+
+    // Pre-reserve so the buffer does not reallocate during writes.
     let seg_overhead = size_of::<Segment<U>>() + count * size_of::<U>() + align_of::<Segment<U>>();
     self.region.reserve_internal((self.region.byte_len() + seg_overhead) as u32);
 
     let seg_pos = self.region.alloc_segment_internal::<U>(len);
     let values_offset = size_of::<Segment<U>>();
-    for (i, &pos) in positions.iter().enumerate() {
-      let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
+
+    // Walk old segments forward, write into new segment in reverse order.
+    let mut seg_off = first_seg_off;
+    let mut remaining = count;
+    let mut dest_i = count; // counts down from count to 0
+    while remaining > 0 {
       // SAFETY: Pre-reserve guarantees no reallocation. We recover provenance
       // via `with_exposed_provenance` so the read is not derived from
       // `self.region` — avoiding Stacked Borrows violation.
       unsafe {
-        let addr = self.region.deref_raw().add(pos as usize).addr();
-        let val = &*core::ptr::with_exposed_provenance::<U>(addr);
-        Emit::<U>::write_at(val, self.region, val_pos);
+        let seg_addr = self.region.deref_raw().add(seg_off).addr();
+        let seg = &*core::ptr::with_exposed_provenance::<Segment<U>>(seg_addr);
+        let seg_len = seg.len as usize;
+        let vals_base = seg_addr.wrapping_add(size_of::<Segment<U>>());
+        for j in 0..seg_len {
+          dest_i -= 1;
+          let val_addr = vals_base.wrapping_add(j * size_of::<U>());
+          let val = &*core::ptr::with_exposed_provenance::<U>(val_addr);
+          let val_pos = seg_pos.offset(values_offset + dest_i * size_of::<U>());
+          Emit::<U>::write_at(val, self.region, val_pos);
+        }
+        remaining -= seg_len;
+        if remaining > 0 {
+          seg_off = (seg_off as i64 + i64::from(seg.next)) as usize;
+        }
       }
     }
     // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`), and
@@ -1095,12 +1180,10 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// Replace the contents of a [`NearList<U>`] with its elements sorted by a
   /// comparator.
   ///
-  /// Collects element positions, sorts them by reading each element through
-  /// the comparator, then deep-copies into a single contiguous segment.
-  /// No-op on empty or single-element lists.
-  ///
-  /// **Note**: Allocates a `Vec<u32>` of element positions as a temporary
-  /// snapshot.
+  /// Collects element positions into scratch space in the region buffer,
+  /// sorts them by reading each element through the comparator, then
+  /// deep-copies into a single contiguous segment. No-op on empty or
+  /// single-element lists. No heap allocation.
   ///
   /// # Examples
   ///
@@ -1127,47 +1210,41 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
     r: Ref<'id, NearList<U>>,
     mut cmp: impl FnMut(&U, &U) -> core::cmp::Ordering,
   ) {
-    let list: &NearList<U> = self.at(r);
-    let count = list.len();
-
-    if count <= 1 {
+    let mut positions = self.collect_list_positions::<U>(r);
+    if positions.len() <= 1 {
       return;
     }
 
-    // Collect element positions before mutation.
-    let base_ptr = self.region.deref_raw();
-    let base = base_ptr as usize;
-    let mut positions: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(count);
-    for elem in list {
-      let offset = (core::ptr::from_ref(elem) as usize) - base;
-      positions.push(offset as u32);
-    }
-
     // Sort positions by comparing the values they point to.
-    // SAFETY: All positions were collected from valid elements in the region.
-    // The buffer is not mutated during the sort.
+    // SAFETY: Element reads use `with_exposed_provenance` — the Vec lives
+    // on the heap, so there is no aliasing with the region buffer.
     positions.sort_by(|&a_pos, &b_pos| unsafe {
-      let a = &*core::ptr::with_exposed_provenance::<U>(base_ptr.add(a_pos as usize).addr());
-      let b = &*core::ptr::with_exposed_provenance::<U>(base_ptr.add(b_pos as usize).addr());
+      let a = &*core::ptr::with_exposed_provenance::<U>(
+        self.region.deref_raw().add(a_pos as usize).addr(),
+      );
+      let b = &*core::ptr::with_exposed_provenance::<U>(
+        self.region.deref_raw().add(b_pos as usize).addr(),
+      );
       cmp(a, b)
     });
 
     let list_pos = r.pos;
+    let count = positions.len();
     let len = count as u32;
 
     // Pre-reserve so the buffer does not reallocate during deep-copy writes.
     let seg_overhead = size_of::<Segment<U>>() + count * size_of::<U>() + align_of::<Segment<U>>();
     self.region.reserve_internal((self.region.byte_len() + seg_overhead) as u32);
 
+    // Deep-copy elements in sorted order into a fresh contiguous segment.
     let seg_pos = self.region.alloc_segment_internal::<U>(len);
     let values_offset = size_of::<Segment<U>>();
-    for (i, &pos) in positions.iter().enumerate() {
-      let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
+    for (i, &elem_off) in positions.iter().enumerate() {
       // SAFETY: Pre-reserve guarantees no reallocation. We recover provenance
-      // via `with_exposed_provenance` so the read is not derived from
-      // `self.region` — avoiding Stacked Borrows violation.
+      // via `with_exposed_provenance` — no aliasing with `&mut Region`.
       unsafe {
-        let addr = self.region.deref_raw().add(pos as usize).addr();
+        let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
+        let addr = self.region.deref_raw().add(elem_off as usize).addr();
         let val = &*core::ptr::with_exposed_provenance::<U>(addr);
         Emit::<U>::write_at(val, self.region, val_pos);
       }
@@ -1181,11 +1258,8 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   ///
   /// Two elements are considered equal when `eq` returns `true`. Only the
   /// first element of each run of equal elements is kept — identical to
-  /// `[T]::dedup_by` semantics. No-op on empty or
-  /// single-element lists.
-  ///
-  /// **Note**: Allocates a `Vec<u32>` of retained element positions as a
-  /// temporary snapshot.
+  /// `[T]::dedup_by` semantics. No-op on empty or single-element lists.
+  /// No heap allocation.
   ///
   /// # Examples
   ///
@@ -1208,61 +1282,106 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// assert_eq!(region.items[2], 3);
   /// assert_eq!(region.items[3], 2);
   /// ```
-  #[cfg(feature = "alloc")]
+  #[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "segment offset arithmetic: buffer positions are always non-negative and fit in i64"
+  )]
   pub fn dedup_list<U: Flat>(
     &mut self,
     r: Ref<'id, NearList<U>>,
     mut eq: impl FnMut(&U, &U) -> bool,
   ) {
-    let list: &NearList<U> = self.at(r);
-    let count = list.len();
-
+    let (count, first_seg_off) = self.list_meta(r);
     if count <= 1 {
       return;
     }
 
-    // Collect positions of elements to keep (first of each dedup run).
-    let base = self.region.deref_raw() as usize;
-    let mut positions: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(count);
-    let mut prev: Option<&U> = None;
-    for elem in list {
-      if prev.is_none_or(|p| !eq(p, elem)) {
-        let offset = (core::ptr::from_ref(elem) as usize) - base;
-        positions.push(offset as u32);
+    // First pass: count how many elements survive dedup.
+    // If no duplicates, return early without allocating scratch.
+    let kept_count = {
+      let mut seg_off = first_seg_off;
+      let mut remaining = count;
+      let mut kept = 0usize;
+      let mut prev_off: Option<usize> = None;
+      while remaining > 0 {
+        // SAFETY: Segment reads use `with_exposed_provenance`.
+        unsafe {
+          let seg_addr = self.region.deref_raw().add(seg_off).addr();
+          let seg = &*core::ptr::with_exposed_provenance::<Segment<U>>(seg_addr);
+          let seg_len = seg.len as usize;
+          let vals_base = seg_addr.wrapping_add(size_of::<Segment<U>>());
+          for j in 0..seg_len {
+            let val_addr = vals_base.wrapping_add(j * size_of::<U>());
+            let val = &*core::ptr::with_exposed_provenance::<U>(val_addr);
+            let is_dup = prev_off.is_some_and(|p| {
+              let prev =
+                &*core::ptr::with_exposed_provenance::<U>(self.region.deref_raw().add(p).addr());
+              eq(prev, val)
+            });
+            if !is_dup {
+              kept += 1;
+            }
+            prev_off = Some(val_addr - self.region.deref_raw().addr());
+          }
+          remaining -= seg_len;
+          if remaining > 0 {
+            seg_off = (seg_off as i64 + i64::from(seg.next)) as usize;
+          }
+        }
       }
-      prev = Some(elem);
-    }
+      kept
+    };
 
     // If nothing was deduped, no work needed.
-    if positions.len() == count {
+    if kept_count == count {
       return;
     }
 
     let list_pos = r.pos;
-    let len = positions.len() as u32;
-
-    if len == 0 {
-      // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`).
-      unsafe { self.region.patch_list_header_internal(list_pos, Pos::ZERO, 0) };
-      return;
-    }
+    let len = kept_count as u32;
 
     // Pre-reserve so the buffer does not reallocate during deep-copy writes.
     let seg_overhead =
-      size_of::<Segment<U>>() + positions.len() * size_of::<U>() + align_of::<Segment<U>>();
+      size_of::<Segment<U>>() + kept_count * size_of::<U>() + align_of::<Segment<U>>();
     self.region.reserve_internal((self.region.byte_len() + seg_overhead) as u32);
 
+    // Second pass: walk segments again, deep-copy first element of each dedup
+    // run directly into a fresh contiguous segment. No scratch needed.
     let seg_pos = self.region.alloc_segment_internal::<U>(len);
     let values_offset = size_of::<Segment<U>>();
-    for (i, &pos) in positions.iter().enumerate() {
-      let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
+    let mut seg_off = first_seg_off;
+    let mut remaining = count;
+    let mut dest_i = 0;
+    let mut prev_off: Option<usize> = None;
+    while remaining > 0 {
       // SAFETY: Pre-reserve guarantees no reallocation. We recover provenance
       // via `with_exposed_provenance` so the read is not derived from
       // `self.region` — avoiding Stacked Borrows violation.
       unsafe {
-        let addr = self.region.deref_raw().add(pos as usize).addr();
-        let val = &*core::ptr::with_exposed_provenance::<U>(addr);
-        Emit::<U>::write_at(val, self.region, val_pos);
+        let seg_addr = self.region.deref_raw().add(seg_off).addr();
+        let seg = &*core::ptr::with_exposed_provenance::<Segment<U>>(seg_addr);
+        let seg_len = seg.len as usize;
+        let vals_base = seg_addr.wrapping_add(size_of::<Segment<U>>());
+        for j in 0..seg_len {
+          let val_addr = vals_base.wrapping_add(j * size_of::<U>());
+          let val = &*core::ptr::with_exposed_provenance::<U>(val_addr);
+          let is_dup = prev_off.is_some_and(|p| {
+            let prev =
+              &*core::ptr::with_exposed_provenance::<U>(self.region.deref_raw().add(p).addr());
+            eq(prev, val)
+          });
+          if !is_dup {
+            let val_pos = seg_pos.offset(values_offset + dest_i * size_of::<U>());
+            Emit::<U>::write_at(val, self.region, val_pos);
+            dest_i += 1;
+          }
+          prev_off = Some(val_addr - self.region.deref_raw().addr());
+        }
+        remaining -= seg_len;
+        if remaining > 0 {
+          seg_off = (seg_off as i64 + i64::from(seg.next)) as usize;
+        }
       }
     }
     // SAFETY: `list_pos` points to a `NearList<U>` (branded `Ref`), and
@@ -1447,7 +1566,6 @@ impl<U: Flat, Root: Flat, B: Buf> Cursor<'_, '_, '_, NearList<U>, Root, B> {
   }
 
   /// Remove elements that do not satisfy a predicate.
-  #[cfg(feature = "alloc")]
   pub fn filter_list(self, pred: impl FnMut(&U) -> bool) {
     self.session.filter_list(self.r, pred);
   }
