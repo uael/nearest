@@ -1,4 +1,4 @@
-error[E0277]: the trait bound `String: Flat` is not satisfied
+error[E0277]: the trait bound `&String: Emit<String>` is not satisfied
  --> tests/compile-fail/derive_non_flat_field.rs:5:10
   |
 5 | #[derive(Flat)]
@@ -14,9 +14,36 @@ error[E0277]: the trait bound `String: Flat` is not satisfied
             [T; N]
             bool
           and $N others
-  = help: see issue #48214
+  = note: required for `&String` to implement `Emit<String>`
   = note: this error originates in the derive macro `Flat` (in Nightly builds, run with -Z macro-backtrace for more info)
-help: add `#![feature(trivial_bounds)]` to the crate attributes to enable
+
+error[E0277]: the trait bound `String: Flat` is not satisfied
+ --> tests/compile-fail/derive_non_flat_field.rs:7:9
   |
-3 + #![feature(trivial_bounds)]
+7 |   name: String,
+  |         ^^^^^^ the trait `Flat` is not implemented for `String`
   |
+  = help: the following other types implement trait `Flat`:
+            (A, B)
+            Bad
+            Infallible
+            Near<T>
+            NearList<T>
+            Option<T>
+            [T; N]
+            bool
+          and $N others
+
+error[E0080]: evaluation panicked: assertion failed: !::core::mem::needs_drop::<Bad>()
+ --> tests/compile-fail/derive_non_flat_field.rs:5:10
+  |
+5 | #[derive(Flat)]
+  |          ^^^^ evaluation of `<Bad as nearest::Flat>::_ASSERT_NO_DROP::{constant#0}` failed here
+
+note: erroneous constant encountered
+ --> tests/compile-fail/derive_non_flat_field.rs:5:10
+  |
+5 | #[derive(Flat)]
+  |          ^^^^
+  |
+  = note: this note originates in the derive macro `Flat` (in Nightly builds, run with -Z macro-backtrace for more info)

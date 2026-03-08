@@ -10,8 +10,6 @@ pub enum FieldKind {
   Near { inner: syn::Type },
   /// `NearList<T>` — accepts `impl IntoIterator<Item: Emit<T>>`.
   NearList { inner: syn::Type },
-  /// `Option<Near<T>>` — accepts `Option<impl Emit<T>>`, generates follow+patch or zeros.
-  OptionNear { inner: syn::Type },
   /// Any other user type — accepts `impl Emit<FieldType>`.
   Other,
 }
@@ -32,16 +30,6 @@ pub fn classify_field(ty: &syn::Type) -> FieldKind {
       }
       if name == "NearList" {
         return FieldKind::NearList { inner: inner.clone() };
-      }
-      // Detect Option<Near<T>>
-      if name == "Option"
-        && let syn::Type::Path(inner_p) = inner
-        && let Some(inner_seg) = inner_p.path.segments.last()
-        && inner_seg.ident == "Near"
-        && let syn::PathArguments::AngleBracketed(inner_args) = &inner_seg.arguments
-        && let Some(syn::GenericArgument::Type(near_inner)) = inner_args.args.first()
-      {
-        return FieldKind::OptionNear { inner: near_inner.clone() };
       }
     }
   }
@@ -82,16 +70,41 @@ pub fn is_all_primitive(data: &Data) -> bool {
   collect_field_types(data).iter().all(is_primitive_type)
 }
 
-/// Returns true if none of the fields are `Near<T>` or `NearList<T>`.
+/// Returns true if `ty` is `Option<Near<T>>` or `Option<NearList<T>>`.
+pub fn is_option_of_pointer(ty: &syn::Type) -> bool {
+  if let syn::Type::Path(p) = ty
+    && let Some(seg) = p.path.segments.last()
+    && seg.ident == "Option"
+    && let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+    && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+  {
+    return matches!(classify_field(inner), FieldKind::Near { .. } | FieldKind::NearList { .. });
+  }
+  false
+}
+
+/// Unwrap `Option<T>` to get the inner `T`, if the outer type is `Option`.
+pub fn unwrap_option(ty: &syn::Type) -> Option<&syn::Type> {
+  if let syn::Type::Path(p) = ty
+    && let Some(seg) = p.path.segments.last()
+    && seg.ident == "Option"
+    && let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+    && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+  {
+    return Some(inner);
+  }
+  None
+}
+
+/// Returns true if none of the fields are `Near<T>`, `NearList<T>`,
+/// `Option<Near<T>>`, or `Option<NearList<T>>`.
 ///
 /// Used for **enums** — an enum like `Value { Const(u32), Type(Type) }` has no
 /// pointer fields and can safely self-emit, even though `Type` is not primitive.
 pub fn has_no_pointer_fields(data: &Data) -> bool {
   collect_field_types(data).iter().all(|ty| {
-    !matches!(
-      classify_field(ty),
-      FieldKind::Near { .. } | FieldKind::NearList { .. } | FieldKind::OptionNear { .. }
-    )
+    !matches!(classify_field(ty), FieldKind::Near { .. } | FieldKind::NearList { .. })
+      && !is_option_of_pointer(ty)
   })
 }
 
