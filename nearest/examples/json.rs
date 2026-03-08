@@ -6,7 +6,7 @@
 //! nested construction via pre-built sub-regions, recursive pretty-printing,
 //! session `extend_list`, and `trim`.
 
-use nearest::{Flat, Near, NearList, Region};
+use nearest::{Flat, Near, NearList, Region, list, near};
 
 /// A key-value pair for JSON objects.
 #[derive(Flat, Debug)]
@@ -62,19 +62,19 @@ fn pretty(json: &Json, indent: usize) -> String {
 
 fn main() {
   // Build individual JSON values as separate regions.
-  let name_val = Region::new(Json::make_str(b"Alice".as_slice()));
+  let name_val = Region::new(Json::make_str(list(b"Alice".as_slice())));
   let age_val = Region::new(Json::make_num(30));
   // Homogeneous array: all items use the same make_num builder type.
   let scores_val =
-    Region::new(Json::make_arr([Json::make_num(95), Json::make_num(87), Json::make_num(92)]));
+    Region::new(Json::make_arr(list([Json::make_num(95), Json::make_num(87), Json::make_num(92)])));
 
   // Build the object using &*Region references — all entries share
   // the same emitter type (&Json), so they can go in one array.
-  let mut region = Region::new(Json::make_obj([
-    Entry::make(b"name".as_slice(), &*name_val),
-    Entry::make(b"age".as_slice(), &*age_val),
-    Entry::make(b"scores".as_slice(), &*scores_val),
-  ]));
+  let mut region = Region::new(Json::make_obj(list([
+    Entry::make(list(b"name".as_slice()), near(&*name_val)),
+    Entry::make(list(b"age".as_slice()), near(&*age_val)),
+    Entry::make(list(b"scores".as_slice()), near(&*scores_val)),
+  ])));
 
   println!("=== original ===");
   println!("{}", pretty(&region, 0));
@@ -86,7 +86,7 @@ fn main() {
       Json::Obj { fields } => fields,
       _ => panic!("expected Obj"),
     });
-    s.extend_list(fields, [Entry::make(b"active".as_slice(), Json::make_bool(true))]);
+    s.extend_list(fields, [Entry::make(list(b"active".as_slice()), near(Json::make_bool(true)))]);
   });
 
   println!("\n=== after adding \"active\" ===");

@@ -1,7 +1,7 @@
 #![feature(offset_of_enum)]
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nearest::{Flat, Near, NearList, Region, empty};
+use nearest::{Flat, Near, NearList, Region, empty, list, near};
 
 #[derive(Flat, Copy, Clone, Debug, PartialEq, Eq)]
 struct Type(u8);
@@ -61,20 +61,20 @@ struct ListBlock {
 fn build_func() -> Region<Func> {
   Region::new(Func::make(
     Symbol(1),
-    Block::make(
+    near(Block::make(
       Symbol(0),
       empty(),
-      [Inst::make(1, Type(0), [Value::Const(42)])],
+      list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
       Term::make_jmp(Jmp::make(
-        [Value::Const(1)],
-        Block::make(
+        list([Value::Const(1)]),
+        near(Block::make(
           Symbol(0),
           empty(),
-          [Inst::make(1, Type(0), [Value::Const(42)])],
-          Term::make_ret([Value::Const(42)]),
-        ),
+          list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
+          Term::make_ret(list([Value::Const(42)])),
+        )),
       )),
-    ),
+    )),
   ))
 }
 
@@ -153,8 +153,12 @@ fn bench_iterate(c: &mut Criterion) {
 }
 
 fn bench_graft(c: &mut Criterion) {
-  let callee: Region<Block> =
-    Region::new(Block::make(Symbol(99), empty(), empty(), Term::make_ret([Value::Const(77)])));
+  let callee: Region<Block> = Region::new(Block::make(
+    Symbol(99),
+    empty(),
+    empty(),
+    Term::make_ret(list([Value::Const(77)])),
+  ));
 
   c.bench_function("graft", |b| {
     b.iter_batched(

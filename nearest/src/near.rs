@@ -44,10 +44,16 @@ pub struct Near<T> {
 // validate_option exploits the NonZero<i32> niche (0 = None) for Option<Near<T>>.
 unsafe impl<T: Flat> Flat for Near<T> {
   unsafe fn deep_copy(&self, p: &mut impl Patch, at: Pos) {
-    // Emit the target value (deep-copies it into the buffer) and patch the offset.
-    let target_pos = crate::Emit::<T>::emit(self.get(), p);
     // SAFETY: Caller guarantees `at` was allocated for `Near<T>`.
-    unsafe { p.patch_near::<T>(at, target_pos) };
+    // Alloc space for the target T, deep-copy it, then patch the offset.
+    let target = p.alloc::<T>();
+    // SAFETY: `target` was just allocated for T, and `at` was allocated for
+    // `Near<T>` by the caller. `get()` is valid because `self` is in a live
+    // region buffer.
+    unsafe {
+      self.get().deep_copy(p, target);
+      p.patch_near::<T>(at, target);
+    }
   }
 
   fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
@@ -81,12 +87,12 @@ impl<T: Flat> Near<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, Near, Region};
+  /// use nearest::{Flat, Near, Region, near};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Wrapper { inner: Near<u32> }
   ///
-  /// let region = Region::new(Wrapper::make(42u32));
+  /// let region = Region::new(Wrapper::make(near(42u32)));
   /// assert_eq!(*region.inner.get(), 42);
   ///
   /// // Deref also works (Near<T> implements Deref<Target = T>).

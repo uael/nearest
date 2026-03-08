@@ -5,7 +5,7 @@
 //! Demonstrates recursive `Near<Expr>` trees, nested construction,
 //! `Region::clone`, session mutation with `splice`, and `trim`.
 
-use nearest::{Flat, Near, Region};
+use nearest::{Flat, Near, Region, near};
 
 #[derive(Flat, Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -56,8 +56,8 @@ fn main() {
   // Build: (2 + 3) * (10 - 4)
   let region = Region::new(Expr::make_bin(
     Op::Mul,
-    Expr::make_bin(Op::Add, Expr::make_lit(2), Expr::make_lit(3)),
-    Expr::make_bin(Op::Sub, Expr::make_lit(10), Expr::make_lit(4)),
+    near(Expr::make_bin(Op::Add, near(Expr::make_lit(2)), near(Expr::make_lit(3)))),
+    near(Expr::make_bin(Op::Sub, near(Expr::make_lit(10)), near(Expr::make_lit(4)))),
   ));
 
   println!("expr:  {}", pretty(&region));
@@ -76,9 +76,9 @@ fn main() {
     let rhs_of_sub = s.nav(s.root(), |e| match e {
       Expr::Bin { rhs, .. } => match &**rhs {
         Expr::Bin { rhs: inner_rhs, .. } => inner_rhs,
-        _ => panic!("expected Bin"),
+        Expr::Lit(_) => panic!("expected Bin"),
       },
-      _ => panic!("expected Bin"),
+      Expr::Lit(_) => panic!("expected Bin"),
     });
     s.splice(rhs_of_sub, Expr::make_lit(1));
   });

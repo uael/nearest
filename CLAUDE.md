@@ -11,7 +11,7 @@ cargo test --test integration        # Run only integration tests
 cargo test --test integration TESTNAME  # Run a single integration test
 cargo test --test compile_fail       # Run compile-fail tests (trybuild)
 cargo bench --bench region           # Run benchmarks (criterion)
-cargo +nightly miri test -Zmiri-permissive-provenance  # Run tests under Miri
+MIRIFLAGS="-Zmiri-permissive-provenance" cargo +nightly miri test -p nearest --lib --test integration  # Run tests under Miri
 cargo xtask fmt                      # Format code
 cargo xtask fmt --check              # Check formatting
 cargo xtask lint                     # Clippy + format check (-D warnings)
