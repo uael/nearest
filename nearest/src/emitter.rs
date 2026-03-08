@@ -1,5 +1,3 @@
-use core::{mem, num::NonZero};
-
 use crate::{Flat, buf::Buf};
 
 #[doc(hidden)]
@@ -84,23 +82,8 @@ impl<T: Flat, B: Buf> Emitter<T, B> {
   ///
   /// Panics if the write would exceed the buffer bounds.
   pub(crate) unsafe fn write<U: Flat>(&mut self, pos: Pos, val: U) {
-    let start = pos.0 as usize;
-    let size = mem::size_of::<U>();
-    assert!(
-      start + size <= self.buf.len() as usize,
-      "write out of bounds: {}..{} but buffer len is {}",
-      start,
-      start + size,
-      self.buf.len()
-    );
-    // SAFETY: Bounds checked above. `pos` was previously allocated for `U` via
-    // `reserve::<U>()` which ensures correct alignment. The source pointer is
-    // valid for `size` bytes, and `mem::forget` prevents double-drop.
-    unsafe {
-      let src = core::ptr::from_ref(&val).cast::<u8>();
-      core::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), size);
-    }
-    mem::forget(val);
+    // SAFETY: Caller guarantees `pos` was allocated for `U`.
+    unsafe { crate::buf::write_flat(&mut self.buf, pos, val) };
   }
 
   /// Patch a [`Near<U>`](crate::Near) at position `at` to point to `target`.
@@ -117,19 +100,9 @@ impl<T: Flat, B: Buf> Emitter<T, B> {
   ///
   /// Panics if the offset overflows `i32`, if `target == at`, or if out of bounds.
   pub(crate) unsafe fn patch_near(&mut self, at: Pos, target: Pos) {
-    let rel = i64::from(target.0) - i64::from(at.0);
-    let rel_i32: i32 = rel.try_into().expect("near offset overflow");
-    let nz = NonZero::new(rel_i32).expect("near offset must be non-zero (target == at)");
-
-    let start = at.0 as usize;
-    let size = mem::size_of::<NonZero<i32>>();
-    assert!(start + size <= self.buf.len() as usize, "patch_near out of bounds");
-    // SAFETY: Bounds checked above. `at` points to an allocated `Near<U>` field
-    // whose first 4 bytes are the `NonZero<i32>` offset.
-    unsafe {
-      let src = core::ptr::from_ref(&nz).cast::<u8>();
-      core::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), size);
-    }
+    // SAFETY: Caller guarantees `at` points to a `Near<U>` and `target`
+    // was allocated for `U`.
+    unsafe { crate::buf::patch_near(&mut self.buf, at, target) };
   }
 
   /// Copy raw bytes to position `at`.
@@ -143,19 +116,9 @@ impl<T: Flat, B: Buf> Emitter<T, B> {
   ///
   /// Panics if the write would exceed the buffer bounds.
   pub(crate) unsafe fn write_bytes_internal(&mut self, at: Pos, src: *const u8, len: usize) {
-    let start = at.0 as usize;
-    assert!(
-      start + len <= self.buf.len() as usize,
-      "write_bytes out of bounds: {}..{} but buffer len is {}",
-      start,
-      start + len,
-      self.buf.len()
-    );
-    // SAFETY: Bounds checked above. `src` is valid for `len` bytes (caller
-    // contract). The destination range does not overlap with the source.
-    unsafe {
-      core::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr().add(start), len);
-    }
+    // SAFETY: Caller guarantees `src` is valid for `len` bytes and `at`
+    // has at least `len` bytes available.
+    unsafe { crate::buf::write_bytes(&mut self.buf, at, src, len) };
   }
 
   /// Patch a [`NearList<U>`](crate::NearList) header at position `at`.
@@ -172,36 +135,9 @@ impl<T: Flat, B: Buf> Emitter<T, B> {
   ///
   /// Panics if the offset overflows `i32` or if out of bounds.
   pub(crate) unsafe fn patch_list_header(&mut self, at: Pos, target: Pos, len: u32) {
-    let off_field_pos = at.0 as usize;
-    let len_field_pos = off_field_pos + mem::size_of::<i32>();
-
-    assert!(
-      len_field_pos + mem::size_of::<u32>() <= self.buf.len() as usize,
-      "patch_list_header out of bounds"
-    );
-
-    let rel: i32 = if len == 0 {
-      0
-    } else {
-      let r = i64::from(target.0) - i64::from(at.0);
-      r.try_into().expect("list header offset overflow")
-    };
-
-    // SAFETY: Bounds checked above. The list header at `at` has layout
-    // `[i32 offset, u32 len]`, and both writes are within bounds.
-    unsafe {
-      let buf_ptr = self.buf.as_mut_ptr();
-      core::ptr::copy_nonoverlapping(
-        core::ptr::from_ref(&rel).cast::<u8>(),
-        buf_ptr.add(off_field_pos),
-        mem::size_of::<i32>(),
-      );
-      core::ptr::copy_nonoverlapping(
-        core::ptr::from_ref(&len).cast::<u8>(),
-        buf_ptr.add(len_field_pos),
-        mem::size_of::<u32>(),
-      );
-    }
+    // SAFETY: Caller guarantees `at` points to a `NearList<U>` and `target`
+    // is a valid segment position (or `Pos::ZERO` when `len == 0`).
+    unsafe { crate::buf::patch_list_header(&mut self.buf, at, target, len) };
   }
 
   /// Consume the emitter and produce an aligned [`Region<T>`](crate::Region).
@@ -212,11 +148,6 @@ impl<T: Flat, B: Buf> Emitter<T, B> {
     // SAFETY: The emitter constructed this buffer through the `Emit` trait,
     // which guarantees the root `T` and all reachable data are valid.
     unsafe { crate::Region::from_buf(self.buf) }
-  }
-
-  /// Mutable pointer to buffer start (for Patch impls).
-  pub(crate) fn buf_mut_ptr(&mut self) -> *mut u8 {
-    self.buf.as_mut_ptr()
   }
 
   /// Const pointer to buffer start.
@@ -235,26 +166,17 @@ impl<T: Flat, B: Buf> Emitter<T, B> {
   /// is initialized to `count`; `next` is 0 (end of chain, from zero-fill).
   /// Values start at offset `size_of::<Segment<U>>()` from the returned pos.
   pub(crate) fn alloc_segment_internal<U: Flat>(&mut self, count: u32) -> Pos {
-    use crate::list::Segment;
-    self.buf.align_to(align_of::<Segment<U>>());
-    let pos = Pos(self.buf.len());
-    let values_size = count.checked_mul(size_of::<U>() as u32).expect("segment values overflow");
-    let total = (size_of::<Segment<U>>() as u32)
-      .checked_add(values_size)
-      .expect("segment total size overflow");
-    self.buf.resize(self.buf.len() + total, 0);
-    // Write segment len at offset 4 (next is already 0 from zero-fill).
-    let len_offset = pos.0 as usize + size_of::<i32>();
-    // SAFETY: `resize` just allocated `total` bytes starting at `pos`.
-    // The `len` field is at `pos + 4`, within the freshly allocated region.
-    unsafe {
-      core::ptr::copy_nonoverlapping(
-        core::ptr::from_ref(&count).cast::<u8>(),
-        self.buf.as_mut_ptr().add(len_offset),
-        size_of::<u32>(),
-      );
-    }
-    pos
+    crate::buf::alloc_segment::<U>(&mut self.buf, count)
+  }
+
+  /// Patch the `next` pointer of a segment at `seg_pos`.
+  ///
+  /// # Safety
+  ///
+  /// `seg_pos` must be a position of a previously allocated `Segment<T>`.
+  pub(crate) unsafe fn patch_segment_next(&mut self, seg_pos: Pos, next_seg_pos: Pos) {
+    // SAFETY: Caller guarantees `seg_pos` is a previously allocated segment.
+    unsafe { crate::buf::patch_segment_next(&mut self.buf, seg_pos, next_seg_pos) };
   }
 
   /// Extract the underlying buffer (used by [`Region::trim`](crate::Region::trim)).

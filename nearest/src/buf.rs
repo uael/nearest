@@ -1,8 +1,8 @@
-use core::mem::MaybeUninit;
 #[cfg(feature = "alloc")]
 use core::{marker::PhantomData, ptr::NonNull};
+use core::{mem, mem::MaybeUninit, num::NonZero};
 
-use crate::{Flat, emitter::Pos};
+use crate::{Flat, emitter::Pos, list::Segment};
 
 /// Backing storage for a [`Region`](crate::Region).
 ///
@@ -445,3 +445,158 @@ unsafe impl<T> Send for AlignedBuf<T> {}
 #[cfg(feature = "alloc")]
 // SAFETY: &AlignedBuf only provides &[u8] access.
 unsafe impl<T> Sync for AlignedBuf<T> {}
+
+// ---------------------------------------------------------------------------
+// Shared buffer operations (used by both Emitter and Region)
+// ---------------------------------------------------------------------------
+
+/// Write a [`Flat`] value at position `at`.
+///
+/// # Safety
+///
+/// `at` must have been allocated for `U`, ensuring correct alignment.
+pub unsafe fn write_flat<U: Flat>(buf: &mut impl Buf, at: Pos, val: U) {
+  let start = at.0 as usize;
+  let size = mem::size_of::<U>();
+  assert!(
+    start + size <= buf.len() as usize,
+    "write_flat out of bounds: {}..{} but len is {}",
+    start,
+    start + size,
+    buf.len()
+  );
+  // SAFETY: Bounds checked above. `at` was allocated for `U` (caller contract),
+  // ensuring correct alignment. `mem::forget` prevents double-drop.
+  unsafe {
+    let src = core::ptr::from_ref(&val).cast::<u8>();
+    core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr().add(start), size);
+  }
+  mem::forget(val);
+}
+
+/// Patch a [`Near<U>`](crate::Near) at position `at` to point to `target`.
+///
+/// # Safety
+///
+/// `at` must point to a `Near<U>` field within a previously allocated value,
+/// and `target` must be a position allocated for `U`.
+pub unsafe fn patch_near(buf: &mut impl Buf, at: Pos, target: Pos) {
+  let rel = i64::from(target.0) - i64::from(at.0);
+  let rel_i32: i32 = rel.try_into().expect("near offset overflow");
+  let nz = NonZero::new(rel_i32).expect("near offset must be non-zero (target == at)");
+
+  let start = at.0 as usize;
+  let size = mem::size_of::<NonZero<i32>>();
+  assert!(start + size <= buf.len() as usize, "patch_near out of bounds");
+  // SAFETY: Bounds checked above. `at` points to the `Near<U>` field whose
+  // first 4 bytes hold a `NonZero<i32>` offset.
+  unsafe {
+    let src = core::ptr::from_ref(&nz).cast::<u8>();
+    core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr().add(start), size);
+  }
+}
+
+/// Patch a [`NearList<U>`](crate::NearList) header at position `at`.
+///
+/// # Safety
+///
+/// `at` must point to a `NearList<U>` field within a previously allocated
+/// value, and `target` must be a position of a `Segment<U>` (or `Pos::ZERO`
+/// when `len == 0`).
+pub unsafe fn patch_list_header(buf: &mut impl Buf, at: Pos, target: Pos, len: u32) {
+  let off_pos = at.0 as usize;
+  let len_pos = off_pos + mem::size_of::<i32>();
+
+  assert!(len_pos + mem::size_of::<u32>() <= buf.len() as usize, "patch_list_header out of bounds");
+
+  let rel: i32 = if len == 0 {
+    0
+  } else {
+    let r = i64::from(target.0) - i64::from(at.0);
+    r.try_into().expect("list header offset overflow")
+  };
+
+  // SAFETY: Bounds checked above. The list header at `at` has layout
+  // `[i32 offset, u32 len]`, and both writes are within bounds.
+  unsafe {
+    let buf_ptr = buf.as_mut_ptr();
+    core::ptr::copy_nonoverlapping(
+      core::ptr::from_ref(&rel).cast::<u8>(),
+      buf_ptr.add(off_pos),
+      mem::size_of::<i32>(),
+    );
+    core::ptr::copy_nonoverlapping(
+      core::ptr::from_ref(&len).cast::<u8>(),
+      buf_ptr.add(len_pos),
+      mem::size_of::<u32>(),
+    );
+  }
+}
+
+/// Copy raw bytes to position `at`.
+///
+/// # Safety
+///
+/// `src` must be valid for reading `len` bytes. `at` must be a valid
+/// position with at least `len` bytes available.
+pub unsafe fn write_bytes(buf: &mut impl Buf, at: Pos, src: *const u8, len: usize) {
+  let start = at.0 as usize;
+  assert!(
+    start + len <= buf.len() as usize,
+    "write_bytes out of bounds: {}..{} but len is {}",
+    start,
+    start + len,
+    buf.len()
+  );
+  // SAFETY: Bounds checked above. `src` is valid for `len` bytes (caller
+  // contract). The destination does not overlap the source.
+  unsafe {
+    core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr().add(start), len);
+  }
+}
+
+/// Allocate a segment header plus `count` contiguous values of type `U`.
+///
+/// Returns the position of the segment header. The segment's `len` field
+/// is initialized to `count`; `next` is 0 (end of chain, from zero-fill).
+pub fn alloc_segment<U: Flat>(buf: &mut impl Buf, count: u32) -> Pos {
+  buf.align_to(align_of::<Segment<U>>());
+  let pos = Pos(buf.len());
+  let values_size = count.checked_mul(size_of::<U>() as u32).expect("segment values overflow");
+  let total =
+    (size_of::<Segment<U>>() as u32).checked_add(values_size).expect("segment total size overflow");
+  buf.resize(buf.len() + total, 0);
+  // Write segment len at offset 4 (next is already 0 from zero-fill).
+  let len_offset = pos.0 as usize + size_of::<i32>();
+  // SAFETY: `resize` just allocated `total` bytes starting at `pos`.
+  // The `len` field is at `pos + 4`, within the freshly allocated region.
+  unsafe {
+    core::ptr::copy_nonoverlapping(
+      core::ptr::from_ref(&count).cast::<u8>(),
+      buf.as_mut_ptr().add(len_offset),
+      size_of::<u32>(),
+    );
+  }
+  pos
+}
+
+/// Patch the `next` pointer of a segment at `seg_pos`.
+///
+/// # Safety
+///
+/// `seg_pos` must be a position of a previously allocated `Segment<T>`.
+pub unsafe fn patch_segment_next(buf: &mut impl Buf, seg_pos: Pos, next_seg_pos: Pos) {
+  let rel = i64::from(next_seg_pos.0) - i64::from(seg_pos.0);
+  let rel_i32: i32 = rel.try_into().expect("segment next offset overflow");
+  let start = seg_pos.0 as usize;
+  assert!(start + mem::size_of::<i32>() <= buf.len() as usize, "patch_segment_next out of bounds");
+  // SAFETY: Bounds checked above. The `next` field is at offset 0 of
+  // `Segment<T>`, and we write exactly `size_of::<i32>()` bytes.
+  unsafe {
+    core::ptr::copy_nonoverlapping(
+      core::ptr::from_ref(&rel_i32).cast::<u8>(),
+      buf.as_mut_ptr().add(start),
+      mem::size_of::<i32>(),
+    );
+  }
+}
