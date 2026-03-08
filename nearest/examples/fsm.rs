@@ -7,7 +7,7 @@
 //! `NearList` indexing for state lookup, session `extend_list`
 //! to add transitions, and a simulation loop.
 
-use nearest::{FixedBuf, Flat, NearList, Region, empty};
+use nearest::{FixedBuf, Flat, NearList, Region, empty, list};
 
 /// A match condition on a single byte.
 #[derive(Flat, Copy, Clone, Debug, PartialEq, Eq)]
@@ -67,13 +67,14 @@ fn main() {
   //
   // Pre-build each state as a separate Region, then compose them
   // using &State references (uniform type for the states array).
-  let s0 = Region::new(State::make(false, [Transition::make(Match::Char(b'a'), 1)]));
-  let s1 = Region::new(State::make(false, [Transition::make(Match::Any, 2)]));
-  let s2 = Region::new(State::make(false, [Transition::make(Match::Char(b'b'), 3)]));
+  let s0 = Region::new(State::make(false, list([Transition::make(Match::Char(b'a'), 1)])));
+  let s1 = Region::new(State::make(false, list([Transition::make(Match::Any, 2)])));
+  let s2 = Region::new(State::make(false, list([Transition::make(Match::Char(b'b'), 3)])));
   let s3 = Region::new(State::make(true, empty()));
 
   // Final FSM lives on the stack — no heap allocation for the region itself.
-  let mut region: Region<Fsm, FixedBuf<512>> = Region::new_in(Fsm::make([&*s0, &*s1, &*s2, &*s3]));
+  let mut region: Region<Fsm, FixedBuf<512>> =
+    Region::new_in(Fsm::make(list([&*s0, &*s1, &*s2, &*s3])));
 
   println!("=== FSM for pattern 'a.b' ===");
   println!("states: {}", region.states.len());

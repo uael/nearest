@@ -120,12 +120,12 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([1u32, 2, 3]));
+  /// let region = Region::new(Root::make(list([1u32, 2, 3])));
   /// assert_eq!(region.items.len(), 3);
   ///
   /// let empty_region = Region::new(Root::make(empty()));
@@ -141,7 +141,7 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
@@ -149,7 +149,7 @@ impl<T: Flat> NearList<T> {
   /// let region = Region::new(Root::make(empty()));
   /// assert!(region.items.is_empty());
   ///
-  /// let region = Region::new(Root::make([1u32]));
+  /// let region = Region::new(Root::make(list([1u32])));
   /// assert!(!region.items.is_empty());
   /// ```
   #[must_use]
@@ -169,12 +169,12 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([1u32, 2, 3]));
+  /// let mut region = Region::new(Root::make(list([1u32, 2, 3])));
   /// assert_eq!(region.items.segment_count(), 1);
   ///
   /// // push_front adds a new segment.
@@ -217,12 +217,12 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([10u32, 20, 30]));
+  /// let region = Region::new(Root::make(list([10u32, 20, 30])));
   /// assert_eq!(region.items.last(), Some(&30));
   ///
   /// let region = Region::new(Root::make(empty()));
@@ -257,12 +257,12 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([1u32, 2, 3]));
+  /// let region = Region::new(Root::make(list([1u32, 2, 3])));
   /// assert!(region.items.contains(&2));
   /// assert!(!region.items.contains(&4));
   ///
@@ -282,12 +282,12 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([10u32, 20]));
+  /// let region = Region::new(Root::make(list([10u32, 20])));
   /// assert_eq!(region.items.first(), Some(&10));
   ///
   /// let region = Region::new(Root::make(empty()));
@@ -318,12 +318,12 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([10u32, 20, 30]));
+  /// let region = Region::new(Root::make(list([10u32, 20, 30])));
   /// let sum: u32 = region.items.iter().sum();
   /// assert_eq!(sum, 60);
   ///
@@ -476,12 +476,12 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([10u32, 20, 30]));
+  /// let region = Region::new(Root::make(list([10u32, 20, 30])));
   /// assert_eq!(region.items.get(0), Some(&10));
   /// assert_eq!(region.items.get(2), Some(&30));
   /// assert_eq!(region.items.get(3), None);

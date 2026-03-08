@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DataEnum, DataStruct, DeriveInput, Fields};
 
-use crate::util::{combine_where, flat_bounded_param_names, is_bool_type, is_primitive_type};
+use crate::util::{combine_where, flat_bounded_param_names};
 
 // ---------------------------------------------------------------------------
 // Enum validation
@@ -355,12 +355,7 @@ fn gen_validate_enum(input: &DeriveInput, data: &DataEnum) -> TokenStream {
 /// Each type's `Flat::validate` handles its own semantics (`Near<T>` follows offsets,
 /// `NearList<T>` walks segments, etc.), so the derive macro just delegates uniformly.
 fn gen_validate_field(field_ty: &syn::Type, offset_expr: &TokenStream) -> TokenStream {
-  if is_primitive_type(field_ty) && !is_bool_type(field_ty) {
-    // Covered by the struct/enum-level bounds check — no extra validation needed.
-    quote! {}
-  } else {
-    quote! { <#field_ty as ::nearest::Flat>::validate(nearest_addr + #offset_expr, nearest_buf)?; }
-  }
+  quote! { <#field_ty as ::nearest::Flat>::validate(nearest_addr + #offset_expr, nearest_buf)?; }
 }
 
 // ---------------------------------------------------------------------------

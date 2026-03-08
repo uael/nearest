@@ -6,7 +6,7 @@
 //! building sub-regions and composing via `&*region` emitters,
 //! recursive printing, session `extend_list`, `graft`, and `trim`.
 
-use nearest::{Flat, Near, NearList, Region};
+use nearest::{Flat, Near, NearList, Region, list, near};
 
 /// A named child entry in a directory.
 #[derive(Flat, Debug)]
@@ -30,9 +30,9 @@ fn name_of(list: &NearList<u8>) -> String {
 
 fn print_tree(node: &FsNode, prefix: &str, name: &str) {
   match node {
-    FsNode::File { size } => println!("{}{} ({} bytes)", prefix, name, size),
+    FsNode::File { size } => println!("{prefix}{name} ({size} bytes)"),
     FsNode::Dir { children } => {
-      println!("{}{}/", prefix, name);
+      println!("{prefix}{name}/");
       for (i, child) in children.iter().enumerate() {
         let is_last = i == children.len() - 1;
         let connector = if is_last { "└── " } else { "├── " };
@@ -45,19 +45,21 @@ fn print_tree(node: &FsNode, prefix: &str, name: &str) {
 
 fn main() {
   // Build leaf directories containing only files (homogeneous children).
-  let src = Region::new(FsNode::make_dir([
-    Child::make(b"main.rs".as_slice(), FsNode::make_file(1200)),
-    Child::make(b"lib.rs".as_slice(), FsNode::make_file(800)),
-  ]));
-  let docs =
-    Region::new(FsNode::make_dir([Child::make(b"readme.md".as_slice(), FsNode::make_file(2400))]));
+  let src = Region::new(FsNode::make_dir(list([
+    Child::make(list(b"main.rs".as_slice()), near(FsNode::make_file(1200))),
+    Child::make(list(b"lib.rs".as_slice()), near(FsNode::make_file(800))),
+  ])));
+  let docs = Region::new(FsNode::make_dir(list([Child::make(
+    list(b"readme.md".as_slice()),
+    near(FsNode::make_file(2400)),
+  )])));
 
   // Compose into root using &*Region references — both entries share
   // the same emitter type (&FsNode), so they can go in one array.
-  let mut region = Region::new(FsNode::make_dir([
-    Child::make(b"src".as_slice(), &*src),
-    Child::make(b"docs".as_slice(), &*docs),
-  ]));
+  let mut region = Region::new(FsNode::make_dir(list([
+    Child::make(list(b"src".as_slice()), near(&*src)),
+    Child::make(list(b"docs".as_slice()), near(&*docs)),
+  ])));
 
   println!("=== initial tree ===");
   print_tree(&region, "", "root");
@@ -67,29 +69,32 @@ fn main() {
     let src_children = s.nav(s.root(), |n| match n {
       FsNode::Dir { children } => match &*children[0].node {
         FsNode::Dir { children } => children,
-        _ => panic!("expected Dir"),
+        FsNode::File { .. } => panic!("expected Dir"),
       },
-      _ => panic!("expected Dir"),
+      FsNode::File { .. } => panic!("expected Dir"),
     });
-    s.extend_list(src_children, [Child::make(b"test.rs".as_slice(), FsNode::make_file(500))]);
+    s.extend_list(
+      src_children,
+      [Child::make(list(b"test.rs".as_slice()), near(FsNode::make_file(500)))],
+    );
   });
 
   println!("\n=== after adding test.rs ===");
   print_tree(&region, "", "root");
 
   // Build a separate /build directory, then graft it in.
-  let build = Region::new(FsNode::make_dir([
-    Child::make(b"output.bin".as_slice(), FsNode::make_file(4096)),
-    Child::make(b"deps.lock".as_slice(), FsNode::make_file(128)),
-  ]));
+  let build = Region::new(FsNode::make_dir(list([
+    Child::make(list(b"output.bin".as_slice()), near(FsNode::make_file(4096))),
+    Child::make(list(b"deps.lock".as_slice()), near(FsNode::make_file(128))),
+  ])));
 
   region.session(|s| {
     let grafted = s.graft(&build);
     let root_children = s.nav(s.root(), |n| match n {
       FsNode::Dir { children } => children,
-      _ => panic!("expected Dir"),
+      FsNode::File { .. } => panic!("expected Dir"),
     });
-    s.extend_list(root_children, [Child::make(b"build".as_slice(), grafted)]);
+    s.extend_list(root_children, [Child::make(list(b"build".as_slice()), near(grafted))]);
   });
 
   println!("\n=== after grafting build/ ===");
@@ -101,7 +106,7 @@ fn main() {
       assert_eq!(children.len(), 3);
       assert_eq!(name_of(&children[2].name), "build");
     }
-    _ => panic!("expected Dir"),
+    FsNode::File { .. } => panic!("expected Dir"),
   }
 
   // Trim and report.

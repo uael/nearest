@@ -211,12 +211,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Block { id: u32, insts: NearList<u32> }
   ///
-  /// let mut region = Region::new(Block::make(10, [1u32, 2]));
+  /// let mut region = Region::new(Block::make(10, list([1u32, 2])));
   /// region.session(|s| {
   ///   let root = s.root();
   ///   let block = s.at(root);
@@ -247,12 +247,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Block { id: u32, insts: NearList<u32> }
   ///
-  /// let mut region = Region::new(Block::make(1, [10u32, 20]));
+  /// let mut region = Region::new(Block::make(1, list([10u32, 20])));
   /// region.session(|s| {
   ///   let root = s.root();
   ///
@@ -285,12 +285,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, Near, Region};
+  /// use nearest::{Flat, Near, Region, near};
   ///
   /// #[derive(Flat)]
   /// struct Wrapper { inner: Near<u32> }
   ///
-  /// let mut region = Region::new(Wrapper::make(42u32));
+  /// let mut region = Region::new(Wrapper::make(near(42u32)));
   /// region.session(|s| {
   ///   let inner_near = s.nav(s.root(), |w| &w.inner);
   ///   let inner_ref = s.follow(inner_near);
@@ -319,12 +319,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Block { id: u32, items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Block::make(10, [1u32, 2]));
+  /// let mut region = Region::new(Block::make(10, list([1u32, 2])));
   /// region.session(|s| {
   ///   let root = s.at(s.root());
   ///   let id_ref = s.ref_of(&root.id);
@@ -368,7 +368,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Block { id: u32, items: NearList<u32> }
@@ -376,7 +376,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// let mut region = Region::new(Block::make(1, empty()));
   /// region.session(|s| {
   ///   // Overwrite the entire root with a new builder.
-  ///   s.write(s.root(), Block::make(2, [10u32, 20]));
+  ///   s.write(s.root(), Block::make(2, list([10u32, 20])));
   /// });
   /// assert_eq!(region.id, 2);
   /// assert_eq!(region.items.len(), 2);
@@ -391,12 +391,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, Near, Region};
+  /// use nearest::{Flat, Near, Region, near};
   ///
   /// #[derive(Flat)]
   /// struct Wrapper { inner: Near<u32> }
   ///
-  /// let mut region = Region::new(Wrapper::make(10u32));
+  /// let mut region = Region::new(Wrapper::make(near(10u32)));
   /// assert_eq!(*region.inner, 10);
   ///
   /// region.session(|s| {
@@ -419,12 +419,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([1u32, 2, 3]));
+  /// let mut region = Region::new(Root::make(list([1u32, 2, 3])));
   ///
   /// region.session(|s| {
   ///   let items = s.nav(s.root(), |r| &r.items);
@@ -438,7 +438,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// // Splice to empty.
   /// region.session(|s| {
   ///   let items = s.nav(s.root(), |r| &r.items);
-  ///   s.splice_list(items, empty());
+  ///   s.splice_list(items, core::iter::empty::<u32>());
   /// });
   /// assert_eq!(region.items.len(), 0);
   /// ```
@@ -489,12 +489,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([1u32, 2, 3]));
+  /// let mut region = Region::new(Root::make(list([1u32, 2, 3])));
   ///
   /// // Deep-copy a subset of list elements (reordered).
   /// region.session(|s| {
@@ -561,12 +561,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([1u32, 2, 3]));
+  /// let mut region = Region::new(Root::make(list([1u32, 2, 3])));
   ///
   /// region.session(|s| {
   ///   let items = s.nav(s.root(), |r| &r.items);
@@ -627,12 +627,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([2u32, 3]));
+  /// let mut region = Region::new(Root::make(list([2u32, 3])));
   ///
   /// region.session(|s| {
   ///   let items = s.nav(s.root(), |r| &r.items);
@@ -779,12 +779,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([1u32, 2]));
+  /// let mut region = Region::new(Root::make(list([1u32, 2])));
   ///
   /// region.session(|s| {
   ///   let items = s.nav(s.root(), |r| &r.items);
@@ -870,13 +870,13 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Node { id: u32, items: NearList<u32> }
   ///
   /// let mut region = Region::new(Node::make(1, empty()));
-  /// let other = Region::new(Node::make(2, [10u32, 20]));
+  /// let other = Region::new(Node::make(2, list([10u32, 20])));
   ///
   /// region.session(|s| {
   ///   let grafted = s.graft(&other);
@@ -899,12 +899,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([10u32, 20, 30]));
+  /// let mut region = Region::new(Root::make(list([10u32, 20, 30])));
   ///
   /// region.session(|s| {
   ///   let items = s.nav(s.root(), |r| &r.items);
@@ -943,12 +943,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([1u32, 2, 3, 4, 5]));
+  /// let mut region = Region::new(Root::make(list([1u32, 2, 3, 4, 5])));
   ///
   /// // Keep only even numbers.
   /// region.session(|s| {
@@ -1032,12 +1032,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([1u32, 2, 3]));
+  /// let mut region = Region::new(Root::make(list([1u32, 2, 3])));
   ///
   /// region.session(|s| {
   ///   let items = s.nav(s.root(), |r| &r.items);
@@ -1105,12 +1105,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([3u32, 1, 2]));
+  /// let mut region = Region::new(Root::make(list([3u32, 1, 2])));
   ///
   /// region.session(|s| {
   ///   let items = s.nav(s.root(), |r| &r.items);
@@ -1190,12 +1190,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([1u32, 1, 2, 3, 3, 3, 2]));
+  /// let mut region = Region::new(Root::make(list([1u32, 1, 2, 3, 3, 3, 2])));
   ///
   /// region.session(|s| {
   ///   let items = s.nav(s.root(), |r| &r.items);
@@ -1282,12 +1282,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([10u32, 20, 30]));
+  /// let mut region = Region::new(Root::make(list([10u32, 20, 30])));
   ///
   /// region.session(|s| {
   ///   let items = s.nav(s.root(), |r| &r.items);
@@ -1329,12 +1329,12 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Block { id: u32, items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Block::make(1, [10u32]));
+  /// let mut region = Region::new(Block::make(1, list([10u32])));
   /// region.session(|s| {
   ///   let items_ref = s.nav(s.root(), |b| &b.items);
   ///   let first = s.list_item(items_ref, 0);
@@ -1358,7 +1358,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
 /// navigation patterns or batch operations, use [`Session`] methods directly.
 ///
 /// ```
-/// use nearest::{Flat, Near, Region};
+/// use nearest::{Flat, Near, Region, near};
 ///
 /// #[derive(Flat, Debug)]
 /// struct Outer { inner: Near<Inner> }
@@ -1366,7 +1366,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
 /// #[derive(Flat, Debug, Clone, Copy)]
 /// struct Inner { value: u32 }
 ///
-/// let mut region = Region::new(Outer::make(Inner { value: 1 }));
+/// let mut region = Region::new(Outer::make(near(Inner { value: 1 })));
 /// assert_eq!(region.inner.get().value, 1);
 ///
 /// region.session(|s| {
