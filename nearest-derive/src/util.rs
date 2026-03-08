@@ -2,61 +2,6 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, Fields};
 
-/// Classifies how a field type maps to an emitter parameter.
-pub enum FieldKind {
-  /// Primitive type (u8, u16, etc.) — concrete parameter, uses Emit<T> directly.
-  Primitive,
-  /// `Near<T>` — accepts `impl Emit<T>`, generates alloc+patch.
-  Near { inner: syn::Type },
-  /// `NearList<T>` — accepts `impl IntoIterator<Item: Emit<T>>`.
-  NearList { inner: syn::Type },
-  /// `Option<Near<T>>` — accepts `Option<impl Emit<T>>`, generates follow+patch or zeros.
-  OptionNear { inner: syn::Type },
-  /// Any other user type — accepts `impl Emit<FieldType>`.
-  Other,
-}
-
-pub fn classify_field(ty: &syn::Type) -> FieldKind {
-  if is_primitive_type(ty) {
-    return FieldKind::Primitive;
-  }
-  if let syn::Type::Path(p) = ty
-    && let Some(seg) = p.path.segments.last()
-  {
-    let name = seg.ident.to_string();
-    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments
-      && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
-    {
-      if name == "Near" {
-        return FieldKind::Near { inner: inner.clone() };
-      }
-      if name == "NearList" {
-        return FieldKind::NearList { inner: inner.clone() };
-      }
-      // Detect Option<Near<T>>
-      if name == "Option"
-        && let syn::Type::Path(inner_p) = inner
-        && let Some(inner_seg) = inner_p.path.segments.last()
-        && inner_seg.ident == "Near"
-        && let syn::PathArguments::AngleBracketed(inner_args) = &inner_seg.arguments
-        && let Some(syn::GenericArgument::Type(near_inner)) = inner_args.args.first()
-      {
-        return FieldKind::OptionNear { inner: near_inner.clone() };
-      }
-    }
-  }
-  FieldKind::Other
-}
-
-pub fn is_bool_type(ty: &syn::Type) -> bool {
-  if let syn::Type::Path(p) = ty
-    && let Some(ident) = p.path.get_ident()
-  {
-    return ident == "bool";
-  }
-  false
-}
-
 pub fn is_primitive_type(ty: &syn::Type) -> bool {
   if let syn::Type::Path(p) = ty
     && let Some(ident) = p.path.get_ident()
@@ -82,17 +27,33 @@ pub fn is_all_primitive(data: &Data) -> bool {
   collect_field_types(data).iter().all(is_primitive_type)
 }
 
-/// Returns true if none of the fields are `Near<T>` or `NearList<T>`.
+/// Returns true if a type syntactically names a self-relative pointer type.
+fn is_pointer_type(ty: &syn::Type) -> bool {
+  if let syn::Type::Path(p) = ty
+    && let Some(seg) = p.path.segments.last()
+  {
+    let name = seg.ident.to_string();
+    if name == "Near" || name == "NearList" {
+      return true;
+    }
+    // Check Option<Near<T>>
+    if name == "Option"
+      && let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+      && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+      return is_pointer_type(inner);
+    }
+  }
+  false
+}
+
+/// Returns true if none of the fields are `Near<T>`, `NearList<T>`, or
+/// `Option<Near<T>>`.
 ///
 /// Used for **enums** — an enum like `Value { Const(u32), Type(Type) }` has no
 /// pointer fields and can safely self-emit, even though `Type` is not primitive.
 pub fn has_no_pointer_fields(data: &Data) -> bool {
-  collect_field_types(data).iter().all(|ty| {
-    !matches!(
-      classify_field(ty),
-      FieldKind::Near { .. } | FieldKind::NearList { .. } | FieldKind::OptionNear { .. }
-    )
-  })
+  collect_field_types(data).iter().all(|ty| !is_pointer_type(ty))
 }
 
 /// Returns true if a type parameter already has `Flat` (or `::nearest::Flat`) in
@@ -107,16 +68,6 @@ pub fn has_flat_bound(tp: &syn::TypeParam) -> bool {
       false
     }
   })
-}
-
-/// Returns true if `ty` is a simple ident path matching `name`.
-pub fn is_type_param_ident(ty: &syn::Type, name: &str) -> bool {
-  if let syn::Type::Path(p) = ty
-    && let Some(ident) = p.path.get_ident()
-  {
-    return ident == name;
-  }
-  false
 }
 
 /// Collect the names of type parameters that already have a `Flat` bound.

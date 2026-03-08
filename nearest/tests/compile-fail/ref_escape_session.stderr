@@ -1,13 +1,70 @@
-error: lifetime may not live long enough
-  --> tests/compile-fail/ref_escape_session.rs:14:5
+error[E0277]: the trait bound `std::iter::Empty<Infallible>: Emit<NearList<u32>>` is not satisfied
+  --> tests/compile-fail/ref_escape_session.rs:12:63
    |
-13 |   let escaped: Ref<'_, Block> = region.session(|s| {
-   |                                                 -- return type of closure is nearest::Ref<'2, Block>
-   |                                                 |
-   |                                                 has type `&mut Session<'1, '_, Block>`
-14 |     s.root() // Ref escapes the closure — must not compile.
-   |     ^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+12 |   let mut region: Region<Block> = Region::new(Block::make(42, empty()));
+   |                                               -----------     ^^^^^^^ the trait `Emit<NearList<u32>>` is not implemented for `std::iter::Empty<Infallible>`
+   |                                               |
+   |                                               required by a bound introduced by this call
    |
-   = note: requirement occurs because of the type `nearest::Ref<'_, Block>`, which makes the generic argument `'_` invariant
-   = note: the struct `nearest::Ref<'id, T>` is invariant over the parameter `'id`
-   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+   = help: the following other types implement trait `Emit<T>`:
+             `&T` implements `Emit<T>`
+             `(BA, BB)` implements `Emit<(A, B)>`
+             `Infallible` implements `Emit<T>`
+             `Option<T>` implements `Emit<Option<T>>`
+             `[B; N]` implements `Emit<[T; N]>`
+             `__Builder<__Items>` implements `Emit<Block>`
+             `bool` implements `Emit<bool>`
+             `i32` implements `Emit<i32>`
+           and $N others
+note: required by a bound in `Block::make`
+  --> tests/compile-fail/ref_escape_session.rs:5:10
+   |
+ 5 | #[derive(Flat, Debug)]
+   |          ^^^^ required by this bound in `Block::make`
+   = note: this error originates in the derive macro `Flat` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `std::iter::Empty<Infallible>: Emit<NearList<u32>>` is not satisfied
+  --> tests/compile-fail/ref_escape_session.rs:12:47
+   |
+12 |   let mut region: Region<Block> = Region::new(Block::make(42, empty()));
+   |                                               ^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Emit<NearList<u32>>` is not implemented for `std::iter::Empty<Infallible>`
+   |
+   = help: the following other types implement trait `Emit<T>`:
+             `&T` implements `Emit<T>`
+             `(BA, BB)` implements `Emit<(A, B)>`
+             `Infallible` implements `Emit<T>`
+             `Option<T>` implements `Emit<Option<T>>`
+             `[B; N]` implements `Emit<[T; N]>`
+             `__Builder<__Items>` implements `Emit<Block>`
+             `bool` implements `Emit<bool>`
+             `i32` implements `Emit<i32>`
+           and $N others
+note: required by a bound in `Block::make`
+  --> tests/compile-fail/ref_escape_session.rs:5:10
+   |
+ 5 | #[derive(Flat, Debug)]
+   |          ^^^^ required by this bound in `Block::make`
+   = note: this error originates in the derive macro `Flat` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `std::iter::Empty<Infallible>: Emit<NearList<u32>>` is not satisfied
+  --> tests/compile-fail/ref_escape_session.rs:12:35
+   |
+12 |   let mut region: Region<Block> = Region::new(Block::make(42, empty()));
+   |                                   ^^^^^^^^^^^ the trait `Emit<NearList<u32>>` is not implemented for `std::iter::Empty<Infallible>`
+   |
+   = help: the following other types implement trait `Emit<T>`:
+             `&T` implements `Emit<T>`
+             `(BA, BB)` implements `Emit<(A, B)>`
+             `Infallible` implements `Emit<T>`
+             `Option<T>` implements `Emit<Option<T>>`
+             `[B; N]` implements `Emit<[T; N]>`
+             `__Builder<__Items>` implements `Emit<Block>`
+             `bool` implements `Emit<bool>`
+             `i32` implements `Emit<i32>`
+           and $N others
+note: required by a bound in `Block::make`
+  --> tests/compile-fail/ref_escape_session.rs:5:10
+   |
+ 5 | #[derive(Flat, Debug)]
+   |          ^^^^ required by this bound in `Block::make`
+   = note: this error originates in the derive macro `Flat` (in Nightly builds, run with -Z macro-backtrace for more info)

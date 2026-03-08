@@ -7,7 +7,7 @@
 //! `push_back` with `ListTail` for O(1) repeated appends, `set` for
 //! scalar mutation, and `trim` for compaction.
 
-use nearest::{Flat, NearList, Region};
+use nearest::{Flat, NearList, Region, list};
 
 #[derive(Flat, Copy, Clone, Debug, PartialEq)]
 struct Entity {
@@ -35,13 +35,13 @@ fn print_world(world: &World) {
 fn main() {
   let mut region = Region::new(World::make(
     0,
-    [
+    list([
       Entity { id: 0, x: 0, y: 0, vx: 1, vy: 0, hp: 100 },
       Entity { id: 1, x: 10, y: 5, vx: -1, vy: 1, hp: 50 },
       Entity { id: 2, x: 3, y: 7, vx: 0, vy: -2, hp: 10 },
       Entity { id: 3, x: -5, y: 0, vx: 2, vy: 2, hp: 75 },
       Entity { id: 4, x: 20, y: 20, vx: -1, vy: -1, hp: 30 },
-    ],
+    ]),
   ));
 
   println!("=== initial ===");

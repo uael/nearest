@@ -53,27 +53,31 @@ pub struct NearList<T> {
 }
 
 // SAFETY: NearList contains only i32, u32, and PhantomData — no Drop, no heap.
-unsafe impl<T> Flat for NearList<T> {
+// Conditional impl: `T: Flat` enables self-contained deep_copy that walks segments
+// and deep-copies each element, and validate that walks and validates all elements.
+unsafe impl<T: Flat> Flat for NearList<T> {
   unsafe fn deep_copy(&self, p: &mut impl Patch, at: Pos) {
     // SAFETY: Caller guarantees `at` was allocated for `NearList<T>`.
-    // Byte-copy the 8-byte header (head offset + len). Containing struct's
-    // deep_copy handles walking and deep-copying list elements.
-    unsafe {
-      p.write_bytes(at, core::ptr::from_ref(self).cast(), size_of::<Self>());
+    let len = self.len;
+    if len == 0 {
+      // SAFETY: `at` was allocated for `NearList<T>` by the caller.
+      // Writing a zero-length header with `Pos::ZERO` is valid.
+      unsafe { p.patch_list_header::<T>(at, Pos::ZERO, 0) };
+      return;
     }
+    let seg_pos = p.alloc_segment::<T>(len);
+    let values_offset = size_of::<Segment<T>>();
+    for (i, elem) in self.iter().enumerate() {
+      // SAFETY: `seg_pos` was allocated for a segment of `len` elements.
+      // Each element offset is within the segment allocation.
+      unsafe { elem.deep_copy(p, seg_pos.offset(values_offset + i * size_of::<T>())) };
+    }
+    // SAFETY: `at` was allocated for `NearList<T>` and `seg_pos` for the segment.
+    unsafe { p.patch_list_header::<T>(at, seg_pos, len) };
   }
 
   fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
-    crate::ValidateError::check::<Self>(addr, buf)?;
-    let head = i32::from_ne_bytes(buf[addr..addr + 4].try_into().unwrap());
-    let len = u32::from_ne_bytes(buf[addr + 4..addr + 8].try_into().unwrap());
-    // Invariant: len == 0 ⟺ head == 0
-    if (len == 0) != (head == 0) {
-      return Err(crate::ValidateError::InvalidListHeader { addr });
-    }
-    // Does NOT walk segments — derive code calls __private::validate_list::<T>()
-    // for that (mirrors the deep_copy pattern).
-    Ok(())
+    crate::validate::validate_list_impl::<T>(addr, buf)
   }
 }
 
@@ -106,15 +110,15 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([1u32, 2, 3]));
+  /// let region = Region::new(Root::make(list([1u32, 2, 3])));
   /// assert_eq!(region.items.len(), 3);
   ///
-  /// let empty_region = Region::new(Root::make(empty()));
+  /// let empty_region = Region::new(Root::make(list(empty())));
   /// assert_eq!(empty_region.items.len(), 0);
   /// ```
   #[must_use]
@@ -127,15 +131,15 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make(empty()));
+  /// let region = Region::new(Root::make(list(empty())));
   /// assert!(region.items.is_empty());
   ///
-  /// let region = Region::new(Root::make([1u32]));
+  /// let region = Region::new(Root::make(list([1u32])));
   /// assert!(!region.items.is_empty());
   /// ```
   #[must_use]
@@ -155,12 +159,12 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Root::make([1u32, 2, 3]));
+  /// let mut region = Region::new(Root::make(list([1u32, 2, 3])));
   /// assert_eq!(region.items.segment_count(), 1);
   ///
   /// // push_front adds a new segment.
@@ -203,15 +207,15 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([10u32, 20, 30]));
+  /// let region = Region::new(Root::make(list([10u32, 20, 30])));
   /// assert_eq!(region.items.last(), Some(&30));
   ///
-  /// let region = Region::new(Root::make(empty()));
+  /// let region = Region::new(Root::make(list(empty())));
   /// assert_eq!(region.items.last(), None);
   /// ```
   #[must_use]
@@ -243,16 +247,16 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([1u32, 2, 3]));
+  /// let region = Region::new(Root::make(list([1u32, 2, 3])));
   /// assert!(region.items.contains(&2));
   /// assert!(!region.items.contains(&4));
   ///
-  /// let region = Region::new(Root::make(empty()));
+  /// let region = Region::new(Root::make(list(empty())));
   /// assert!(!region.items.contains(&1));
   /// ```
   #[must_use]
@@ -268,15 +272,15 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([10u32, 20]));
+  /// let region = Region::new(Root::make(list([10u32, 20])));
   /// assert_eq!(region.items.first(), Some(&10));
   ///
-  /// let region = Region::new(Root::make(empty()));
+  /// let region = Region::new(Root::make(list(empty())));
   /// assert_eq!(region.items.first(), None);
   /// ```
   #[must_use]
@@ -304,12 +308,12 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([10u32, 20, 30]));
+  /// let region = Region::new(Root::make(list([10u32, 20, 30])));
   /// let sum: u32 = region.items.iter().sum();
   /// assert_eq!(sum, 60);
   ///
@@ -462,12 +466,12 @@ impl<T: Flat> NearList<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat)]
   /// struct Root { items: NearList<u32> }
   ///
-  /// let region = Region::new(Root::make([10u32, 20, 30]));
+  /// let region = Region::new(Root::make(list([10u32, 20, 30])));
   /// assert_eq!(region.items.get(0), Some(&10));
   /// assert_eq!(region.items.get(2), Some(&30));
   /// assert_eq!(region.items.get(3), None);

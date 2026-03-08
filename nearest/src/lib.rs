@@ -77,15 +77,15 @@
 //! accept any `IntoIterator` whose items implement [`Emit`]:
 //!
 //! ```
-//! use nearest::{Flat, Near, NearList, Region, empty};
+//! use nearest::{Flat, Near, NearList, Region, empty, near, list};
 //!
 //! # #[derive(Flat, Debug)]
 //! # struct Func { name: u32, entry: Near<Block> }
 //! # #[derive(Flat, Debug)]
 //! # struct Block { id: u32, insts: NearList<u32> }
 //! let region = Region::new(Func::make(
-//!   1,                              // name: u32
-//!   Block::make(0, [10u32, 20, 30]),  // entry: Near<Block>
+//!   1,                                          // name: u32
+//!   near(Block::make(0, list([10u32, 20, 30]))),  // entry: Near<Block>
 //! ));
 //!
 //! assert_eq!(region.name, 1);
@@ -95,10 +95,10 @@
 //! Use [`empty()`] for empty [`NearList`] fields:
 //!
 //! ```
-//! # use nearest::{Flat, NearList, Region, empty};
+//! # use nearest::{Flat, NearList, Region, empty, list};
 //! # #[derive(Flat, Debug)]
 //! # struct Block { id: u32, insts: NearList<u32> }
-//! let region = Region::new(Block::make(0, empty()));
+//! let region = Region::new(Block::make(0, list(empty())));
 //! assert!(region.insts.is_empty());
 //! ```
 //!
@@ -108,12 +108,12 @@
 //! direct access to the root value. [`Near<T>`] also dereferences to `&T`:
 //!
 //! ```
-//! # use nearest::{Flat, Near, NearList, Region, empty};
+//! # use nearest::{Flat, Near, NearList, Region, empty, near, list};
 //! # #[derive(Flat, Debug)]
 //! # struct Func { name: u32, entry: Near<Block> }
 //! # #[derive(Flat, Debug)]
 //! # struct Block { id: u32, insts: NearList<u32> }
-//! # let region = Region::new(Func::make(1, Block::make(0, [10u32, 20, 30])));
+//! # let region = Region::new(Func::make(1, near(Block::make(0, list([10u32, 20, 30])))));
 //! // Region<T>: Deref<Target = T>
 //! assert_eq!(region.name, 1);
 //!
@@ -135,14 +135,14 @@
 //! compile time with zero runtime cost.
 //!
 //! ```
-//! # use nearest::{Flat, NearList, Region, empty};
+//! # use nearest::{Flat, NearList, Region, empty, list};
 //! #[derive(Flat, Debug)]
 //! struct Block {
 //!   id: u32,
 //!   items: NearList<u32>,
 //! }
 //!
-//! let mut region = Region::new(Block::make(1, [10u32, 20, 30]));
+//! let mut region = Region::new(Block::make(1, list([10u32, 20, 30])));
 //!
 //! region.session(|s| {
 //!   // Navigate to a field, then overwrite it
@@ -201,12 +201,12 @@
 //! interface:
 //!
 //! ```
-//! # use nearest::{Flat, Near, NearList, Region, empty};
+//! # use nearest::{Flat, Near, NearList, Region, empty, near, list};
 //! # #[derive(Flat, Debug)]
 //! # struct Func { name: u32, entry: Near<Block> }
 //! # #[derive(Flat, Debug)]
 //! # struct Block { id: u32, insts: NearList<u32> }
-//! # let mut region = Region::new(Func::make(1, Block::make(0, [10u32, 20, 30])));
+//! # let mut region = Region::new(Func::make(1, near(Block::make(0, list([10u32, 20, 30])))));
 //! region.session(|s| {
 //!   s.cursor()
 //!     .at(|f| &f.entry)
@@ -227,14 +227,14 @@
 //! (e.g. enum discriminants, `bool` values) before reconstructing the region.
 //!
 //! ```
-//! # use nearest::{Flat, NearList, Region};
+//! # use nearest::{Flat, NearList, Region, list};
 //! #[derive(Flat, Debug)]
 //! struct Node {
 //!   id: u32,
 //!   children: NearList<u32>,
 //! }
 //!
-//! let original = Region::new(Node::make(1, [10u32, 20, 30]));
+//! let original = Region::new(Node::make(1, list([10u32, 20, 30])));
 //! let bytes = original.as_bytes();
 //!
 //! // bytes can be persisted to disk, sent over the network, etc.
@@ -246,7 +246,7 @@
 //! Invalid or corrupted data is rejected with a [`ValidateError`]:
 //!
 //! ```
-//! use nearest::{Flat, Near, Region, ValidateError};
+//! use nearest::{Flat, Near, Region, ValidateError, near};
 //!
 //! #[derive(Flat, Debug)]
 //! struct Flags {
@@ -254,7 +254,7 @@
 //!   label: Near<u32>,
 //! }
 //!
-//! let region = Region::new(Flags::make(true, 42u32));
+//! let region = Region::new(Flags::make(true, near(42u32)));
 //! let mut bytes = region.as_bytes().to_vec();
 //! bytes[core::mem::offset_of!(Flags, active)] = 2; // corrupt the bool
 //! assert!(Region::<Flags>::from_bytes(&bytes).is_err());
@@ -267,10 +267,10 @@
 //! buffer, reclaiming the waste:
 //!
 //! ```
-//! # use nearest::{Flat, NearList, Region, empty};
+//! # use nearest::{Flat, NearList, Region, empty, list};
 //! # #[derive(Flat, Debug)]
 //! # struct Block { id: u32, items: NearList<u32> }
-//! let mut region = Region::new(Block::make(1, [10u32, 20, 30]));
+//! let mut region = Region::new(Block::make(1, list([10u32, 20, 30])));
 //! let before = region.byte_len();
 //!
 //! region.session(|s| {
@@ -294,10 +294,10 @@
 //! graph traversal:
 //!
 //! ```
-//! # use nearest::{Flat, NearList, Region};
+//! # use nearest::{Flat, NearList, Region, list};
 //! # #[derive(Flat, Debug)]
 //! # struct Block { id: u32, items: NearList<u32> }
-//! let region = Region::new(Block::make(1, [10u32, 20, 30]));
+//! let region = Region::new(Block::make(1, list([10u32, 20, 30])));
 //! let cloned = region.clone();
 //!
 //! assert_eq!(cloned.id, region.id);
@@ -324,7 +324,7 @@
 //! ```
 //!
 //! ```
-//! use nearest::{Flat, NearList, Region, FixedBuf, empty};
+//! use nearest::{Flat, NearList, Region, FixedBuf, empty, list};
 //!
 //! #[derive(Flat, Debug)]
 //! struct Msg {
@@ -334,7 +334,7 @@
 //!
 //! // 128-byte inline buffer, no heap allocation.
 //! let region: Region<Msg, FixedBuf<128>> =
-//!   Region::new_in(Msg::make(1, [10u32, 20]));
+//!   Region::new_in(Msg::make(1, list([10u32, 20])));
 //! assert_eq!(region.id, 1);
 //! assert_eq!(region.tags.len(), 2);
 //! ```
@@ -436,31 +436,12 @@ mod validate;
 #[cfg(feature = "alloc")]
 pub use buf::AlignedBuf;
 pub use buf::{Buf, FixedBuf};
-pub use emit::Emit;
+pub use emit::{Emit, list, maybe, near, none};
 
 /// Not part of the public API. Used by the derive macro.
 #[doc(hidden)]
 pub mod __private {
   pub use crate::emitter::Pos;
-
-  /// Byte offset from a segment header to its first value.
-  ///
-  /// Equal to `size_of::<Segment<T>>()`. The derive macro uses this to
-  /// compute value positions without exposing `Segment` publicly.
-  #[must_use]
-  pub const fn segment_values_offset<T>() -> usize {
-    core::mem::size_of::<crate::list::Segment<T>>()
-  }
-
-  /// Validate a `NearList<T>` segment chain starting at `hdr_addr`.
-  ///
-  /// Used by the derive macro to validate list fields.
-  pub fn validate_list<T: crate::Flat>(
-    hdr_addr: usize,
-    buf: &[u8],
-  ) -> Result<(), crate::ValidateError> {
-    crate::validate::validate_list_impl::<T>(hdr_addr, buf)
-  }
 }
 pub use flat::Flat;
 pub use list::{NearList, NearListIter};
@@ -479,13 +460,13 @@ pub use validate::ValidateError;
 /// # Examples
 ///
 /// ```
-/// use nearest::{Flat, NearList, Region, empty};
+/// use nearest::{Flat, NearList, Region, empty, list};
 ///
 /// #[derive(Flat)]
 /// struct Root { items: NearList<u32> }
 ///
 /// // Use empty() when building a struct with an empty NearList.
-/// let region = Region::new(Root::make(empty()));
+/// let region = Region::new(Root::make(list(empty())));
 /// assert!(region.items.is_empty());
 /// ```
 pub const fn empty() -> core::iter::Empty<core::convert::Infallible> {

@@ -37,14 +37,22 @@ pub struct Near<T> {
 }
 
 // SAFETY: Near contains only a NonZero<i32> and PhantomData — no Drop, no heap.
-// Unconditional impl: Near<T> is always Flat regardless of T, since it stores only
-// an offset, not an actual T. This avoids circular trait bounds in recursive types.
-unsafe impl<T> Flat for Near<T> {
+// Conditional impl: `T: Flat` enables self-contained deep_copy and validate that
+// follow the pointer. Recursive types work because the derive generates `impl Flat
+// for Node` without a where clause for concrete field types — the body's usage of
+// `<Near<Node> as Flat>::deep_copy(...)` resolves via this impl with `T = Node`,
+// where `Node: Flat` is the impl being defined (no cycle).
+unsafe impl<T: Flat> Flat for Near<T> {
   unsafe fn deep_copy(&self, p: &mut impl Patch, at: Pos) {
     // SAFETY: Caller guarantees `at` was allocated for `Near<T>`.
-    // Byte-copy the 4-byte offset. Containing struct's deep_copy handles pointer following.
+    // Alloc space for the target T, deep-copy it, then patch the offset.
+    let target = p.alloc::<T>();
+    // SAFETY: `target` was just allocated for T, and `at` was allocated for
+    // `Near<T>` by the caller. `get()` is valid because `self` is in a live
+    // region buffer.
     unsafe {
-      p.write_bytes(at, core::ptr::from_ref(self).cast(), size_of::<Self>());
+      self.get().deep_copy(p, target);
+      p.patch_near::<T>(at, target);
     }
   }
 
@@ -54,8 +62,20 @@ unsafe impl<T> Flat for Near<T> {
     if off == 0 {
       return Err(crate::ValidateError::NullNear { addr });
     }
-    // Does NOT follow the offset — containing struct's derive code does that
-    // (mirrors the deep_copy pattern).
+    let target = addr.cast_signed().wrapping_add(off as isize).cast_unsigned();
+    crate::ValidateError::check::<T>(target, buf)?;
+    T::validate(target, buf)
+  }
+
+  fn validate_option(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+    // Near<T> provides the niche for Option<Near<T>> (NonZero<i32>).
+    // Zero = None (valid), non-zero = Some(Near<T>) → follow the pointer.
+    let off = i32::from_ne_bytes(buf[addr..addr + 4].try_into().unwrap());
+    if off != 0 {
+      let target = addr.cast_signed().wrapping_add(off as isize).cast_unsigned();
+      crate::ValidateError::check::<T>(target, buf)?;
+      T::validate(target, buf)?;
+    }
     Ok(())
   }
 }
@@ -66,12 +86,12 @@ impl<T: Flat> Near<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, Near, Region};
+  /// use nearest::{Flat, Near, Region, near};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Wrapper { inner: Near<u32> }
   ///
-  /// let region = Region::new(Wrapper::make(42u32));
+  /// let region = Region::new(Wrapper::make(near(42u32)));
   /// assert_eq!(*region.inner.get(), 42);
   ///
   /// // Deref also works (Near<T> implements Deref<Target = T>).

@@ -55,6 +55,21 @@ pub unsafe trait Flat: Sized {
   /// Returns [`ValidateError`](crate::ValidateError) if the bytes at `addr`
   /// do not form a valid `Self`.
   fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError>;
+
+  /// Validate this value when it is the niche-providing payload of `Option<Self>`.
+  ///
+  /// Called by `Option<T>::validate`. The default is a no-op (correct for types
+  /// without niche optimization or without internal pointers to follow).
+  /// `Near<T>` overrides this: zero = None (valid), non-zero = follow pointer.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ValidateError`](crate::ValidateError) if the optional value
+  /// is invalid.
+  fn validate_option(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
+    let _ = (addr, buf);
+    Ok(())
+  }
 }
 
 macro_rules! impl_flat {
@@ -168,8 +183,7 @@ unsafe impl<T: Flat> Flat for Option<T> {
   }
 
   fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
-    // Option<T> has opaque niche layout — we can only validate bounds.
-    // For Option<Near<T>>, the derive macro handles validation via FieldKind::OptionNear.
-    crate::ValidateError::check::<Self>(addr, buf)
+    crate::ValidateError::check::<Self>(addr, buf)?;
+    T::validate_option(addr, buf)
   }
 }

@@ -74,7 +74,7 @@ impl<T: Flat> Region<T> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Node {
@@ -83,12 +83,12 @@ impl<T: Flat> Region<T> {
   /// }
   ///
   /// // Build with the derive-generated `Node::make(id, children)` builder.
-  /// let region = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let region = Region::new(Node::make(1, list([10u32, 20, 30])));
   /// assert_eq!(region.id, 1);
   /// assert_eq!(region.children.len(), 3);
   ///
   /// // Build with an empty list.
-  /// let region = Region::new(Node::make(2, empty()));
+  /// let region = Region::new(Node::make(2, list(empty())));
   /// assert_eq!(region.children.len(), 0);
   /// ```
   pub fn new(builder: impl Emit<T>) -> Self {
@@ -139,7 +139,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Node {
@@ -147,7 +147,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   ///   children: NearList<u32>,
   /// }
   ///
-  /// let mut region = Region::new(Node::make(1, [10u32, 20]));
+  /// let mut region = Region::new(Node::make(1, list([10u32, 20])));
   ///
   /// // Read and mutate inside a session.
   /// region.session(|s| {
@@ -190,12 +190,12 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat)]
   /// struct Node { id: u32, items: NearList<u32> }
   ///
-  /// let region = Region::new(Node::make(1, empty()));
+  /// let region = Region::new(Node::make(1, list(empty())));
   /// assert!(region.byte_len() >= core::mem::size_of::<Node>());
   /// ```
   #[must_use]
@@ -220,12 +220,12 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Node { items: NearList<u32> }
   ///
-  /// let mut region = Region::new(Node::make([1u32, 2, 3]));
+  /// let mut region = Region::new(Node::make(list([1u32, 2, 3])));
   /// let before = region.byte_len();
   ///
   /// // Mutation leaves dead bytes (old list data).
@@ -432,7 +432,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Node {
@@ -440,7 +440,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   ///   children: NearList<u32>,
   /// }
   ///
-  /// let region = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let region = Region::new(Node::make(1, list([10u32, 20, 30])));
   /// let bytes = region.as_bytes();
   /// assert!(bytes.len() >= core::mem::size_of::<Node>());
   /// ```
@@ -458,7 +458,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Node {
@@ -466,7 +466,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   ///   children: NearList<u32>,
   /// }
   ///
-  /// let region = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let region = Region::new(Node::make(1, list([10u32, 20, 30])));
   /// let buf = region.into_buf();
   /// ```
   pub fn into_buf(self) -> B {
@@ -483,7 +483,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Node {
@@ -491,7 +491,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   ///   children: NearList<u32>,
   /// }
   ///
-  /// let region = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let region = Region::new(Node::make(1, list([10u32, 20, 30])));
   /// let bytes: Vec<u8> = region.into_vec();
   /// let restored: Region<Node> = Region::from_bytes(&bytes).unwrap();
   /// assert_eq!(restored.id, 1);
@@ -519,7 +519,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// Round-trip through bytes:
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use nearest::{Flat, NearList, Region, empty, list};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Node {
@@ -527,7 +527,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   ///   children: NearList<u32>,
   /// }
   ///
-  /// let original = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let original = Region::new(Node::make(1, list([10u32, 20, 30])));
   /// let bytes = original.as_bytes();
   /// let restored: Region<Node> = Region::from_bytes(bytes).unwrap();
   /// assert_eq!(restored.id, 1);
@@ -537,7 +537,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// Validation catches invalid data — here a `bool` field with value `2`:
   ///
   /// ```
-  /// use nearest::{Flat, Near, Region, ValidateError};
+  /// use nearest::{Flat, Near, Region, ValidateError, near};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Flags {
@@ -545,7 +545,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   ///   label: Near<u32>,
   /// }
   ///
-  /// let region = Region::new(Flags::make(true, 42u32));
+  /// let region = Region::new(Flags::make(true, near(42u32)));
   /// let mut bytes = region.as_bytes().to_vec();
   /// // Corrupt the bool — its offset is computed from the struct layout.
   /// let bool_offset = core::mem::offset_of!(Flags, active);
@@ -596,7 +596,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region};
+  /// use nearest::{Flat, NearList, Region, list};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Node {
@@ -604,7 +604,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   ///   children: NearList<u32>,
   /// }
   ///
-  /// let original = Region::new(Node::make(1, [10u32, 20, 30]));
+  /// let original = Region::new(Node::make(1, list([10u32, 20, 30])));
   /// let bytes = original.as_bytes();
   ///
   /// // SAFETY: `bytes` was produced by `as_bytes()` on a valid `Region<Node>`.
@@ -652,7 +652,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// # Examples
   ///
   /// ```
-  /// use nearest::{Buf, Flat, NearList, Region, FixedBuf};
+  /// use nearest::{Buf, Flat, NearList, Region, FixedBuf, list};
   ///
   /// #[derive(Flat, Debug)]
   /// struct Node {
@@ -661,7 +661,7 @@ impl<T: Flat, B: Buf> Region<T, B> {
   /// }
   ///
   /// let original: Region<Node, FixedBuf<256>> =
-  ///   Region::new_in(Node::make(1, [10u32, 20, 30]));
+  ///   Region::new_in(Node::make(1, list([10u32, 20, 30])));
   /// let bytes = original.as_bytes();
   ///
   /// let mut buf = FixedBuf::<256>::new();

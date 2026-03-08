@@ -1,6 +1,6 @@
 #![feature(offset_of_enum)]
 
-use nearest::{Flat, Near, NearList, Ref, Region, ValidateError, empty};
+use nearest::{Flat, Near, NearList, Ref, Region, ValidateError, empty, list, maybe, near, none};
 
 // --- IR type definitions using derive(Flat) ---
 
@@ -79,20 +79,20 @@ enum Wrapper<CT: Flat> {
 fn build_simple_func(name: u32) -> Region<Func> {
   Region::new(Func::make(
     Symbol(name),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      empty(),
-      [Inst::make(1, Type(0), [Value::Const(42)])],
+      list(empty()),
+      list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
       Term::make_jmp(Jmp::make(
-        [Value::Const(1)],
-        Block::make(
+        list([Value::Const(1)]),
+        near(Block::make(
           Symbol(0),
-          empty(),
-          [Inst::make(1, Type(0), [Value::Const(42)])],
-          Term::make_ret([Value::Const(42)]),
-        ),
+          list(empty()),
+          list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
+          Term::make_ret(list([Value::Const(42)])),
+        )),
       )),
-    ),
+    )),
   ))
 }
 
@@ -136,15 +136,20 @@ fn emit_multi_block() {
   // Entry block jumps to exit block; exit block returns.
   let region: Region<Func> = Region::new(Func::make(
     Symbol(10),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      empty(),
-      empty(),
+      list(empty()),
+      list(empty()),
       Term::make_jmp(Jmp::make(
-        empty(),
-        Block::make(Symbol(1), empty(), empty(), Term::make_ret([Value::Const(99)])),
+        list(empty()),
+        near(Block::make(
+          Symbol(1),
+          list(empty()),
+          list(empty()),
+          Term::make_ret(list([Value::Const(99)])),
+        )),
       )),
-    ),
+    )),
   ));
 
   let func: &Func = &region;
@@ -225,7 +230,7 @@ fn region_debug() {
 fn empty_slices() {
   let region: Region<Func> = Region::new(Func::make(
     Symbol(99),
-    Block::make(Symbol(0), empty(), empty(), Term::make_ret(empty())),
+    near(Block::make(Symbol(0), list(empty()), list(empty()), Term::make_ret(list(empty())))),
   ));
 
   let func: &Func = &region;
@@ -243,16 +248,16 @@ fn empty_slices() {
 fn multiple_instructions() {
   let region: Region<Func> = Region::new(Func::make(
     Symbol(5),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      [(Symbol(1), Type(0)), (Symbol(2), Type(1))],
-      [
-        Inst::make(1, Type(0), [Value::Const(10), Value::Const(11)]),
-        Inst::make(2, Type(1), [Value::Const(20), Value::Type(Type(0))]),
-        Inst::make(3, Type(0), [Value::Const(30), Value::Const(31)]),
-      ],
-      Term::make_ret([Value::Const(10), Value::Const(20)]),
-    ),
+      list([(Symbol(1), Type(0)), (Symbol(2), Type(1))]),
+      list([
+        Inst::make(1, Type(0), list([Value::Const(10), Value::Const(11)])),
+        Inst::make(2, Type(1), list([Value::Const(20), Value::Type(Type(0))])),
+        Inst::make(3, Type(0), list([Value::Const(30), Value::Const(31)])),
+      ]),
+      Term::make_ret(list([Value::Const(10), Value::Const(20)])),
+    )),
   ));
 
   let func: &Func = &region;
@@ -311,9 +316,9 @@ fn session_splice_near_replaces_jmp_target() {
       jmp_target,
       Block::make(
         Symbol(99),
-        empty(),
-        [Inst::make(7, Type(1), [Value::Const(77)])],
-        Term::make_ret([Value::Const(99)]),
+        list(empty()),
+        list([Inst::make(7, Type(1), list([Value::Const(77)]))]),
+        Term::make_ret(list([Value::Const(99)])),
       ),
     );
   });
@@ -351,12 +356,12 @@ fn session_splice_list_replaces_insts() {
   // Build a function with 1 instruction.
   let mut region: Region<Func> = Region::new(Func::make(
     Symbol(1),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      empty(),
-      [Inst::make(1, Type(0), [Value::Const(42)])],
-      Term::make_ret([Value::Const(42)]),
-    ),
+      list(empty()),
+      list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
+      Term::make_ret(list([Value::Const(42)])),
+    )),
   ));
 
   // Replace with 3 instructions (growing the buffer).
@@ -365,9 +370,9 @@ fn session_splice_list_replaces_insts() {
     s.splice_list(
       insts,
       [
-        Inst::make(10, Type(0), vec![Value::Const(1)]),
-        Inst::make(20, Type(1), vec![Value::Const(2), Value::Const(3)]),
-        Inst::make(30, Type(0), vec![]),
+        Inst::make(10, Type(0), list(vec![Value::Const(1)])),
+        Inst::make(20, Type(1), list(vec![Value::Const(2), Value::Const(3)])),
+        Inst::make(30, Type(0), list(vec![])),
       ],
     );
   });
@@ -418,12 +423,12 @@ fn session_splice_list_params() {
   // Build a block with 2 params, then replace them with 3.
   let mut region: Region<Func> = Region::new(Func::make(
     Symbol(1),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      [(Symbol(1), Type(0)), (Symbol(2), Type(1))],
-      empty(),
-      Term::make_ret(empty()),
-    ),
+      list([(Symbol(1), Type(0)), (Symbol(2), Type(1))]),
+      list(empty()),
+      Term::make_ret(list(empty())),
+    )),
   ));
 
   region.session(|s| {
@@ -447,15 +452,20 @@ fn session_inline_callee_block() {
   // Caller: entry(empty) → jmp → exit(ret 0)
   let mut region: Region<Func> = Region::new(Func::make(
     Symbol(1),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      empty(),
-      empty(),
+      list(empty()),
+      list(empty()),
       Term::make_jmp(Jmp::make(
-        empty(),
-        Block::make(Symbol(1), empty(), empty(), Term::make_ret([Value::Const(0)])),
+        list(empty()),
+        near(Block::make(
+          Symbol(1),
+          list(empty()),
+          list(empty()),
+          Term::make_ret(list([Value::Const(0)])),
+        )),
       )),
-    ),
+    )),
   ));
 
   // "Inline" the callee: replace exit block with callee's body.
@@ -468,12 +478,12 @@ fn session_inline_callee_block() {
       jmp_target,
       Block::make(
         Symbol(100),
-        [(Symbol(10), Type(0))],
-        [
-          Inst::make(1, Type(0), vec![Value::Const(10)]),
-          Inst::make(2, Type(0), vec![Value::Const(20), Value::Type(Type(1))]),
-        ],
-        Term::make_ret([Value::Const(42)]),
+        list([(Symbol(10), Type(0))]),
+        list([
+          Inst::make(1, Type(0), list(vec![Value::Const(10)])),
+          Inst::make(2, Type(0), list(vec![Value::Const(20), Value::Type(Type(1))])),
+        ]),
+        Term::make_ret(list([Value::Const(42)])),
       ),
     );
   });
@@ -523,7 +533,12 @@ fn session_splice_then_set() {
     });
     s.splice(
       jmp_target,
-      Block::make(Symbol(50), empty(), empty(), Term::make_ret([Value::Const(0)])),
+      Block::make(
+        Symbol(50),
+        list(empty()),
+        list(empty()),
+        Term::make_ret(list([Value::Const(0)])),
+      ),
     );
   });
 
@@ -577,7 +592,12 @@ fn cursor_chain_splice() {
         Term::Jmp(jmp) => &jmp.target,
         Term::Ret { .. } => panic!("expected Jmp"),
       })
-      .splice(Block::make(Symbol(99), empty(), empty(), Term::make_ret([Value::Const(99)])));
+      .splice(Block::make(
+        Symbol(99),
+        list(empty()),
+        list(empty()),
+        Term::make_ret(list([Value::Const(99)])),
+      ));
   });
 
   let func: &Func = &region;
@@ -598,7 +618,7 @@ fn cursor_chain_splice() {
 fn generic_struct_empty_custom() {
   // Signature<u8> with an empty custom slice.
   let region: Region<Signature<u8>> =
-    Region::new(Signature::<u8>::make([Type(1), Type(2)], [Type(3)], empty()));
+    Region::new(Signature::<u8>::make(list([Type(1), Type(2)]), list([Type(3)]), list(empty())));
   let sig: &Signature<u8> = &region;
   assert_eq!(sig.params.len(), 2);
   assert_eq!(sig.params[0], Type(1));
@@ -612,7 +632,7 @@ fn generic_struct_empty_custom() {
 fn generic_struct_concrete_param() {
   // Signature<u32> — custom slice holds u32 values.
   let region: Region<Signature<u32>> =
-    Region::new(Signature::<u32>::make([Type(0)], empty(), [10u32, 20, 30]));
+    Region::new(Signature::<u32>::make(list([Type(0)]), list(empty()), list([10u32, 20, 30])));
   let sig: &Signature<u32> = &region;
   assert_eq!(sig.params.len(), 1);
   assert_eq!(sig.params[0], Type(0));
@@ -632,8 +652,9 @@ fn generic_enum_unit_variant() {
 
 #[test]
 fn generic_enum_named_variant() {
-  let region: Region<Wrapper<u8>> =
-    Region::new(Wrapper::<u8>::make_with_sig(Signature::<u8>::make([Type(1)], [Type(2)], empty())));
+  let region: Region<Wrapper<u8>> = Region::new(Wrapper::<u8>::make_with_sig(near(
+    Signature::<u8>::make(list([Type(1)]), list([Type(2)]), list(empty())),
+  )));
   let w: &Wrapper<u8> = &region;
   match w {
     Wrapper::WithSig { sig } => {
@@ -663,7 +684,7 @@ fn generic_enum_unnamed_variant() {
 #[test]
 fn generic_struct_clone() {
   let region: Region<Signature<u32>> =
-    Region::new(Signature::<u32>::make([Type(5)], [Type(6), Type(7)], [100u32]));
+    Region::new(Signature::<u32>::make(list([Type(5)]), list([Type(6), Type(7)]), list([100u32])));
   let cloned = region.clone();
   let s1: &Signature<u32> = &region;
   let s2: &Signature<u32> = &cloned;
@@ -690,7 +711,12 @@ fn trim_after_splice_shrinks_region() {
     });
     s.splice(
       jmp_target,
-      Block::make(Symbol(50), empty(), empty(), Term::make_ret([Value::Const(0)])),
+      Block::make(
+        Symbol(50),
+        list(empty()),
+        list(empty()),
+        Term::make_ret(list([Value::Const(0)])),
+      ),
     );
   });
 
@@ -760,20 +786,20 @@ fn trim_after_splice_list() {
   // Replace instructions with a different set, then trim.
   let mut region: Region<Func> = Region::new(Func::make(
     Symbol(1),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      empty(),
-      [
-        Inst::make(1, Type(0), vec![Value::Const(10), Value::Const(11)]),
-        Inst::make(2, Type(1), vec![Value::Const(20)]),
-      ],
-      Term::make_ret([Value::Const(42)]),
-    ),
+      list(empty()),
+      list([
+        Inst::make(1, Type(0), list(vec![Value::Const(10), Value::Const(11)])),
+        Inst::make(2, Type(1), list(vec![Value::Const(20)])),
+      ]),
+      Term::make_ret(list([Value::Const(42)])),
+    )),
   ));
 
   region.session(|s| {
     let insts = s.nav(s.root(), |f| &f.entry.insts);
-    s.splice_list(insts, [Inst::make(9, Type(0), vec![Value::Const(99)])]);
+    s.splice_list(insts, [Inst::make(9, Type(0), list(vec![Value::Const(99)]))]);
   });
 
   region.trim();
@@ -795,8 +821,11 @@ fn trim_after_splice_list() {
 #[test]
 fn trim_generic_type() {
   // Trim on a generic type (Signature<u32>).
-  let mut region: Region<Signature<u32>> =
-    Region::new(Signature::<u32>::make([Type(1), Type(2)], [Type(3)], [100u32, 200]));
+  let mut region: Region<Signature<u32>> = Region::new(Signature::<u32>::make(
+    list([Type(1), Type(2)]),
+    list([Type(3)]),
+    list([100u32, 200]),
+  ));
   let before = region.byte_len();
   region.trim();
   assert_eq!(region.byte_len(), before);
@@ -829,7 +858,7 @@ struct ListFunc {
 
 #[test]
 fn near_list_empty() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
   let block: &ListBlock = &region;
   assert_eq!(block.name, Symbol(1));
   assert!(block.items.is_empty());
@@ -840,7 +869,7 @@ fn near_list_empty() {
 
 #[test]
 fn near_list_single_element() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(2), [Value::Const(42)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(2), list([Value::Const(42)])));
   let block: &ListBlock = &region;
   assert_eq!(block.items.len(), 1);
   assert_eq!(*block.items.first().unwrap(), Value::Const(42));
@@ -854,7 +883,7 @@ fn near_list_single_element() {
 fn near_list_multiple_elements() {
   let region: Region<ListBlock> = Region::new(ListBlock::make(
     Symbol(3),
-    [Value::Const(10), Value::Type(Type(1)), Value::Const(30)],
+    list([Value::Const(10), Value::Type(Type(1)), Value::Const(30)]),
   ));
   let block: &ListBlock = &region;
   assert_eq!(block.items.len(), 3);
@@ -868,7 +897,7 @@ fn near_list_multiple_elements() {
 #[test]
 fn near_list_into_iter() {
   let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(4), [Value::Const(1), Value::Const(2)]));
+    Region::new(ListBlock::make(Symbol(4), list([Value::Const(1), Value::Const(2)])));
   let block: &ListBlock = &region;
 
   let mut count = 0;
@@ -884,11 +913,11 @@ fn near_list_with_pointer_fields() {
   // NearList<Inst> where Inst contains NearList<Value> (nested linked lists)
   let region: Region<ListFunc> = Region::new(ListFunc::make(
     Symbol(5),
-    [
-      Inst::make(1, Type(0), [Value::Const(10), Value::Const(11)].as_slice()),
-      Inst::make(2, Type(1), [Value::Const(20)].as_slice()),
-      Inst::make(3, Type(0), [].as_slice()),
-    ],
+    list([
+      Inst::make(1, Type(0), list([Value::Const(10), Value::Const(11)].as_slice())),
+      Inst::make(2, Type(1), list([Value::Const(20)].as_slice())),
+      Inst::make(3, Type(0), list([].as_slice())),
+    ]),
   ));
   let func: &ListFunc = &region;
   assert_eq!(func.name, Symbol(5));
@@ -910,8 +939,10 @@ fn near_list_with_pointer_fields() {
 
 #[test]
 fn near_list_clone_preserves() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(6), [Value::Const(1), Value::Const(2), Value::Const(3)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(6),
+    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
+  ));
   let cloned = region.clone();
 
   let b1: &ListBlock = &region;
@@ -929,14 +960,15 @@ fn near_list_clone_preserves() {
 
 #[test]
 fn near_list_debug() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(7), [Value::Const(42)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(7), list([Value::Const(42)])));
   let debug_str = format!("{:?}", &*region);
   assert!(debug_str.contains("ListBlock"));
 }
 
 #[test]
 fn near_list_splice_list() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(1)]));
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -955,7 +987,7 @@ fn near_list_splice_list() {
 #[test]
 fn near_list_splice_list_to_empty() {
   let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1), Value::Const(2)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -969,7 +1001,7 @@ fn near_list_splice_list_to_empty() {
 #[test]
 fn near_list_push_front() {
   let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(2), Value::Const(3)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -987,7 +1019,7 @@ fn near_list_push_front() {
 
 #[test]
 fn near_list_push_front_empty() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1004,17 +1036,17 @@ fn near_list_trim() {
   // Build, splice, then trim — verify deep-copy works for NearList.
   let mut region: Region<ListFunc> = Region::new(ListFunc::make(
     Symbol(1),
-    [
-      Inst::make(1, Type(0), [Value::Const(10)].as_slice()),
-      Inst::make(2, Type(1), [Value::Const(20), Value::Const(21)].as_slice()),
-    ],
+    list([
+      Inst::make(1, Type(0), list([Value::Const(10)].as_slice())),
+      Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)].as_slice())),
+    ]),
   ));
   let before = region.byte_len();
 
   // Splice to replace with smaller list
   region.session(|s| {
     let insts = s.nav(s.root(), |f| &f.insts);
-    s.splice_list(insts, [Inst::make(9, Type(0), [Value::Const(99)])]);
+    s.splice_list(insts, [Inst::make(9, Type(0), list([Value::Const(99)]))]);
   });
 
   let after_splice = region.byte_len();
@@ -1036,8 +1068,10 @@ fn near_list_trim() {
 
 #[test]
 fn near_list_trim_preserves_fresh() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2), Value::Const(3)]));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
+  ));
   let before = region.byte_len();
 
   region.trim();
@@ -1053,8 +1087,10 @@ fn near_list_trim_preserves_fresh() {
 
 #[test]
 fn near_list_exact_size_iterator() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2), Value::Const(3)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
+  ));
   let block: &ListBlock = &region;
   let iter = block.items.iter();
   assert_eq!(iter.len(), 3);
@@ -1063,7 +1099,7 @@ fn near_list_exact_size_iterator() {
 #[test]
 fn near_list_fused_iterator() {
   let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1), Value::Const(2)])));
   let block: &ListBlock = &region;
   let mut iter = block.items.iter();
 
@@ -1079,7 +1115,7 @@ fn near_list_fused_iterator() {
 
 #[test]
 fn near_list_fused_iterator_empty() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
   let block: &ListBlock = &region;
   let mut iter = block.items.iter();
 
@@ -1090,22 +1126,24 @@ fn near_list_fused_iterator_empty() {
 
 #[test]
 fn near_list_last_single_segment() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20), Value::Const(30)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
+  ));
   let block: &ListBlock = &region;
   assert_eq!(block.items.last(), Some(&Value::Const(30)));
 }
 
 #[test]
 fn near_list_last_empty() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
   let block: &ListBlock = &region;
   assert_eq!(block.items.last(), None);
 }
 
 #[test]
 fn near_list_last_single_element() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(42)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list([Value::Const(42)])));
   let block: &ListBlock = &region;
   assert_eq!(block.items.last(), Some(&Value::Const(42)));
   // first and last should be the same for a single-element list.
@@ -1116,7 +1154,7 @@ fn near_list_last_single_element() {
 fn near_list_last_multi_segment() {
   // push_front creates a second segment, so last() must walk segments.
   let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(2), Value::Const(3)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1132,7 +1170,7 @@ fn near_list_last_multi_segment() {
 #[test]
 fn near_list_last_multi_segment_after_trim() {
   let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(2), Value::Const(3)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1149,7 +1187,7 @@ fn near_list_last_multi_segment_after_trim() {
 fn near_list_fused_iterator_multi_segment() {
   // FusedIterator should hold across segment boundaries.
   let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(2), Value::Const(3)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1176,7 +1214,7 @@ fn near_list_fused_iterator_multi_segment() {
 #[test]
 fn extend_list_appends_to_existing() {
   let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1), Value::Const(2)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1193,7 +1231,7 @@ fn extend_list_appends_to_existing() {
 
 #[test]
 fn extend_list_on_empty() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1208,7 +1246,8 @@ fn extend_list_on_empty() {
 
 #[test]
 fn extend_list_with_empty_extra() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(1)]));
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1222,8 +1261,10 @@ fn extend_list_with_empty_extra() {
 
 #[test]
 fn extend_list_single_element() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2), Value::Const(3)]));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
+  ));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1240,7 +1281,8 @@ fn extend_list_single_element() {
 
 #[test]
 fn extend_list_with_iterator() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(1)]));
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1257,7 +1299,8 @@ fn extend_list_with_iterator() {
 
 #[test]
 fn extend_list_preserves_after_trim() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(1)]));
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1281,8 +1324,10 @@ fn extend_list_preserves_after_trim() {
 fn push_front_with_ref_deep_copies() {
   // Verify that push_front with a Ref<Inst> deep-copies the value
   // (including nested NearList<Value>) into the new node.
-  let mut region: Region<ListFunc> =
-    Region::new(ListFunc::make(Symbol(1), [Inst::make(1, Type(0), [Value::Const(42)].as_slice())]));
+  let mut region: Region<ListFunc> = Region::new(ListFunc::make(
+    Symbol(1),
+    list([Inst::make(1, Type(0), list([Value::Const(42)].as_slice()))]),
+  ));
 
   region.session(|s| {
     let first_inst = s.nav(s.root(), |f| &f.insts[0]);
@@ -1310,10 +1355,10 @@ fn splice_list_with_refs_deep_copies() {
   // and can reverse the order.
   let mut region: Region<ListFunc> = Region::new(ListFunc::make(
     Symbol(1),
-    [
-      Inst::make(1, Type(0), [Value::Const(10)].as_slice()),
-      Inst::make(2, Type(1), [Value::Const(20), Value::Const(21)].as_slice()),
-    ],
+    list([
+      Inst::make(1, Type(0), list([Value::Const(10)].as_slice())),
+      Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)].as_slice())),
+    ]),
   ));
 
   region.session(|s| {
@@ -1341,7 +1386,7 @@ fn splice_list_with_refs_deep_copies() {
 fn push_front_ref_primitive_list() {
   // Ref deep-copy on a list of primitive values.
   let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(10), Value::Const(20)])));
 
   region.session(|s| {
     let first_val = s.nav(s.root(), |b| &b.items[0]);
@@ -1371,7 +1416,12 @@ struct OptBlock {
 fn option_near_some_roundtrip() {
   let region: Region<OptBlock> = Region::new(OptBlock::make(
     Symbol(1),
-    Some(Block::make(Symbol(2), empty(), empty(), Term::make_ret([Value::Const(42)]))),
+    maybe(Some(Block::make(
+      Symbol(2),
+      list(empty()),
+      list(empty()),
+      Term::make_ret(list([Value::Const(42)])),
+    ))),
   ));
 
   let ob: &OptBlock = &region;
@@ -1390,8 +1440,7 @@ fn option_near_some_roundtrip() {
 
 #[test]
 fn option_near_none_roundtrip() {
-  let region: Region<OptBlock> =
-    Region::new(OptBlock::make(Symbol(1), None::<std::convert::Infallible>));
+  let region: Region<OptBlock> = Region::new(OptBlock::make(Symbol(1), none::<Block>()));
 
   let ob: &OptBlock = &region;
   assert_eq!(ob.name, Symbol(1));
@@ -1403,12 +1452,12 @@ fn option_near_trim() {
   // Build with Some, verify trim preserves data.
   let mut region: Region<OptBlock> = Region::new(OptBlock::make(
     Symbol(1),
-    Some(Block::make(
+    maybe(Some(Block::make(
       Symbol(2),
-      empty(),
-      [Inst::make(1, Type(0), [Value::Const(10)])],
-      Term::make_ret([Value::Const(42)]),
-    )),
+      list(empty()),
+      list([Inst::make(1, Type(0), list([Value::Const(10)]))]),
+      Term::make_ret(list([Value::Const(42)])),
+    ))),
   ));
 
   let before = region.byte_len();
@@ -1425,16 +1474,18 @@ fn option_near_trim() {
 
 #[test]
 fn extend_list_nested_pointer_fields() {
-  let mut region: Region<ListFunc> =
-    Region::new(ListFunc::make(Symbol(1), [Inst::make(1, Type(0), [Value::Const(10)].as_slice())]));
+  let mut region: Region<ListFunc> = Region::new(ListFunc::make(
+    Symbol(1),
+    list([Inst::make(1, Type(0), list([Value::Const(10)].as_slice()))]),
+  ));
 
   region.session(|s| {
     let insts = s.nav(s.root(), |f| &f.insts);
     s.extend_list(
       insts,
       [
-        Inst::make(2, Type(1), vec![Value::Const(20), Value::Const(21)]),
-        Inst::make(3, Type(0), vec![]),
+        Inst::make(2, Type(1), list(vec![Value::Const(20), Value::Const(21)])),
+        Inst::make(3, Type(0), list(vec![])),
       ],
     );
   });
@@ -1462,8 +1513,10 @@ fn extend_list_nested_pointer_fields() {
 
 #[test]
 fn session_map_list_identity() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20), Value::Const(30)]));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
+  ));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1479,8 +1532,10 @@ fn session_map_list_identity() {
 
 #[test]
 fn session_map_list_transform() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2), Value::Const(3)]));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
+  ));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1499,7 +1554,7 @@ fn session_map_list_transform() {
 
 #[test]
 fn session_map_list_empty() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1516,20 +1571,24 @@ fn session_map_list_empty() {
 
 #[test]
 fn session_graft_copies_region() {
-  let grafted_block: Region<Block> =
-    Region::new(Block::make(Symbol(99), empty(), empty(), Term::make_ret([Value::Const(77)])));
+  let grafted_block: Region<Block> = Region::new(Block::make(
+    Symbol(99),
+    list(empty()),
+    list(empty()),
+    Term::make_ret(list([Value::Const(77)])),
+  ));
 
   let mut caller: Region<Func> = Region::new(Func::make(
     Symbol(1),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      empty(),
-      empty(),
+      list(empty()),
+      list(empty()),
       Term::make_jmp(Jmp::make(
-        empty(),
-        Block::make(Symbol(1), empty(), empty(), Term::make_ret(empty())),
+        list(empty()),
+        near(Block::make(Symbol(1), list(empty()), list(empty()), Term::make_ret(list(empty())))),
       )),
-    ),
+    )),
   ));
 
   caller.session(|s| {
@@ -1565,8 +1624,10 @@ fn session_graft_copies_region() {
 
 #[test]
 fn session_list_refs_collects() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20), Value::Const(30)]));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
+  ));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1580,7 +1641,7 @@ fn session_list_refs_collects() {
 
 #[test]
 fn session_list_refs_empty() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1606,7 +1667,12 @@ fn cursor_pin_extracts_ref() {
 fn cursor_write_with_builder() {
   let mut region: Region<Func> = Region::new(Func::make(
     Symbol(1),
-    Block::make(Symbol(0), empty(), empty(), Term::make_ret([Value::Const(42)])),
+    near(Block::make(
+      Symbol(0),
+      list(empty()),
+      list(empty()),
+      Term::make_ret(list([Value::Const(42)])),
+    )),
   ));
 
   region.session(|s| {
@@ -1614,7 +1680,7 @@ fn cursor_write_with_builder() {
       .at(|f| &f.entry)
       .follow()
       .at(|b| &b.term)
-      .write_with(Term::make_ret([Value::Const(99)]));
+      .write_with(Term::make_ret(list([Value::Const(99)])));
   });
 
   let func: &Func = &region;
@@ -1652,7 +1718,7 @@ fn zst_struct_in_region() {
 
 #[test]
 fn zst_field_in_struct() {
-  let region: Region<TaggedList> = Region::new(TaggedList::make(Marker, [1u32, 2, 3]));
+  let region: Region<TaggedList> = Region::new(TaggedList::make(Marker, list([1u32, 2, 3])));
   let tl: &TaggedList = &region;
   assert_eq!(tl.tag, Marker);
   assert_eq!(tl.items.len(), 3);
@@ -1668,7 +1734,7 @@ struct MarkerList {
 
 #[test]
 fn zst_list_elements() {
-  let region: Region<MarkerList> = Region::new(MarkerList::make([Marker, Marker, Marker]));
+  let region: Region<MarkerList> = Region::new(MarkerList::make(list([Marker, Marker, Marker])));
   let ml: &MarkerList = &region;
   assert_eq!(ml.items.len(), 3);
   for m in &ml.items {
@@ -1682,15 +1748,18 @@ fn zst_list_elements() {
 
 #[test]
 fn fresh_build_single_segment() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2), Value::Const(3)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
+  ));
   let block: &ListBlock = &region;
   assert_eq!(block.items.segment_count(), 1);
 }
 
 #[test]
 fn splice_list_produces_single_segment() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(1)]));
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1705,7 +1774,7 @@ fn splice_list_produces_single_segment() {
 #[test]
 fn push_front_creates_multi_segment() {
   let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(2), Value::Const(3)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1721,7 +1790,7 @@ fn push_front_creates_multi_segment() {
 #[test]
 fn trim_compacts_to_single_segment() {
   let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(2), Value::Const(3)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
 
   // push_front creates multi-segment chain
   region.session(|s| {
@@ -1745,7 +1814,8 @@ fn trim_compacts_to_single_segment() {
 
 #[test]
 fn extend_then_trim_single_segment() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(1)]));
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1768,20 +1838,22 @@ fn extend_then_trim_single_segment() {
 
 #[test]
 fn empty_list_zero_segments() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
   let block: &ListBlock = &region;
   assert_eq!(block.items.segment_count(), 0);
 }
 
 #[test]
 fn nested_list_trim_all_single_segment() {
-  let mut region: Region<ListFunc> =
-    Region::new(ListFunc::make(Symbol(1), [Inst::make(1, Type(0), [Value::Const(10)].as_slice())]));
+  let mut region: Region<ListFunc> = Region::new(ListFunc::make(
+    Symbol(1),
+    list([Inst::make(1, Type(0), list([Value::Const(10)].as_slice()))]),
+  ));
 
   // extend creates multi-segment for outer list
   region.session(|s| {
     let insts = s.nav(s.root(), |f| &f.insts);
-    s.extend_list(insts, [Inst::make(2, Type(1), vec![Value::Const(20), Value::Const(21)])]);
+    s.extend_list(insts, [Inst::make(2, Type(1), list(vec![Value::Const(20), Value::Const(21)]))]);
   });
 
   let func: &ListFunc = &region;
@@ -1804,8 +1876,10 @@ fn nested_list_trim_all_single_segment() {
 
 #[test]
 fn near_list_get_returns_some() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20), Value::Const(30)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
+  ));
   let block: &ListBlock = &region;
   assert_eq!(*block.items.get(0).unwrap(), Value::Const(10));
   assert_eq!(*block.items.get(1).unwrap(), Value::Const(20));
@@ -1814,7 +1888,7 @@ fn near_list_get_returns_some() {
 
 #[test]
 fn near_list_get_returns_none_oob() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(10)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list([Value::Const(10)])));
   let block: &ListBlock = &region;
   assert!(block.items.get(1).is_none());
   assert!(block.items.get(100).is_none());
@@ -1822,7 +1896,7 @@ fn near_list_get_returns_none_oob() {
 
 #[test]
 fn near_list_get_empty_returns_none() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
   let block: &ListBlock = &region;
   assert!(block.items.get(0).is_none());
 }
@@ -1830,8 +1904,10 @@ fn near_list_get_empty_returns_none() {
 #[test]
 fn index_single_segment_o1() {
   // After fresh build, all elements are in a single segment → O(1) fast path.
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20), Value::Const(30)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
+  ));
   let block: &ListBlock = &region;
   assert_eq!(block.items.segment_count(), 1);
   assert_eq!(block.items[0], Value::Const(10));
@@ -1843,7 +1919,7 @@ fn index_single_segment_o1() {
 fn index_multi_segment_fallback() {
   // After push_front, we have 2 segments → index falls back to iterator.
   let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(2), Value::Const(3)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1865,7 +1941,7 @@ fn index_multi_segment_fallback() {
 fn filter_list_keeps_matching() {
   let mut region: Region<ListBlock> = Region::new(ListBlock::make(
     Symbol(1),
-    [Value::Const(1), Value::Const(2), Value::Const(3), Value::Const(4)],
+    list([Value::Const(1), Value::Const(2), Value::Const(3), Value::Const(4)]),
   ));
 
   region.session(|s| {
@@ -1882,7 +1958,7 @@ fn filter_list_keeps_matching() {
 #[test]
 fn filter_list_removes_all() {
   let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1), Value::Const(2)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1895,8 +1971,10 @@ fn filter_list_removes_all() {
 
 #[test]
 fn filter_list_keeps_all_noop() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2), Value::Const(3)]));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
+  ));
   let before = region.byte_len();
 
   region.session(|s| {
@@ -1915,7 +1993,7 @@ fn filter_list_keeps_all_noop() {
 
 #[test]
 fn filter_list_empty() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -1931,11 +2009,11 @@ fn filter_list_nested_pointers() {
   // Filter on NearList<Inst> where Inst has NearList<Value> fields.
   let mut region: Region<ListFunc> = Region::new(ListFunc::make(
     Symbol(1),
-    [
-      Inst::make(1, Type(0), [Value::Const(10)].as_slice()),
-      Inst::make(2, Type(1), [Value::Const(20), Value::Const(21)].as_slice()),
-      Inst::make(3, Type(0), [Value::Const(30)].as_slice()),
-    ],
+    list([
+      Inst::make(1, Type(0), list([Value::Const(10)].as_slice())),
+      Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)].as_slice())),
+      Inst::make(3, Type(0), list([Value::Const(30)].as_slice())),
+    ]),
   ));
 
   // Keep only instructions with op != 2.
@@ -1959,7 +2037,7 @@ fn filter_list_nested_pointers() {
 fn filter_list_then_trim() {
   let mut region: Region<ListBlock> = Region::new(ListBlock::make(
     Symbol(1),
-    [Value::Const(1), Value::Const(2), Value::Const(3), Value::Const(4), Value::Const(5)],
+    list([Value::Const(1), Value::Const(2), Value::Const(3), Value::Const(4), Value::Const(5)]),
   ));
 
   region.session(|s| {
@@ -1983,8 +2061,10 @@ fn filter_list_then_trim() {
 
 #[test]
 fn list_item_returns_correct_ref() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20), Value::Const(30)]));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
+  ));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -2000,7 +2080,8 @@ fn list_item_returns_correct_ref() {
 #[test]
 #[should_panic(expected = "NearList index out of bounds")]
 fn list_item_oob_panics() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(10)]));
+  let mut region: Region<ListBlock> =
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(10)])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -2014,28 +2095,34 @@ fn list_item_oob_panics() {
 
 #[test]
 fn near_list_contains_present() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2), Value::Const(3)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
+  ));
   assert!(region.items.contains(&Value::Const(2)));
 }
 
 #[test]
 fn near_list_contains_absent() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(1), Value::Const(2), Value::Const(3)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
+  ));
   assert!(!region.items.contains(&Value::Const(99)));
 }
 
 #[test]
 fn near_list_contains_empty() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
   assert!(!region.items.contains(&Value::Const(1)));
 }
 
 #[test]
 fn near_list_contains_first_and_last() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20), Value::Const(30)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
+  ));
   assert!(region.items.contains(&Value::Const(10)));
   assert!(region.items.contains(&Value::Const(30)));
 }
@@ -2052,7 +2139,7 @@ struct U32List {
 
 #[test]
 fn reverse_list_basic() {
-  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 2, 3, 4, 5]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 2, 3, 4, 5])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |r| &r.items);
@@ -2069,7 +2156,7 @@ fn reverse_list_basic() {
 
 #[test]
 fn reverse_list_single() {
-  let mut region: Region<U32List> = Region::new(U32List::make([42u32]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([42u32])));
   let before = region.byte_len();
 
   region.session(|s| {
@@ -2084,7 +2171,7 @@ fn reverse_list_single() {
 
 #[test]
 fn reverse_list_empty() {
-  let mut region: Region<U32List> = Region::new(U32List::make(empty()));
+  let mut region: Region<U32List> = Region::new(U32List::make(list(empty())));
   let before = region.byte_len();
 
   region.session(|s| {
@@ -2098,7 +2185,7 @@ fn reverse_list_empty() {
 
 #[test]
 fn reverse_list_two_elements() {
-  let mut region: Region<U32List> = Region::new(U32List::make([10u32, 20]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([10u32, 20])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |r| &r.items);
@@ -2111,7 +2198,7 @@ fn reverse_list_two_elements() {
 
 #[test]
 fn reverse_list_then_trim() {
-  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 2, 3]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 2, 3])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |r| &r.items);
@@ -2133,7 +2220,7 @@ fn reverse_list_then_trim() {
 
 #[test]
 fn sort_list_basic() {
-  let mut region: Region<U32List> = Region::new(U32List::make([3u32, 1, 4, 1, 5, 9, 2, 6]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([3u32, 1, 4, 1, 5, 9, 2, 6])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |r| &r.items);
@@ -2153,7 +2240,7 @@ fn sort_list_basic() {
 
 #[test]
 fn sort_list_descending() {
-  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 2, 3, 4, 5]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 2, 3, 4, 5])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |r| &r.items);
@@ -2169,7 +2256,7 @@ fn sort_list_descending() {
 
 #[test]
 fn sort_list_already_sorted() {
-  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 2, 3]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 2, 3])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |r| &r.items);
@@ -2183,7 +2270,7 @@ fn sort_list_already_sorted() {
 
 #[test]
 fn sort_list_single() {
-  let mut region: Region<U32List> = Region::new(U32List::make([42u32]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([42u32])));
   let before = region.byte_len();
 
   region.session(|s| {
@@ -2198,7 +2285,7 @@ fn sort_list_single() {
 
 #[test]
 fn sort_list_empty() {
-  let mut region: Region<U32List> = Region::new(U32List::make(empty()));
+  let mut region: Region<U32List> = Region::new(U32List::make(list(empty())));
   let before = region.byte_len();
 
   region.session(|s| {
@@ -2212,7 +2299,7 @@ fn sort_list_empty() {
 
 #[test]
 fn sort_list_then_trim() {
-  let mut region: Region<U32List> = Region::new(U32List::make([5u32, 3, 1, 4, 2]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([5u32, 3, 1, 4, 2])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |r| &r.items);
@@ -2229,8 +2316,10 @@ fn sort_list_then_trim() {
 
 #[test]
 fn sort_list_with_value_enum() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(30), Value::Const(10), Value::Const(20)]));
+  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
+    Symbol(1),
+    list([Value::Const(30), Value::Const(10), Value::Const(20)]),
+  ));
 
   region.session(|s| {
     let items = s.nav(s.root(), |b| &b.items);
@@ -2252,7 +2341,7 @@ fn sort_list_with_value_enum() {
 
 #[test]
 fn dedup_list_basic() {
-  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 1, 2, 3, 3, 3, 2]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 1, 2, 3, 3, 3, 2])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |r| &r.items);
@@ -2268,7 +2357,7 @@ fn dedup_list_basic() {
 
 #[test]
 fn dedup_list_no_duplicates() {
-  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 2, 3, 4]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 2, 3, 4])));
   let before = region.byte_len();
 
   region.session(|s| {
@@ -2283,7 +2372,7 @@ fn dedup_list_no_duplicates() {
 
 #[test]
 fn dedup_list_all_same() {
-  let mut region: Region<U32List> = Region::new(U32List::make([5u32, 5, 5, 5]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([5u32, 5, 5, 5])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |r| &r.items);
@@ -2296,7 +2385,7 @@ fn dedup_list_all_same() {
 
 #[test]
 fn dedup_list_empty() {
-  let mut region: Region<U32List> = Region::new(U32List::make(empty()));
+  let mut region: Region<U32List> = Region::new(U32List::make(list(empty())));
   let before = region.byte_len();
 
   region.session(|s| {
@@ -2310,7 +2399,7 @@ fn dedup_list_empty() {
 
 #[test]
 fn dedup_list_single() {
-  let mut region: Region<U32List> = Region::new(U32List::make([42u32]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([42u32])));
   let before = region.byte_len();
 
   region.session(|s| {
@@ -2324,7 +2413,7 @@ fn dedup_list_single() {
 
 #[test]
 fn dedup_list_then_trim() {
-  let mut region: Region<U32List> = Region::new(U32List::make([1u32, 1, 2, 2, 3, 3]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 1, 2, 2, 3, 3])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |r| &r.items);
@@ -2344,7 +2433,7 @@ fn dedup_list_then_trim() {
 fn dedup_list_with_value_enum() {
   let mut region: Region<ListBlock> = Region::new(ListBlock::make(
     Symbol(1),
-    [Value::Const(1), Value::Const(1), Value::Const(2), Value::Const(2), Value::Const(3)],
+    list([Value::Const(1), Value::Const(1), Value::Const(2), Value::Const(2), Value::Const(3)]),
   ));
 
   region.session(|s| {
@@ -2360,7 +2449,7 @@ fn dedup_list_with_value_enum() {
 
 #[test]
 fn sort_then_dedup() {
-  let mut region: Region<U32List> = Region::new(U32List::make([3u32, 1, 2, 1, 3, 2]));
+  let mut region: Region<U32List> = Region::new(U32List::make(list([3u32, 1, 2, 1, 3, 2])));
 
   region.session(|s| {
     let items = s.nav(s.root(), |r| &r.items);
@@ -2381,7 +2470,7 @@ fn sort_then_dedup() {
 #[test]
 #[should_panic(expected = "NearList index out of bounds")]
 fn near_list_index_out_of_bounds_panics() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(10)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list([Value::Const(10)])));
   let block: &ListBlock = &region;
   let _ = block.items[5]; // only 1 element, index 5 is OOB
 }
@@ -2407,7 +2496,7 @@ fn validate_struct_with_near() {
 #[test]
 fn validate_struct_with_near_list() {
   let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(10), Value::Const(20)])));
   let bytes = region.as_bytes();
   ListBlock::validate(0, bytes).unwrap();
 }
@@ -2416,7 +2505,12 @@ fn validate_struct_with_near_list() {
 fn validate_struct_with_option_near_some() {
   let region: Region<OptBlock> = Region::new(OptBlock::make(
     Symbol(1),
-    Some(Block::make(Symbol(2), empty(), empty(), Term::make_ret([Value::Const(42)]))),
+    maybe(Some(Block::make(
+      Symbol(2),
+      list(empty()),
+      list(empty()),
+      Term::make_ret(list([Value::Const(42)])),
+    ))),
   ));
   let bytes = region.as_bytes();
   OptBlock::validate(0, bytes).unwrap();
@@ -2424,8 +2518,7 @@ fn validate_struct_with_option_near_some() {
 
 #[test]
 fn validate_struct_with_option_near_none() {
-  let region: Region<OptBlock> =
-    Region::new(OptBlock::make(Symbol(1), None::<std::convert::Infallible>));
+  let region: Region<OptBlock> = Region::new(OptBlock::make(Symbol(1), none::<Block>()));
   let bytes = region.as_bytes();
   OptBlock::validate(0, bytes).unwrap();
 }
@@ -2434,18 +2527,23 @@ fn validate_struct_with_option_near_none() {
 fn validate_nested_structs() {
   let region: Region<Func> = Region::new(Func::make(
     Symbol(1),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      [(Symbol(1), Type(0))],
-      [
-        Inst::make(1, Type(0), [Value::Const(10), Value::Const(11)]),
-        Inst::make(2, Type(1), [Value::Const(20), Value::Const(21)]),
-      ],
+      list([(Symbol(1), Type(0))]),
+      list([
+        Inst::make(1, Type(0), list([Value::Const(10), Value::Const(11)])),
+        Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)])),
+      ]),
       Term::make_jmp(Jmp::make(
-        [Value::Const(1)],
-        Block::make(Symbol(1), empty(), empty(), Term::make_ret([Value::Const(42)])),
+        list([Value::Const(1)]),
+        near(Block::make(
+          Symbol(1),
+          list(empty()),
+          list(empty()),
+          Term::make_ret(list([Value::Const(42)])),
+        )),
       )),
-    ),
+    )),
   ));
   let bytes = region.as_bytes();
   Func::validate(0, bytes).unwrap();
@@ -2456,22 +2554,27 @@ fn validate_enum_all_variants() {
   // Test Ret variant
   let region: Region<Func> = Region::new(Func::make(
     Symbol(1),
-    Block::make(Symbol(0), empty(), empty(), Term::make_ret([Value::Const(1)])),
+    near(Block::make(
+      Symbol(0),
+      list(empty()),
+      list(empty()),
+      Term::make_ret(list([Value::Const(1)])),
+    )),
   ));
   Func::validate(0, region.as_bytes()).unwrap();
 
   // Test Jmp variant
   let region: Region<Func> = Region::new(Func::make(
     Symbol(1),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      empty(),
-      empty(),
+      list(empty()),
+      list(empty()),
       Term::make_jmp(Jmp::make(
-        empty(),
-        Block::make(Symbol(1), empty(), empty(), Term::make_ret(empty())),
+        list(empty()),
+        near(Block::make(Symbol(1), list(empty()), list(empty()), Term::make_ret(list(empty())))),
       )),
-    ),
+    )),
   ));
   Func::validate(0, region.as_bytes()).unwrap();
 }
@@ -2479,7 +2582,7 @@ fn validate_enum_all_variants() {
 #[test]
 fn validate_generic_struct() {
   let region: Region<Signature<u32>> =
-    Region::new(Signature::<u32>::make([Type(1)], [Type(2)], [10u32, 20]));
+    Region::new(Signature::<u32>::make(list([Type(1)]), list([Type(2)]), list([10u32, 20])));
   Signature::<u32>::validate(0, region.as_bytes()).unwrap();
 }
 
@@ -2503,7 +2606,12 @@ fn validate_after_trim() {
     });
     s.splice(
       jmp_target,
-      Block::make(Symbol(50), empty(), empty(), Term::make_ret([Value::Const(0)])),
+      Block::make(
+        Symbol(50),
+        list(empty()),
+        list(empty()),
+        Term::make_ret(list([Value::Const(0)])),
+      ),
     );
   });
   region.trim();
@@ -2512,7 +2620,7 @@ fn validate_after_trim() {
 
 #[test]
 fn validate_empty_list() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list(empty())));
   ListBlock::validate(0, region.as_bytes()).unwrap();
 }
 
@@ -2576,7 +2684,7 @@ fn validate_bad_near_alignment() {
 
 #[test]
 fn validate_bad_list_header_inconsistent() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), [Value::Const(10)]));
+  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list([Value::Const(10)])));
   let mut bytes = region.as_bytes().to_vec();
   let list_offset = core::mem::offset_of!(ListBlock, items);
   // Set head to non-zero but len to 0 → inconsistent.
@@ -2589,7 +2697,7 @@ fn validate_bad_list_header_inconsistent() {
 #[test]
 fn validate_bad_list_len_mismatch() {
   let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), [Value::Const(10), Value::Const(20)]));
+    Region::new(ListBlock::make(Symbol(1), list([Value::Const(10), Value::Const(20)])));
   let mut bytes = region.as_bytes().to_vec();
   let list_offset = core::mem::offset_of!(ListBlock, items);
   // Change the total len to 99 while segment has only 2 elements.
@@ -2602,7 +2710,12 @@ fn validate_bad_list_len_mismatch() {
 fn validate_bad_enum_discriminant() {
   let region: Region<Func> = Region::new(Func::make(
     Symbol(1),
-    Block::make(Symbol(0), empty(), empty(), Term::make_ret([Value::Const(42)])),
+    near(Block::make(
+      Symbol(0),
+      list(empty()),
+      list(empty()),
+      Term::make_ret(list([Value::Const(42)])),
+    )),
   ));
   let mut bytes = region.as_bytes().to_vec();
   // Find the Term's address: it's at the entry block's term field offset.
@@ -2667,18 +2780,23 @@ fn region_from_bytes_unchecked_roundtrip() {
 fn region_from_bytes_complex() {
   let region: Region<Func> = Region::new(Func::make(
     Symbol(100),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      [(Symbol(1), Type(0)), (Symbol(2), Type(1))],
-      [
-        Inst::make(1, Type(0), [Value::Const(10), Value::Const(11)]),
-        Inst::make(2, Type(1), [Value::Const(20), Value::Const(21)]),
-      ],
+      list([(Symbol(1), Type(0)), (Symbol(2), Type(1))]),
+      list([
+        Inst::make(1, Type(0), list([Value::Const(10), Value::Const(11)])),
+        Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)])),
+      ]),
       Term::make_jmp(Jmp::make(
-        [Value::Const(1)],
-        Block::make(Symbol(1), empty(), empty(), Term::make_ret([Value::Const(42)])),
+        list([Value::Const(1)]),
+        near(Block::make(
+          Symbol(1),
+          list(empty()),
+          list(empty()),
+          Term::make_ret(list([Value::Const(42)])),
+        )),
       )),
-    ),
+    )),
   ));
 
   let bytes = region.as_bytes();
@@ -2745,18 +2863,23 @@ fn from_bytes_unchecked_matches_checked_simple() {
 fn from_bytes_unchecked_matches_checked_complex() {
   let region: Region<Func> = Region::new(Func::make(
     Symbol(200),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      [(Symbol(1), Type(0)), (Symbol(2), Type(1))],
-      [
-        Inst::make(1, Type(0), [Value::Const(10), Value::Const(11)]),
-        Inst::make(2, Type(1), [Value::Const(20), Value::Const(21)]),
-      ],
+      list([(Symbol(1), Type(0)), (Symbol(2), Type(1))]),
+      list([
+        Inst::make(1, Type(0), list([Value::Const(10), Value::Const(11)])),
+        Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)])),
+      ]),
       Term::make_jmp(Jmp::make(
-        [Value::Const(1)],
-        Block::make(Symbol(1), empty(), empty(), Term::make_ret([Value::Const(42)])),
+        list([Value::Const(1)]),
+        near(Block::make(
+          Symbol(1),
+          list(empty()),
+          list(empty()),
+          Term::make_ret(list([Value::Const(42)])),
+        )),
       )),
-    ),
+    )),
   ));
 
   let bytes = region.as_bytes();
@@ -2792,8 +2915,11 @@ fn from_bytes_unchecked_primitive() {
 
 #[test]
 fn from_bytes_unchecked_generic_type() {
-  let region: Region<Signature<u32>> =
-    Region::new(Signature::<u32>::make([Type(0), Type(1)], [Type(2)], [10u32, 20, 30]));
+  let region: Region<Signature<u32>> = Region::new(Signature::<u32>::make(
+    list([Type(0), Type(1)]),
+    list([Type(2)]),
+    list([10u32, 20, 30]),
+  ));
   let bytes = region.as_bytes();
 
   let checked: Region<Signature<u32>> = Region::from_bytes(bytes).unwrap();
@@ -2870,7 +2996,7 @@ fn from_bytes_unchecked_after_mutation_and_trim() {
 
 #[cfg(feature = "serde")]
 mod serde_tests {
-  use nearest::{Flat, Near, NearList, Region};
+  use nearest::{Flat, Near, NearList, Region, list, near};
 
   // Serde test types — use only 4-byte-aligned fields so there is no internal
   // padding. Types with enum padding (e.g. `Value`) cause uninitialized bytes
@@ -2892,7 +3018,7 @@ mod serde_tests {
 
   #[test]
   fn serde_json_roundtrip_simple() {
-    let region: Region<SNode> = Region::new(SNode::make(42, [1u32, 2, 3]));
+    let region: Region<SNode> = Region::new(SNode::make(42, list([1u32, 2, 3])));
     let json = serde_json::to_string(&region).unwrap();
     let restored: Region<SNode> = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.id, 42);
@@ -2904,7 +3030,8 @@ mod serde_tests {
 
   #[test]
   fn serde_json_roundtrip_nested() {
-    let region: Region<SFunc> = Region::new(SFunc::make(100, SNode::make(7, [10u32, 20, 30])));
+    let region: Region<SFunc> =
+      Region::new(SFunc::make(100, near(SNode::make(7, list([10u32, 20, 30])))));
     let json = serde_json::to_string(&region).unwrap();
     let restored: Region<SFunc> = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.name, 100);
@@ -2919,7 +3046,7 @@ mod serde_tests {
   fn serde_json_roundtrip_fixed_buf() {
     use nearest::FixedBuf;
 
-    let region: Region<SNode, FixedBuf<256>> = Region::new_in(SNode::make(7, [10u32, 20]));
+    let region: Region<SNode, FixedBuf<256>> = Region::new_in(SNode::make(7, list([10u32, 20])));
     let json = serde_json::to_string(&region).unwrap();
     let restored: Region<SNode, FixedBuf<256>> = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.id, 7);
@@ -2937,7 +3064,7 @@ mod serde_tests {
 
   #[test]
   fn serde_roundtrip_preserves_byte_equality() {
-    let region: Region<SNode> = Region::new(SNode::make(99, [5u32, 6, 7, 8]));
+    let region: Region<SNode> = Region::new(SNode::make(99, list([5u32, 6, 7, 8])));
     let original_bytes = region.as_bytes().to_vec();
     let json = serde_json::to_string(&region).unwrap();
     let restored: Region<SNode> = serde_json::from_str(&json).unwrap();
@@ -2963,51 +3090,51 @@ struct EqNested {
 
 #[test]
 fn region_eq_identical_builds() {
-  let a = Region::new(EqNode::make(1, [10u32, 20, 30]));
-  let b = Region::new(EqNode::make(1, [10u32, 20, 30]));
+  let a = Region::new(EqNode::make(1, list([10u32, 20, 30])));
+  let b = Region::new(EqNode::make(1, list([10u32, 20, 30])));
   assert_eq!(a, b);
 }
 
 #[test]
 fn region_eq_clone() {
-  let a = Region::new(EqNode::make(42, [1u32, 2, 3]));
+  let a = Region::new(EqNode::make(42, list([1u32, 2, 3])));
   let b = a.clone();
   assert_eq!(a, b);
 }
 
 #[test]
 fn region_ne_different_scalar() {
-  let a = Region::new(EqNode::make(1, [10u32, 20]));
-  let b = Region::new(EqNode::make(2, [10u32, 20]));
+  let a = Region::new(EqNode::make(1, list([10u32, 20])));
+  let b = Region::new(EqNode::make(2, list([10u32, 20])));
   assert_ne!(a, b);
 }
 
 #[test]
 fn region_ne_different_list_len() {
-  let a = Region::new(EqNode::make(1, [10u32, 20]));
-  let b = Region::new(EqNode::make(1, [10u32, 20, 30]));
+  let a = Region::new(EqNode::make(1, list([10u32, 20])));
+  let b = Region::new(EqNode::make(1, list([10u32, 20, 30])));
   assert_ne!(a, b);
 }
 
 #[test]
 fn region_ne_different_list_values() {
-  let a = Region::new(EqNode::make(1, [10u32, 20, 30]));
-  let b = Region::new(EqNode::make(1, [10u32, 20, 99]));
+  let a = Region::new(EqNode::make(1, list([10u32, 20, 30])));
+  let b = Region::new(EqNode::make(1, list([10u32, 20, 99])));
   assert_ne!(a, b);
 }
 
 #[test]
 fn region_eq_empty_lists() {
-  let a: Region<EqNode> = Region::new(EqNode::make(5, empty()));
-  let b: Region<EqNode> = Region::new(EqNode::make(5, empty()));
+  let a: Region<EqNode> = Region::new(EqNode::make(5, list(empty())));
+  let b: Region<EqNode> = Region::new(EqNode::make(5, list(empty())));
   assert_eq!(a, b);
 }
 
 #[test]
 fn region_eq_after_trim_same_logical_content() {
-  let a = Region::new(EqNode::make(1, [100u32]));
+  let a = Region::new(EqNode::make(1, list([100u32])));
 
-  let mut b = Region::new(EqNode::make(1, [10u32, 20, 30]));
+  let mut b = Region::new(EqNode::make(1, list([10u32, 20, 30])));
   b.session(|s| {
     let items = s.nav(s.root(), |n| &n.items);
     s.splice_list(items, [100u32]);
@@ -3019,27 +3146,27 @@ fn region_eq_after_trim_same_logical_content() {
 
 #[test]
 fn region_eq_nested_near() {
-  let a = Region::new(EqNested::make(1, EqNode::make(2, [3u32, 4])));
-  let b = Region::new(EqNested::make(1, EqNode::make(2, [3u32, 4])));
+  let a = Region::new(EqNested::make(1, near(EqNode::make(2, list([3u32, 4])))));
+  let b = Region::new(EqNested::make(1, near(EqNode::make(2, list([3u32, 4])))));
   assert_eq!(a, b);
 }
 
 #[test]
 fn region_ne_nested_near_different_child() {
-  let a = Region::new(EqNested::make(1, EqNode::make(2, [3u32, 4])));
-  let b = Region::new(EqNested::make(1, EqNode::make(9, [3u32, 4])));
+  let a = Region::new(EqNested::make(1, near(EqNode::make(2, list([3u32, 4])))));
+  let b = Region::new(EqNested::make(1, near(EqNode::make(9, list([3u32, 4])))));
   assert_ne!(a, b);
 }
 
 #[test]
 fn region_eq_different_buffer_layouts() {
-  let mut a = Region::new(EqNode::make(7, [1u32, 2]));
+  let mut a = Region::new(EqNode::make(7, list([1u32, 2])));
   a.session(|s| {
     let items = s.nav(s.root(), |n| &n.items);
     s.push_front(items, 0u32);
   });
 
-  let b = Region::new(EqNode::make(7, [0u32, 1, 2]));
+  let b = Region::new(EqNode::make(7, list([0u32, 1, 2])));
 
   assert_ne!(a.byte_len(), b.byte_len());
   assert_eq!(a, b);
@@ -3062,35 +3189,35 @@ struct DisplayList {
 
 #[test]
 fn display_near_delegates_to_target() {
-  let region = Region::new(DisplayNode::make(1, 42u32));
+  let region = Region::new(DisplayNode::make(1, near(42u32)));
   let output = format!("{}", region.child);
   assert_eq!(output, "42");
 }
 
 #[test]
 fn display_near_with_format_spec() {
-  let region = Region::new(DisplayNode::make(1, 42u32));
+  let region = Region::new(DisplayNode::make(1, near(42u32)));
   let output = format!("{:>5}", region.child);
   assert_eq!(output, "   42");
 }
 
 #[test]
 fn display_nearlist_empty() {
-  let region = Region::new(DisplayList::make(empty()));
+  let region = Region::new(DisplayList::make(list(empty())));
   let output = format!("{}", region.items);
   assert_eq!(output, "[]");
 }
 
 #[test]
 fn display_nearlist_single() {
-  let region = Region::new(DisplayList::make([7u32]));
+  let region = Region::new(DisplayList::make(list([7u32])));
   let output = format!("{}", region.items);
   assert_eq!(output, "[7]");
 }
 
 #[test]
 fn display_nearlist_multiple() {
-  let region = Region::new(DisplayList::make([1u32, 2, 3]));
+  let region = Region::new(DisplayList::make(list([1u32, 2, 3])));
   let output = format!("{}", region.items);
   assert_eq!(output, "[1, 2, 3]");
 }
@@ -3150,7 +3277,8 @@ enum Signal {
 #[test]
 fn flat_into_primitive_field() {
   // `op` accepts `impl Into<u16>` — pass a u8 which converts to u16.
-  let region: Region<IntoInst> = Region::new(IntoInst::make(42u8, Type(1), [Value::Const(10)]));
+  let region: Region<IntoInst> =
+    Region::new(IntoInst::make(42u8, Type(1), list([Value::Const(10)])));
   let inst: &IntoInst = &region;
   assert_eq!(inst.op, 42);
   assert_eq!(inst.typ, Type(1));
@@ -3161,7 +3289,7 @@ fn flat_into_primitive_field() {
 #[test]
 fn flat_into_primitive_exact_type() {
   // `#[flat(into)]` still accepts the exact type as well.
-  let region: Region<IntoInst> = Region::new(IntoInst::make(1000u16, Type(0), empty()));
+  let region: Region<IntoInst> = Region::new(IntoInst::make(1000u16, Type(0), list(empty())));
   let inst: &IntoInst = &region;
   assert_eq!(inst.op, 1000);
 }
@@ -3179,7 +3307,7 @@ fn flat_into_other_field() {
 #[test]
 fn flat_rename_enum_variant_named() {
   // `#[flat(rename = "ret")]` changes `make_return` to `ret`.
-  let region: Region<RenamedTerm> = Region::new(RenamedTerm::ret([Value::Const(42)]));
+  let region: Region<RenamedTerm> = Region::new(RenamedTerm::ret(list([Value::Const(42)])));
   let term: &RenamedTerm = &region;
   match term {
     RenamedTerm::Return { values } => {
@@ -3194,8 +3322,13 @@ fn flat_rename_enum_variant_named() {
 fn flat_rename_enum_variant_unnamed() {
   // `#[flat(rename = "br")]` changes `make_jump` to `br`.
   let region: Region<RenamedTerm> = Region::new(RenamedTerm::br(Jmp::make(
-    [Value::Const(1)],
-    Block::make(Symbol(0), empty(), empty(), Term::make_ret([Value::Const(99)])),
+    list([Value::Const(1)]),
+    near(Block::make(
+      Symbol(0),
+      list(empty()),
+      list(empty()),
+      Term::make_ret(list([Value::Const(99)])),
+    )),
   )));
   let term: &RenamedTerm = &region;
   match term {
@@ -3224,7 +3357,7 @@ fn flat_rename_enum_all_variants() {
   let r2: Region<Signal> = Region::new(Signal::off());
   assert!(matches!(&*r2, Signal::Disabled));
 
-  let r3: Region<Signal> = Region::new(Signal::val(Type(7)));
+  let r3: Region<Signal> = Region::new(Signal::val(near(Type(7))));
   match &*r3 {
     Signal::WithPayload { data } => assert_eq!(*data.get(), Type(7)),
     _ => panic!("expected WithPayload"),
@@ -3233,7 +3366,8 @@ fn flat_rename_enum_all_variants() {
 
 #[test]
 fn flat_into_clone_preserves() {
-  let region: Region<IntoInst> = Region::new(IntoInst::make(100u8, Type(2), [Value::Const(5)]));
+  let region: Region<IntoInst> =
+    Region::new(IntoInst::make(100u8, Type(2), list([Value::Const(5)])));
   let cloned = region.clone();
   let i1: &IntoInst = &region;
   let i2: &IntoInst = &cloned;
@@ -3245,7 +3379,7 @@ fn flat_into_clone_preserves() {
 #[test]
 fn flat_into_trim_preserves() {
   let mut region: Region<IntoInst> =
-    Region::new(IntoInst::make(200u8, Type(3), [Value::Const(7), Value::Const(8)]));
+    Region::new(IntoInst::make(200u8, Type(3), list([Value::Const(7), Value::Const(8)])));
   region.trim();
   let inst: &IntoInst = &region;
   assert_eq!(inst.op, 200);
@@ -3285,12 +3419,12 @@ fn into_vec_returns_correct_length() {
 fn into_vec_roundtrip() {
   let region: Region<Func> = Region::new(Func::make(
     Symbol(100),
-    Block::make(
+    near(Block::make(
       Symbol(0),
-      [(Symbol(1), Type(2))],
-      [Inst::make(1, Type(0), [Value::Const(42)])],
-      Term::make_ret([Value::Const(99)]),
-    ),
+      list([(Symbol(1), Type(2))]),
+      list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
+      Term::make_ret(list([Value::Const(99)])),
+    )),
   ));
   let vec = region.into_vec();
   let restored: Region<Func> = Region::from_bytes(&vec).unwrap();

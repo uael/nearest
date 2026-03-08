@@ -5,9 +5,8 @@ use syn::{Data, DataEnum, DataStruct, DeriveInput, Fields, Variant};
 use crate::{
   attrs::{parse_field_attrs, parse_variant_attrs},
   util::{
-    FieldKind, capitalize, classify_field, collect_field_types, combine_where,
-    flat_bounded_param_names, has_flat_bound, has_no_pointer_fields, is_all_primitive,
-    is_type_param_ident, opt_where_clause, to_snake_case,
+    capitalize, combine_where, flat_bounded_param_names, has_flat_bound, has_no_pointer_fields,
+    is_all_primitive, is_primitive_type, opt_where_clause, to_snake_case,
   },
 };
 
@@ -51,24 +50,11 @@ fn analyze_field(
   offset_expr: &TokenStream,
   use_into: bool,
 ) -> EmitterField {
-  match classify_field(field_ty) {
-    FieldKind::Primitive if use_into => EmitterField {
-      fn_param_type: quote! { impl Into<#field_ty> },
-      builder_type: quote! { #param_name },
-      generic_param: Some(param_name.clone()),
-      where_pred: Some(quote! { #param_name: Into<#field_ty> }),
-      write_at_code: quote! {
-        unsafe {
-          ::nearest::Emit::<#field_ty>::write_at(
-            (#value_expr).into(),
-            nearest_p,
-            nearest_at.offset(#offset_expr),
-          );
-        }
-      },
-      fn_generic_decl: None,
-    },
-    FieldKind::Primitive => EmitterField {
+  let is_prim = is_primitive_type(field_ty);
+
+  if is_prim && !use_into {
+    // Primitive, no Into: concrete parameter, direct emit.
+    EmitterField {
       fn_param_type: quote! { #field_ty },
       builder_type: quote! { #field_ty },
       generic_param: None,
@@ -83,61 +69,10 @@ fn analyze_field(
         }
       },
       fn_generic_decl: None,
-    },
-    FieldKind::Near { inner } => EmitterField {
-      fn_param_type: quote! { impl ::nearest::Emit<#inner> },
-      builder_type: quote! { #param_name },
-      generic_param: Some(param_name.clone()),
-      where_pred: Some(quote! { #param_name: ::nearest::Emit<#inner> }),
-      write_at_code: quote! {
-        {
-          let nearest_target = ::nearest::Emit::<#inner>::emit(#value_expr, nearest_p);
-          unsafe {
-            nearest_p.patch_near::<#inner>(nearest_at.offset(#offset_expr), nearest_target);
-          }
-        }
-      },
-      fn_generic_decl: None,
-    },
-    FieldKind::NearList { inner } => EmitterField {
-      fn_param_type: quote! {
-        impl IntoIterator<IntoIter: ExactSizeIterator, Item: ::nearest::Emit<#inner>>
-      },
-      builder_type: quote! { #param_name },
-      generic_param: Some(param_name.clone()),
-      where_pred: Some(quote! {
-        #param_name: IntoIterator,
-        #param_name::IntoIter: ExactSizeIterator,
-        #param_name::Item: ::nearest::Emit<#inner>
-      }),
-      write_at_code: gen_near_list_write_at(
-        value_expr,
-        &inner,
-        &quote! { nearest_at.offset(#offset_expr) },
-      ),
-      fn_generic_decl: None,
-    },
-    FieldKind::OptionNear { inner } => EmitterField {
-      fn_param_type: quote! { Option<#param_name> },
-      builder_type: quote! { Option<#param_name> },
-      generic_param: Some(param_name.clone()),
-      where_pred: Some(quote! { #param_name: ::nearest::Emit<#inner> }),
-      write_at_code: quote! {
-        match #value_expr {
-          Some(nearest_inner) => {
-            let nearest_target = ::nearest::Emit::<#inner>::emit(nearest_inner, nearest_p);
-            unsafe {
-              nearest_p.patch_near::<#inner>(nearest_at.offset(#offset_expr), nearest_target);
-            }
-          }
-          None => {
-            unsafe { nearest_p.write_flat::<i32>(nearest_at.offset(#offset_expr), 0) };
-          }
-        }
-      },
-      fn_generic_decl: Some(quote! { #param_name: ::nearest::Emit<#inner> }),
-    },
-    FieldKind::Other if use_into => EmitterField {
+    }
+  } else if use_into {
+    // Into: accepts impl Into<FieldType>, converts before emitting.
+    EmitterField {
       fn_param_type: quote! { impl Into<#field_ty> },
       builder_type: quote! { #param_name },
       generic_param: Some(param_name.clone()),
@@ -153,8 +88,10 @@ fn analyze_field(
         }
       },
       fn_generic_decl: None,
-    },
-    FieldKind::Other => EmitterField {
+    }
+  } else {
+    // All other types: uniform impl Emit<FieldType>.
+    EmitterField {
       fn_param_type: quote! { impl ::nearest::Emit<#field_ty> },
       builder_type: quote! { #param_name },
       generic_param: Some(param_name.clone()),
@@ -169,7 +106,7 @@ fn analyze_field(
         }
       },
       fn_generic_decl: None,
-    },
+    }
   }
 }
 
@@ -642,68 +579,22 @@ fn gen_variant_emitter(
 }
 
 // ---------------------------------------------------------------------------
-// NearList write_at code generation
-// ---------------------------------------------------------------------------
-
-/// Generate the `write_at` code for a `NearList` field.
-///
-/// Allocates a single contiguous segment for all elements.
-fn gen_near_list_write_at(
-  value_expr: &TokenStream,
-  inner: &syn::Type,
-  at_expr: &TokenStream,
-) -> TokenStream {
-  quote! {
-    {
-      let mut nearest_iter = (#value_expr).into_iter();
-      let nearest_len = nearest_iter.len() as u32;
-      if nearest_len == 0 {
-        unsafe {
-          nearest_p.patch_list_header::<#inner>(
-            #at_expr,
-            ::nearest::__private::Pos::ZERO,
-            0,
-          );
-        }
-      } else {
-        let nearest_seg_pos = nearest_p.alloc_segment::<#inner>(nearest_len);
-        let nearest_values_offset = ::nearest::__private::segment_values_offset::<#inner>();
-        for nearest_i in 0..nearest_len as usize {
-          let nearest_item = nearest_iter.next().expect("ExactSizeIterator lied about length");
-          unsafe {
-            nearest_item.write_at(
-              nearest_p,
-              nearest_seg_pos.offset(nearest_values_offset + nearest_i * ::core::mem::size_of::<#inner>()),
-            );
-          }
-        }
-        unsafe {
-          nearest_p.patch_list_header::<#inner>(
-            #at_expr,
-            nearest_seg_pos,
-            nearest_len,
-          );
-        }
-      }
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Self-emit for all-primitive types
 // ---------------------------------------------------------------------------
 
 fn gen_emit_self(input: &DeriveInput) -> TokenStream {
   let name = &input.ident;
   let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-  let field_types = collect_field_types(&input.data);
   let already_bounded = flat_bounded_param_names(&input.generics);
-  let flat_predicates: Vec<_> = field_types
-    .iter()
-    .filter(|ty| !already_bounded.iter().any(|name| is_type_param_ident(ty, name)))
-    .map(|ty| quote! { #ty: ::nearest::Flat })
-    .collect();
+
+  // Only add Flat bounds for type parameters (not concrete field types).
+  let mut flat_predicates = Vec::new();
+  for tp in input.generics.type_params() {
+    let ident = &tp.ident;
+    if !already_bounded.contains(&ident.to_string()) {
+      flat_predicates.push(quote! { #ident: ::nearest::Flat });
+    }
+  }
   let combined_where = combine_where(where_clause, &flat_predicates);
 
   quote! {
