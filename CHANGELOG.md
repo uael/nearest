@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2](https://github.com/uael/nearest/compare/v0.3.1...v0.3.2) - 2026-03-08
+
+### Added
+
+- self-sufficient Near<T> and NearList<T> Flat impls ([#18](https://github.com/uael/nearest/pull/18))
+
 ## [0.3.1](https://github.com/uael/nearest/compare/v0.3.0...v0.3.1) - 2026-02-15
 
 ### Added
