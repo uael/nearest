@@ -113,20 +113,8 @@ impl<R: Flat, B: Buf> Patch for Emitter<R, B> {
   }
 
   unsafe fn patch_segment_next<T: Flat>(&mut self, seg_pos: Pos, next_seg_pos: Pos) {
-    // next field is at offset 0 of Segment<T>
-    let rel = i64::from(next_seg_pos.0) - i64::from(seg_pos.0);
-    let rel_i32: i32 = rel.try_into().expect("segment next offset overflow");
-    let start = seg_pos.0 as usize;
-    assert!(start + size_of::<i32>() <= self.pos().0 as usize, "patch_segment_next out of bounds");
-    // SAFETY: Bounds checked above. The `next` field is at offset 0 of
-    // `Segment<T>`, and we write exactly `size_of::<i32>()` bytes.
-    unsafe {
-      core::ptr::copy_nonoverlapping(
-        core::ptr::from_ref(&rel_i32).cast::<u8>(),
-        self.buf_mut_ptr().add(start),
-        size_of::<i32>(),
-      );
-    }
+    // SAFETY: Caller guarantees `seg_pos` is a previously allocated segment.
+    unsafe { self.patch_segment_next(seg_pos, next_seg_pos) };
   }
 
   fn byte_len(&self) -> usize {

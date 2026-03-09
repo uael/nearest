@@ -530,6 +530,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
 
     let seg_pos = self.region.alloc_segment_internal::<U>(len);
     let values_offset = size_of::<Segment<U>>();
+    let base_addr = self.region.deref_raw().addr();
     for (i, &item_ref) in refs.iter().enumerate() {
       let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
       // SAFETY: The pre-reserve above guarantees no reallocation occurs.
@@ -537,7 +538,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
       // so the `&U` is not derived from `self.region` — avoiding an aliased
       // `&U` / `&mut Region` pair that Stacked Borrows would reject.
       unsafe {
-        let addr = self.region.deref_raw().add(item_ref.pos.0 as usize).addr();
+        let addr = base_addr.wrapping_add(item_ref.pos.0 as usize);
         let val = &*core::ptr::with_exposed_provenance::<U>(addr);
         Emit::<U>::write_at(val, self.region, val_pos);
       }
@@ -1070,6 +1071,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
     // into a fresh contiguous segment. No scratch needed.
     let seg_pos = self.region.alloc_segment_internal::<U>(len);
     let values_offset = size_of::<Segment<U>>();
+    let base_addr = self.region.deref_raw().addr();
     let mut seg_off = first_seg_off;
     let mut remaining = count;
     let mut dest_i = 0;
@@ -1078,7 +1080,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
       // via `with_exposed_provenance` so the read is not derived from
       // `self.region` — avoiding Stacked Borrows violation.
       unsafe {
-        let seg_addr = self.region.deref_raw().add(seg_off).addr();
+        let seg_addr = base_addr.wrapping_add(seg_off);
         let seg = &*core::ptr::with_exposed_provenance::<Segment<U>>(seg_addr);
         let seg_len = seg.len as usize;
         let vals_base = seg_addr.wrapping_add(size_of::<Segment<U>>());
@@ -1153,6 +1155,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
     let values_offset = size_of::<Segment<U>>();
 
     // Walk old segments forward, write into new segment in reverse order.
+    let base_addr = self.region.deref_raw().addr();
     let mut seg_off = first_seg_off;
     let mut remaining = count;
     let mut dest_i = count; // counts down from count to 0
@@ -1161,7 +1164,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
       // via `with_exposed_provenance` so the read is not derived from
       // `self.region` — avoiding Stacked Borrows violation.
       unsafe {
-        let seg_addr = self.region.deref_raw().add(seg_off).addr();
+        let seg_addr = base_addr.wrapping_add(seg_off);
         let seg = &*core::ptr::with_exposed_provenance::<Segment<U>>(seg_addr);
         let seg_len = seg.len as usize;
         let vals_base = seg_addr.wrapping_add(size_of::<Segment<U>>());
@@ -1245,12 +1248,13 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
     // Deep-copy elements in sorted order into a fresh contiguous segment.
     let seg_pos = self.region.alloc_segment_internal::<U>(len);
     let values_offset = size_of::<Segment<U>>();
+    let base_addr = self.region.deref_raw().addr();
     for (i, &elem_off) in positions.iter().enumerate() {
       // SAFETY: Pre-reserve guarantees no reallocation. We recover provenance
       // via `with_exposed_provenance` — no aliasing with `&mut Region`.
       unsafe {
         let val_pos = seg_pos.offset(values_offset + i * size_of::<U>());
-        let addr = self.region.deref_raw().add(elem_off as usize).addr();
+        let addr = base_addr.wrapping_add(elem_off as usize);
         let val = &*core::ptr::with_exposed_provenance::<U>(addr);
         Emit::<U>::write_at(val, self.region, val_pos);
       }
@@ -1357,6 +1361,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
     // run directly into a fresh contiguous segment. No scratch needed.
     let seg_pos = self.region.alloc_segment_internal::<U>(len);
     let values_offset = size_of::<Segment<U>>();
+    let base_addr = self.region.deref_raw().addr();
     let mut seg_off = first_seg_off;
     let mut remaining = count;
     let mut dest_i = 0;
@@ -1366,7 +1371,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
       // via `with_exposed_provenance` so the read is not derived from
       // `self.region` — avoiding Stacked Borrows violation.
       unsafe {
-        let seg_addr = self.region.deref_raw().add(seg_off).addr();
+        let seg_addr = base_addr.wrapping_add(seg_off);
         let seg = &*core::ptr::with_exposed_provenance::<Segment<U>>(seg_addr);
         let seg_len = seg.len as usize;
         let vals_base = seg_addr.wrapping_add(size_of::<Segment<U>>());
@@ -1374,8 +1379,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
           let val_addr = vals_base.wrapping_add(j * size_of::<U>());
           let val = &*core::ptr::with_exposed_provenance::<U>(val_addr);
           let is_dup = prev_off.is_some_and(|p| {
-            let prev =
-              &*core::ptr::with_exposed_provenance::<U>(self.region.deref_raw().add(p).addr());
+            let prev = &*core::ptr::with_exposed_provenance::<U>(base_addr.wrapping_add(p));
             eq(prev, val)
           });
           if !is_dup {
@@ -1383,7 +1387,7 @@ impl<'id, 'a, Root: Flat, B: Buf> Session<'id, 'a, Root, B> {
             Emit::<U>::write_at(val, self.region, val_pos);
             dest_i += 1;
           }
-          prev_off = Some(val_addr - self.region.deref_raw().addr());
+          prev_off = Some(val_addr - base_addr);
         }
         remaining -= seg_len;
         if remaining > 0 {

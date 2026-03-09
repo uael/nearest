@@ -44,13 +44,6 @@ pub unsafe trait Emit<T>: Sized {
   unsafe fn write_at(self, p: &mut impl Patch, at: Pos);
 }
 
-// // SAFETY: `Infallible` is uninhabited — `write_at` is unreachable.
-// unsafe impl<T: Flat> Emit<T> for Infallible {
-//   unsafe fn write_at(self, _p: &mut impl Patch, _at: Pos) {
-//     match self {}
-//   }
-// }
-
 // --- Blanket deep-copy impl: Emit<T> for &T via Flat::deep_copy ---
 
 // SAFETY: Delegates to `Flat::deep_copy` which correctly copies all fields
