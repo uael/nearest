@@ -1,6 +1,8 @@
 #![feature(offset_of_enum)]
 
-use nearest::{Flat, Near, NearList, Ref, Region, ValidateError, empty, list, maybe, near, none};
+use nearest::{
+  Flat, Near, NearList, Ref, Region, ValidateError, array, empty, list, maybe, near, none,
+};
 
 // --- IR type definitions using derive(Flat) ---
 
@@ -69,6 +71,20 @@ enum Wrapper<CT: Flat> {
   Empty,
   WithSig { sig: Near<Signature<CT>> },
   Pair(CT, u32),
+}
+
+// Struct with a primitive array field.
+#[derive(Flat, Debug)]
+struct PrimArray {
+  tag: u32,
+  values: [u32; 3],
+}
+
+// Struct with an array of Near<T> fields (requires array() helper).
+#[derive(Flat, Debug)]
+struct Brif {
+  cond: u32,
+  targets: [Near<Block>; 2],
 }
 
 // ===========================================================================
@@ -3553,3 +3569,88 @@ fn into_buf_fixed_buf() {
 //   assert_eq!(ob.name, Symbol(1));
 //   assert!(ob.items.is_none());
 // }
+
+// ===========================================================================
+// array() emitter tests
+// ===========================================================================
+
+#[test]
+fn array_primitive_field() {
+  let region: Region<PrimArray> = Region::new(PrimArray::make(42, [10u32, 20, 30]));
+  assert_eq!(region.tag, 42);
+  assert_eq!(region.values, [10, 20, 30]);
+}
+
+#[test]
+fn array_primitive_field_zeros() {
+  let region: Region<PrimArray> = Region::new(PrimArray::make(0, [0u32, 0, 0]));
+  assert_eq!(region.tag, 0);
+  assert_eq!(region.values, [0, 0, 0]);
+}
+
+#[test]
+fn array_near_field() {
+  let region: Region<Brif> = Region::new(Brif::make(
+    1,
+    array([
+      near(Block::make(Symbol(10), empty(), empty(), Term::make_ret(empty()))),
+      near(Block::make(Symbol(20), empty(), empty(), Term::make_ret(empty()))),
+    ]),
+  ));
+  assert_eq!(region.cond, 1);
+  assert_eq!(region.targets[0].name, Symbol(10));
+  assert_eq!(region.targets[1].name, Symbol(20));
+}
+
+#[test]
+fn array_near_field_with_contents() {
+  let region: Region<Brif> = Region::new(Brif::make(
+    7,
+    array([
+      near(Block::make(
+        Symbol(1),
+        empty(),
+        list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
+        Term::make_ret(list([Value::Const(100)])),
+      )),
+      near(Block::make(
+        Symbol(2),
+        empty(),
+        list([Inst::make(2, Type(1), list([Value::Const(99)]))]),
+        Term::make_ret(list([Value::Const(200)])),
+      )),
+    ]),
+  ));
+  assert_eq!(region.cond, 7);
+
+  let b0 = &*region.targets[0];
+  assert_eq!(b0.name, Symbol(1));
+  assert_eq!(b0.insts.len(), 1);
+  match &b0.term {
+    Term::Ret { values } => assert_eq!(values[0], Value::Const(100)),
+    Term::Jmp(_) => panic!("expected Ret"),
+  }
+
+  let b1 = &*region.targets[1];
+  assert_eq!(b1.name, Symbol(2));
+  assert_eq!(b1.insts.len(), 1);
+  match &b1.term {
+    Term::Ret { values } => assert_eq!(values[0], Value::Const(200)),
+    Term::Jmp(_) => panic!("expected Ret"),
+  }
+}
+
+#[test]
+fn array_clone_region() {
+  let region: Region<Brif> = Region::new(Brif::make(
+    3,
+    array([
+      near(Block::make(Symbol(10), empty(), empty(), Term::make_ret(empty()))),
+      near(Block::make(Symbol(20), empty(), empty(), Term::make_ret(empty()))),
+    ]),
+  ));
+  let cloned = region.clone();
+  assert_eq!(region.cond, cloned.cond);
+  assert_eq!(cloned.targets[0].name, Symbol(10));
+  assert_eq!(cloned.targets[1].name, Symbol(20));
+}

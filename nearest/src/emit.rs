@@ -182,6 +182,27 @@ pub fn none<T: Flat>() -> impl Emit<Option<Near<T>>> {
   W(PhantomData)
 }
 
+/// Construct a `[T; N]` from an array of `Emit<T>` builders.
+///
+/// Used as a wrapper when passing builders to `make()` for `[T; N]` fields:
+/// ```ignore
+/// Term::make_brif(cond, array([Jmp::make(...), Jmp::make(...)]))
+/// ```
+pub fn array<T: Flat, B: Emit<T>, const N: usize>(builders: [B; N]) -> impl Emit<[T; N]> {
+  struct W<B, const N: usize>([B; N]);
+  // SAFETY: Writes each element at its correct offset within the [T; N] allocation.
+  unsafe impl<T: Flat, B: Emit<T>, const N: usize> Emit<[T; N]> for W<B, N> {
+    unsafe fn write_at(self, p: &mut impl Patch, at: Pos) {
+      for (i, builder) in self.0.into_iter().enumerate() {
+        // SAFETY: `at` was allocated for `[T; N]`. Each element is at
+        // offset `i * size_of::<T>()` within that allocation.
+        unsafe { builder.write_at(p, at.offset(i * size_of::<T>())) };
+      }
+    }
+  }
+  W(builders)
+}
+
 /// Returns an empty iterator suitable for any `NearList<T>` emitter parameter.
 ///
 /// Since [`Infallible`](core::convert::Infallible) implements [`Emit<T>`] for all
