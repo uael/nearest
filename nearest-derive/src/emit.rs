@@ -4,7 +4,10 @@ use syn::{Data, DataEnum, DataStruct, DeriveInput, Fields, Variant};
 
 use crate::{
   attrs::{parse_field_attrs, parse_variant_attrs},
-  util::{capitalize, combine_where, flat_bounded_param_names, has_flat_bound, opt_where_clause, to_snake_case},
+  util::{
+    capitalize, combine_where, flat_bounded_param_names, has_flat_bound, opt_where_clause,
+    to_snake_case,
+  },
 };
 
 // ---------------------------------------------------------------------------
