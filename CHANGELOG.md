@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3](https://github.com/uael/nearest/compare/v0.4.2...v0.4.3) - 2026-03-09
+
+### Other
+
+- deduplicate buffer operations between Emitter and Region ([#28](https://github.com/uael/nearest/pull/28))
+
 ## [0.4.2](https://github.com/uael/nearest/compare/v0.4.1...v0.4.2) - 2026-03-08
 
 ### Other
