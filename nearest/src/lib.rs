@@ -436,7 +436,7 @@ mod validate;
 #[cfg(feature = "alloc")]
 pub use buf::AlignedBuf;
 pub use buf::{Buf, FixedBuf};
-pub use emit::{Emit, empty, list, maybe, near, none};
+pub use emit::{Emit, array, empty, list, maybe, near, none};
 
 /// Not part of the public API. Used by the derive macro.
 #[doc(hidden)]
