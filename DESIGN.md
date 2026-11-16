@@ -32,11 +32,11 @@ assert_eq!(r.insts[0].args[1], 20);
 // Edit. `r.edit()` is `&mut Edit<Block>`; every field has a method of the same name.
 let b = r.edit();
 *b.id() = 7;
-b.insts().push(Inst::new(9, [1, 2]));
-b.insts().at(0).args().push(40);
-b.insts().at(0).args()[1] = 21;          // plain data is a real slice
+b.insts().push(Inst::new(9, [1, 2])).args().push(3);   // `push` returns the new element
+b.insts().at(0).args()[1] = 21;                         // plain data is a real slice
 b.insts().retain(|inst| inst.op != 2);
-b.next().set(Near::new(Block::new(1, (), None)));
+b.next().insert(Block::new(1, (), None)).insts().push(Inst::new(4, ()));
+b.next().set(None);
 
 // Compact. A copy into a new region keeps only what is reachable.
 r = Region::new(&*r);
@@ -60,7 +60,9 @@ fn simplify(e: &mut Edit<Expr>) {
   }
 }
 
-r.edit().replace(|old| Expr::neg(Near::new(old)));   // wrap: the old value moves, O(1)
+let mut r = Region::new(Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2))));
+simplify(r.edit());
+r.edit().replace(|old| Expr::neg(old));              // wrap: the old value moves, O(1)
 ```
 
 ## Public surface
@@ -74,7 +76,7 @@ r.edit().replace(|old| Expr::neg(Near::new(old)));   // wrap: the old value move
 | `Near<T>` | `new`, `from_iter` (builders) |
 | `Region<T>` | `new`, `edit`, `to_bytes`, `from_bytes` (unsafe), `byte_len` |
 | `ListEdit<T>` | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`, `replace` |
-| `OptionEdit<T>` | `as_mut`, `set`, `replace` |
+| `OptionEdit<T>` | `as_mut`, `insert`, `set`, `replace` |
 | `StrEdit` | `set`, `replace` |
 | `Old<'a, T>` | `map` |
 
@@ -100,7 +102,7 @@ Trait impls: `Region`: `Deref`, `Clone`, `Debug`, `PartialEq`, `Eq`. `Near`: `De
 | `Near<T>`, `T: Flat` | `Edit<T>` | the handle is the target's handle |
 | `Near<[T]>`, `T: Flat` | `ListEdit<T>` | |
 | `Near<str>` | `StrEdit` | |
-| `Option<Near<T>>`, `Near<T>: Flat` | `OptionEdit<T>` | 4 bytes, `None` is 0 |
+| `Option<Near<T>>`, `T: Flat` | `OptionEdit<T>` | 4 bytes, `None` is 0 |
 | `#[flat]` types | generated | |
 
 Every stored type has alignment at most 8, non-zero size and no drop glue. These are checked at
@@ -173,7 +175,7 @@ What handles offer:
 | `#[flat]` struct | generated | `field()` for every field, `set`, `replace`; `Deref<Target = T>`; `DerefMut` if `T: Copy` |
 | `#[flat]` enum | generated | `as_mut()`, `set`, `replace`; `Deref`; `DerefMut` if `T: Copy` |
 | `Near<[T]>` | `ListEdit<T>` | list operations, `set`, `replace`; `Deref<Target = [T]>`; `DerefMut` if `T: Copy` |
-| `Option<Near<T>>` | `OptionEdit<T>` | `as_mut() -> Option<&mut Edit<Near<T>>>`, `set`, `replace`; `Deref<Target = Option<Near<T>>>` |
+| `Option<Near<T>>` | `OptionEdit<T>` | `as_mut() -> Option<&mut Edit<T>>`, `insert(value) -> &mut Edit<T>`, `set`, `replace`; `Deref<Target = Option<Near<T>>>` |
 | `Near<str>` | `StrEdit` | `set`, `replace`; `Deref<Target = str>` |
 
 Field methods are named after the field (`_0`, `_1`, .. for tuple fields; a field called `set`
@@ -213,7 +215,8 @@ degrade to a deep copy instead of being errors:
 
 ## Lists
 
-`push` writes into spare capacity and then bumps the length; a full list moves to a new block
+`push` and `insert` return the handle of the new element. `push` writes into spare capacity
+and then bumps the length; a full list moves to a new block
 of twice the capacity (at least 4) and its pointer is re-aimed. `insert`, `remove`, `swap` and
 `retain` move elements inside the block; each move re-aims the element's pointers, and plain
 elements are moved with `memmove`. `truncate` only writes the length. `at(i)` is the handle of
@@ -234,6 +237,14 @@ its closure panics.
 
 Constructors return `impl Emit<Self>` and are lazy: nothing is written until the builder
 reaches a region. Types without pointers can also be built with a plain literal.
+
+Pointers are transparent where that is unambiguous. A constructor parameter for a field
+written `Near<X>` (with `X` not a slice or `str`) takes a builder of `X` and allocates the
+target, so trees read as `Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2)))`. The macro decides
+this from the field's type as written; a field whose type is an alias of `Near<X>` takes a
+builder of the pointer, `Near::new(x)`. In the same way the handle of a `Near<X>` place is the
+handle of the `X`, so `set` on it takes a builder of `X`, and `OptionEdit::insert` takes a
+builder of `X`. An `Option<Near<X>>` parameter takes `None` or `Near::new(x)`.
 
 ## Bytes
 
