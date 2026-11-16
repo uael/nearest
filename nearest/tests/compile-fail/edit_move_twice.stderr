@@ -1,0 +1,18 @@
+error[E0382]: use of moved value: `a`
+  --> tests/compile-fail/edit_move_twice.rs:17:29
+   |
+16 |     if let Expr::Add(a, _) = old {
+   |                      - move occurs because `a` has type `Pin<&mut Near<Expr>>`, which does not implement the `Copy` trait
+17 |       slot.put(Expr::add(a, a));
+   |                          -  ^ value used here after move
+   |                          |
+   |                          value moved here
+   |
+note: consider changing this parameter type in method `add` to borrow instead if owning the value isn't necessary
+  --> tests/compile-fail/edit_move_twice.rs:6:1
+   |
+ 6 | #[flat]
+   | ^^^^^^^ this parameter takes ownership of the value
+ 7 | enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
+   |                                        --- in this method
+   = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)

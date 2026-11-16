@@ -1,95 +1,133 @@
-#![feature(offset_of_enum)]
-
-//! Expression tree evaluator using self-relative pointers.
+//! An expression tree simplified by rewriting in place.
 //!
-//! Demonstrates recursive `Near<Expr>` trees, nested construction,
-//! `Region::clone`, session mutation with `splice`, and `trim`.
+//! Each pass looks at a node; if a rule applies it replaces the node, moving subtrees instead
+//! of copying them, and otherwise descends into the children with `Slot::at`. Passes repeat
+//! until nothing changes, then the region is compacted.
+#![feature(pin_ergonomics)]
+#![expect(incomplete_features, reason = "pin_ergonomics")]
 
-use nearest::{Flat, Near, Region, near};
+use std::pin::Pin;
 
-#[derive(Flat, Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(u8)]
-enum Op {
-  Add,
-  Sub,
-  Mul,
-}
+use nearest::{Near, Region, Slot, flat};
 
-#[derive(Flat, Debug)]
-#[repr(C, u8)]
-#[expect(dead_code, reason = "variants constructed via emitters")]
+#[flat]
 enum Expr {
-  Lit(i64),
-  Bin { op: Op, lhs: Near<Expr>, rhs: Near<Expr> },
+  Num(i64),
+  Var(u8),
+  Neg(Near<Expr>),
+  Add(Near<Expr>, Near<Expr>),
+  Mul(Near<Expr>, Near<Expr>),
 }
 
-fn eval(expr: &Expr) -> i64 {
-  match expr {
-    Expr::Lit(n) => *n,
-    Expr::Bin { op, lhs, rhs } => {
-      let l = eval(lhs);
-      let r = eval(rhs);
-      match op {
-        Op::Add => l + r,
-        Op::Sub => l - r,
-        Op::Mul => l * r,
-      }
-    }
+const fn num(e: &Expr) -> Option<i64> {
+  if let Expr::Num(n) = e { Some(*n) } else { None }
+}
+
+fn eval(e: &Expr, vars: &[i64]) -> i64 {
+  match e {
+    Expr::Num(n) => *n,
+    Expr::Var(v) => vars[usize::from(*v)],
+    Expr::Neg(a) => -eval(a, vars),
+    Expr::Add(a, b) => eval(a, vars) + eval(b, vars),
+    Expr::Mul(a, b) => eval(a, vars) * eval(b, vars),
   }
 }
 
-fn pretty(expr: &Expr) -> String {
-  match expr {
-    Expr::Lit(n) => n.to_string(),
-    Expr::Bin { op, lhs, rhs } => {
-      let sym = match op {
-        Op::Add => "+",
-        Op::Sub => "-",
-        Op::Mul => "*",
-      };
-      format!("({} {} {})", pretty(lhs), sym, pretty(rhs))
-    }
+fn show(e: &Expr) -> String {
+  match e {
+    Expr::Num(n) => n.to_string(),
+    Expr::Var(v) => char::from(b'x' + v).to_string(),
+    Expr::Neg(a) => format!("-{}", show(a)),
+    Expr::Add(a, b) => format!("({} + {})", show(a), show(b)),
+    Expr::Mul(a, b) => format!("({} * {})", show(a), show(b)),
+  }
+}
+
+/// One rewriting pass over `e`; returns whether anything changed.
+fn rewrite<'o>(e: Pin<&'o mut Expr>, slot: &mut Slot<'o, Expr>) -> bool {
+  match e {
+    Expr::Num(_) | Expr::Var(_) => false,
+    Expr::Neg(a) => match &**a {
+      Expr::Num(n) => {
+        slot.put(Expr::Num(-n));
+        true
+      }
+      // --x -> x: the grandchild moves up.
+      Expr::Neg(_) => {
+        if let Expr::Neg(x) = a.as_pin_mut() {
+          slot.put(x.as_pin_mut());
+        }
+        true
+      }
+      _ => slot.at(a.as_pin_mut(), rewrite),
+    },
+    Expr::Add(a, b) => match (num(&a), num(&b)) {
+      (Some(x), Some(y)) => {
+        slot.put(Expr::Num(x + y));
+        true
+      }
+      (Some(0), _) => {
+        slot.put(b.as_pin_mut());
+        true
+      }
+      (_, Some(0)) => {
+        slot.put(a.as_pin_mut());
+        true
+      }
+      _ => slot.at(a.as_pin_mut(), rewrite) | slot.at(b.as_pin_mut(), rewrite),
+    },
+    Expr::Mul(a, b) => match (num(&a), num(&b)) {
+      (Some(x), Some(y)) => {
+        slot.put(Expr::Num(x * y));
+        true
+      }
+      (Some(0), _) | (_, Some(0)) => {
+        slot.put(Expr::Num(0));
+        true
+      }
+      (Some(1), _) => {
+        slot.put(b.as_pin_mut());
+        true
+      }
+      (_, Some(1)) => {
+        slot.put(a.as_pin_mut());
+        true
+      }
+      // Constants go to the right: the children swap places.
+      (Some(_), None) => {
+        slot.put(Expr::mul(b, a));
+        true
+      }
+      _ => slot.at(a.as_pin_mut(), rewrite) | slot.at(b.as_pin_mut(), rewrite),
+    },
   }
 }
 
 fn main() {
-  // Build: (2 + 3) * (10 - 4)
-  let region = Region::new(Expr::make_bin(
-    Op::Mul,
-    near(Expr::make_bin(Op::Add, near(Expr::make_lit(2)), near(Expr::make_lit(3)))),
-    near(Expr::make_bin(Op::Sub, near(Expr::make_lit(10)), near(Expr::make_lit(4)))),
+  let (x, y) = (|| Near::new(Expr::Var(0)), || Near::new(Expr::Var(1)));
+  let n = |n| Near::new(Expr::Num(n));
+  // ((x + 0) * (2 + 3)) + --(1 * y)
+  let mut e = Region::new(Expr::add(
+    Near::new(Expr::mul(Near::new(Expr::add(x(), n(0))), Near::new(Expr::add(n(2), n(3))))),
+    Near::new(Expr::neg(Near::new(Expr::neg(Near::new(Expr::mul(n(1), y())))))),
   ));
+  let original = e.clone();
+  println!("before: {}  ({} bytes)", show(&e), e.byte_len());
 
-  println!("expr:  {}", pretty(&region));
-  println!("value: {}", eval(&region));
-  assert_eq!(eval(&region), 30);
+  let mut passes = 0;
+  while e.edit(rewrite) {
+    passes += 1;
+  }
+  println!("after {passes} passes: {}  ({} bytes)", show(&e), e.byte_len());
+  assert_eq!(show(&e), "((x * 5) + y)");
+  assert_eq!(show(&original), "(((x + 0) * (2 + 3)) + --(1 * y))");
+  for vars in [[0, 0], [3, 4], [-7, 11]] {
+    assert_eq!(eval(&e, &vars), eval(&original, &vars));
+  }
 
-  // Clone is a plain memcpy — no pointer fixup.
-  let mut cloned = region.clone();
-  assert_eq!(eval(&cloned), eval(&region));
-  println!("\nclone matches: {}", eval(&cloned) == eval(&region));
-
-  // Mutate the clone: replace the `4` literal with `1`.
-  // (2 + 3) * (10 - 1) = 45
-  cloned.session(|s| {
-    // Navigate to the rhs of the outer Mul, then the rhs of the inner Sub.
-    let rhs_of_sub = s.nav(s.root(), |e| match e {
-      Expr::Bin { rhs, .. } => match &**rhs {
-        Expr::Bin { rhs: inner_rhs, .. } => inner_rhs,
-        Expr::Lit(_) => panic!("expected Bin"),
-      },
-      Expr::Lit(_) => panic!("expected Bin"),
-    });
-    s.splice(rhs_of_sub, Expr::make_lit(1));
-  });
-
-  println!("\nmutated: {}", pretty(&cloned));
-  println!("value:   {}", eval(&cloned));
-  assert_eq!(eval(&cloned), 45);
-
-  // Trim reclaims dead bytes from the old `Lit(4)`.
-  let before = cloned.byte_len();
-  cloned.trim();
-  println!("\ntrim: {} -> {} bytes", before, cloned.byte_len());
-  assert_eq!(eval(&cloned), 45);
+  // Edits append; a copy keeps only what is reachable.
+  let compact = Region::new(&*e);
+  println!("compacted: {} bytes", compact.byte_len());
+  assert!(compact.byte_len() < original.byte_len());
+  assert_eq!(show(&compact), show(&e));
 }

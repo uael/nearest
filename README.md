@@ -5,237 +5,88 @@
 [![crates.io](https://img.shields.io/crates/v/nearest)](https://crates.io/crates/nearest)
 [![license](https://img.shields.io/crates/l/nearest)](LICENSE-MIT)
 
-**Self-relative pointers for Rust. Clone is memcpy.**
+**Self-relative pointers in one buffer. Clone is `memcpy`.**
 
-Store entire data graphs — trees, DAGs, linked lists — in a single contiguous
-byte buffer where every internal pointer is a 4-byte `i32` offset relative to
-its own address. Cloning a region is a plain `memcpy` with zero fixup.
-Serialization is `as_bytes()`. Mutation is compile-time safe.
-
-## Quick look
+A `Region<T>` holds a `T` and everything it points to in one contiguous buffer. Every pointer
+is a `Near<T>`: 4 bytes holding the distance from its own address to its target. Copying the
+buffer copies the whole graph, reading is plain `&T`, and edits are checked by the borrow
+checker with no runtime checks.
 
 ```rust
-use nearest::{Flat, Near, NearList, Region, near, list};
+#![feature(pin_ergonomics)]
+#![allow(incomplete_features)]
+use nearest::{Near, Region, flat};
 
-// Define recursive types with derive — no boilerplate.
-#[derive(Flat, Debug)]
-#[repr(C, u8)]
-enum Expr {
-  Lit(i64),
-  Add { lhs: Near<Expr>, rhs: Near<Expr> },
-}
+#[flat]
+struct Block { id: u32, insts: Near<[Inst]>, next: Option<Near<Block>> }
+#[flat]
+struct Inst { op: u8, args: Near<[u32]> }
 
-// Build: (1 + 2)
-let region = Region::new(Expr::make_add(
-  near(Expr::make_lit(1)),
-  near(Expr::make_lit(2)),
-));
+// Build. Constructors take anything that can be written as the field's type.
+let mut r = Region::new(Block::new(0, (Inst::new(1, [10, 20, 30]), Inst::new(2, ())), None));
 
-// Read — Region<T>: Deref<Target = T>
-match &*region {
-  Expr::Add { lhs, rhs } => {
-    assert!(matches!(&**lhs, Expr::Lit(1)));
-    assert!(matches!(&**rhs, Expr::Lit(2)));
-  }
-  _ => unreachable!(),
-}
+// Read. It is just `&Block`.
+assert_eq!(r.insts[0].args[1], 20);
 
-// Clone is memcpy — self-relative offsets just work.
-let cloned = region.clone();
-assert_eq!(region.as_bytes(), cloned.as_bytes());
-```
+// Clone. One memcpy.
+let snapshot = r.clone();
 
-## Why nearest?
-
-Traditional Rust data structures use heap pointers. Cloning walks the entire
-graph. Serialization requires a framework. Moving data between threads means
-`Arc` overhead or deep copies.
-
-`nearest` sidesteps all of this. A `Region<T>` is a flat byte buffer that you
-can:
-
-- **Clone** with `memcpy` (no pointer fixup)
-- **Serialize** with `as_bytes()` / **deserialize** with `from_bytes()` (no schema, no codegen)
-- **Send** across threads or processes (it's just bytes)
-- **Mutate** safely through branded sessions (ghost-cell pattern, zero runtime cost)
-- **Compact** with `trim()` to reclaim dead bytes after mutations
-
-## Features at a glance
-
-| Feature | How |
-|---------|-----|
-| Derive-driven construction | `#[derive(Flat)]` generates `make()` builders with zero boilerplate |
-| Self-relative pointers | `Near<T>` — 4-byte `NonZero<i32>` offset, `Deref<Target = T>` |
-| Inline linked lists | `NearList<T>` — segmented list with `O(1)` prepend/append, indexing, iteration |
-| Compile-time safe mutation | Branded `Session` + `Ref` tokens — no `Ref` can escape or cross sessions |
-| Region compaction | `trim()` deep-copies only reachable data, reclaiming dead bytes |
-| `no_std` support | Works without `alloc`; use `FixedBuf<N>` for fully stack-based regions |
-| Serialization | `as_bytes()` / `from_bytes()` with validation; optional `serde` feature |
-| Miri-validated | All unsafe code tested under Miri with permissive provenance |
-
-## Examples
-
-### Expression trees
-
-Recursive types work naturally — `Near<Expr>` is a 4-byte self-relative pointer:
-
-```rust
-use nearest::{Flat, Near, Region, near};
-
-#[derive(Flat, Debug)]
-#[repr(C, u8)]
-enum Expr {
-  Lit(i64),
-  Bin { op: u8, lhs: Near<Expr>, rhs: Near<Expr> },
-}
-
-fn eval(e: &Expr) -> i64 {
-  match e {
-    Expr::Lit(n) => *n,
-    Expr::Bin { op, lhs, rhs } => match op {
-      b'+' => eval(lhs) + eval(rhs),
-      b'*' => eval(lhs) * eval(rhs),
-      _ => unreachable!(),
-    },
-  }
-}
-
-// (2 + 3) * 10 = 50
-let region = Region::new(Expr::make_bin(
-  b'*',
-  near(Expr::make_bin(b'+', near(Expr::make_lit(2)), near(Expr::make_lit(3)))),
-  near(Expr::make_lit(10)),
-));
-assert_eq!(eval(&region), 50);
-```
-
-### Mutation via branded sessions
-
-Sessions use a ghost-cell pattern — `Ref` tokens are branded with a unique
-lifetime so they can't escape the closure or be used in another session.
-All checked at compile time, zero runtime cost:
-
-```rust
-use nearest::{Flat, NearList, Region, list};
-
-#[derive(Flat)]
-struct World { tick: u32, items: NearList<u32> }
-
-let mut region = Region::new(World::make(0, list([1u32, 2, 3])));
-
-region.session(|s| {
-  let items = s.nav(s.root(), |w| &w.items);
-
-  // Map: double every element (edits in place, zero allocation).
-  s.map_list(items, |x| x * 2);
-
-  // Filter: keep only values > 2 (no heap allocation).
-  s.filter_list(items, |x| *x > 2);
-
-  // Advance tick.
-  s.set(s.nav(s.root(), |w| &w.tick), 1);
+// Edit. `root` is `Pin<&mut Block>`; ordinary patterns project it.
+r.edit(|root, slot| {
+  let Block { id, insts, .. } = root;
+  *id.get_mut() = 7;                                         // in place
+  slot.at(insts, |old, new| {                                // a change that needs new memory
+    for inst in old { if inst.op == 1 { new.push(inst) } }   // old elements move
+    new.push(Inst::new(9, [1, 2]));
+  });
 });
 
-assert_eq!(region.tick, 1);
-assert_eq!(region.items.len(), 2);  // [4, 6]
-assert_eq!(region.items[0], 4);
+// Compact. A copy into a new region keeps only what is reachable.
+r = Region::new(&*r);
 ```
 
-### Stack-only regions (`no_std`)
+## The API
 
-Use `FixedBuf<N>` for zero-heap construction — ideal for embedded or real-time:
+| Item | |
+|---|---|
+| `#[flat]` | makes a struct or enum storable; generates `Type::new(..)` and `Enum::variant(..)` |
+| `Near<T>` | the pointer: `Near::new(e)`, `Near::from_iter(iter)`, `as_pin_mut` |
+| `Region<T>` | the buffer: `new`, `edit`, `to_bytes`, `from_bytes` (unsafe), `byte_len` |
+| `Slot<'o, T>` | a pending change during `edit`: `put`, `at`, `push` |
+| `Flat`, `Emit<'o, T>` | "may live in a region", "can be written as a `T`" |
 
-```rust
-use nearest::{Flat, FixedBuf, NearList, Region, list};
+Anything that can be written as a `T` is accepted wherever a `T` is built: a value, a copy
+(`&T`, from any region), a move (`Pin<&mut T>`, from the value being replaced), a list literal
+(`[a, b]`, `(a, b)`, `()`), a slice, an iterator, a string, or a generated constructor.
 
-#[derive(Flat)]
-struct Packet { id: u32, payload: NearList<u8> }
+## Safety model
 
-let region: Region<Packet, FixedBuf<128>> =
-  Region::new_in(Packet::make(42, list(b"hello".as_slice())));
+- A `Near` has no constructor and is not `Clone`: it only exists inside a region.
+- `Near` is `!Unpin`, so values containing one are reached as `&T` or `Pin<&mut T>`;
+  `#[flat]` makes types `#[pin_v2]` so that patterns project the pin. Plain data stays
+  `Unpin` and gets a real `&mut`.
+- A region is a tree: builders make fresh targets, `&T` copies, and a `Pin<&mut T>` moves. A
+  slot accepts moves only from the value it replaces, which a lifetime brand enforces.
+- New data is built in a scratch buffer and appended when the edit ends, also on panic.
+- No pointer is made from an integer. Miri runs the tests with Tree Borrows and strict
+  provenance.
 
-assert_eq!(region.id, 42);
-assert_eq!(region.payload.len(), 5);
-```
-
-### Composing regions
-
-Build sub-trees as separate regions, then compose them with references:
-
-```rust
-use nearest::{Flat, Near, NearList, Region, near, list, empty};
-
-#[derive(Flat)]
-struct Node { label: u32, children: NearList<Node> }
-
-// Build children independently.
-let child_a = Region::new(Node::make(1, empty()));
-let child_b = Region::new(Node::make(2, empty()));
-
-// Compose: &*Region<T> implements Emit<T>.
-let tree = Region::new(Node::make(0, list([&*child_a, &*child_b])));
-assert_eq!(tree.children.len(), 2);
-assert_eq!(tree.children[0].label, 1);
-
-// The entire tree is one contiguous buffer.
-// Clone is still just memcpy.
-let cloned = tree.clone();
-assert_eq!(cloned.children[1].label, 2);
-```
-
-## How it works
-
-```text
-Region<T> buffer layout:
-
-  [ Root T fields | Near<U> targets | NearList segments | ... ]
-  ^                     ^
-  byte 0                |
-              offset ───┘  (i32, relative to the Near<U> field's own address)
-```
-
-1. **Construction**: `Region::new(T::make(...))` writes values into a contiguous
-   buffer. `Near<T>` fields store `i32` offsets pointing forward to their
-   targets. `NearList<T>` stores a head offset + length.
-
-2. **Reading**: `Region<T>: Deref<Target = T>`. `Near<T>: Deref<Target = T>` —
-   resolves by adding the stored offset to its own address.
-
-3. **Mutation**: `region.session(|s| { ... })` opens a branded session. All
-   writes are append-only — new data goes at the end, old offsets are patched.
-   Dead bytes accumulate but are never read.
-
-4. **Compaction**: `region.trim()` deep-copies only reachable data into a fresh
-   buffer, eliminating dead bytes.
-
-## Comparison
-
-| | nearest | rkyv | FlatBuffers | bumpalo |
-|---|---|---|---|---|
-| Self-relative pointers | `i32` offsets | relative pointers | `u32` offsets | no (heap ptrs) |
-| Clone = memcpy | yes | no (absolute ptrs when deserialized) | n/a | no |
-| Safe mutation | branded sessions | read-only archived data | read-only | `&mut` |
-| Compaction | `trim()` | no | no | reset only |
-| Construction | `#[derive(Flat)]` | `#[derive(Archive)]` | schema codegen | manual |
-| `no_std` | yes | yes | yes | yes |
+Types must have alignment at most 8, non-zero size and no drop glue (checked at compile
+time). A region holds at most 2 GiB.
 
 ## Getting started
 
-Requires **nightly** Rust (`nightly-2026-02-10`) for `#![feature(offset_of_enum)]`.
+Requires nightly Rust (`nightly-2026-02-10`). Crates that use `#[flat]` enable
+`#![feature(pin_ergonomics)]`.
 
 ```toml
 [dependencies]
 nearest = "0.4"
 ```
 
-See the [API documentation](https://docs.rs/nearest) for full reference, and
-the [`examples/`](nearest/examples/) directory for complete runnable programs:
-
-- **[`expr.rs`](nearest/examples/expr.rs)** — Expression tree evaluator with recursive `Near<Expr>`
-- **[`json.rs`](nearest/examples/json.rs)** — JSON document model with heterogeneous enums
-- **[`ecs.rs`](nearest/examples/ecs.rs)** — Entity-component system with physics, filtering, spawning
-- **[`fsm.rs`](nearest/examples/fsm.rs)** — Finite state machine on a stack-only `FixedBuf`
-- **[`fs.rs`](nearest/examples/fs.rs)** — Virtual file system with region composition and grafting
+Examples: [`expr.rs`](nearest/examples/expr.rs) simplifies an expression tree by rewriting it
+in place; [`ir.rs`](nearest/examples/ir.rs) runs constant folding and dead-code elimination on
+a small IR.
 
 ## License
 

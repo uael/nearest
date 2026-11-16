@@ -1,3656 +1,987 @@
-#![feature(offset_of_enum)]
+#![feature(pin_ergonomics)]
+#![expect(incomplete_features, reason = "pin_ergonomics")]
 
-use nearest::{
-  Flat, Near, NearList, Ref, Region, ValidateError, array, empty, list, maybe, near, none,
+use std::{
+  collections::hash_map::DefaultHasher,
+  hash::{Hash, Hasher},
+  panic::{AssertUnwindSafe, catch_unwind},
+  pin::Pin,
 };
 
-// --- IR type definitions using derive(Flat) ---
+use nearest::{Emit, Flat, Near, Region, flat};
 
-#[derive(Flat, Copy, Clone, Debug, PartialEq, Eq)]
-struct Type(u8);
-
-#[derive(Flat, Copy, Clone, Debug, PartialEq, Eq)]
-struct Symbol(u32);
-
-#[derive(Flat, Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(C, u8)]
-enum Value {
-  Const(u32),
-  Type(Type),
-}
-
-#[derive(Flat, Debug)]
-struct Inst {
-  op: u16,
-  typ: Type,
-  args: NearList<Value>,
-}
-
-#[derive(Flat, Debug)]
-struct Jmp {
-  args: NearList<Value>,
-  target: Near<Block>,
-}
-
-// Use repr(C, u8) so we can compute variant field offsets portably.
-#[derive(Flat, Debug)]
-#[repr(C, u8)]
-#[expect(dead_code, reason = "variants constructed via raw byte emission, not Rust constructors")]
-enum Term {
-  Ret { values: NearList<Value> },
-  Jmp(Jmp),
-}
-
-#[derive(Flat, Debug)]
-struct Block {
-  name: Symbol,
-  params: NearList<(Symbol, Type)>,
-  insts: NearList<Inst>,
-  term: Term,
-}
-
-#[derive(Flat, Debug)]
+#[flat]
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct Func {
-  name: Symbol,
+  name: Near<str>,
   entry: Near<Block>,
+  flag: bool,
 }
 
-// Generic struct — the derive must thread CT through the builder with PhantomData.
-#[derive(Flat, Debug)]
-struct Signature<CT: Flat> {
-  params: NearList<Type>,
-  returns: NearList<Type>,
-  custom: NearList<CT>,
-}
-
-// Generic enum — variant emitters must also carry outer generics.
-#[derive(Flat, Debug)]
-#[repr(C, u8)]
-#[expect(dead_code, reason = "variants constructed via emitters")]
-enum Wrapper<CT: Flat> {
-  Empty,
-  WithSig { sig: Near<Signature<CT>> },
-  Pair(CT, u32),
-}
-
-// Struct with a primitive array field.
-#[derive(Flat, Debug)]
-struct PrimArray {
-  tag: u32,
-  values: [u32; 3],
-}
-
-// Struct with an array of Near<T> fields (requires array() helper).
-#[derive(Flat, Debug)]
-struct Brif {
-  cond: u32,
-  targets: [Near<Block>; 2],
-}
-
-// ===========================================================================
-// Builder API tests — zero Pos, zero unsafe, zero Emitter in user code
-// ===========================================================================
-
-/// Build a simple function with two blocks: entry jumps to exit, exit returns.
-fn build_simple_func(name: u32) -> Region<Func> {
-  Region::new(Func::make(
-    Symbol(name),
-    near(Block::make(
-      Symbol(0),
-      empty(),
-      list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
-      Term::make_jmp(Jmp::make(
-        list([Value::Const(1)]),
-        near(Block::make(
-          Symbol(0),
-          empty(),
-          list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
-          Term::make_ret(list([Value::Const(42)])),
-        )),
-      )),
-    )),
-  ))
-}
-
-#[test]
-fn emit_build_and_traverse() {
-  let region = build_simple_func(1);
-  let func: &Func = &region;
-  assert_eq!(func.name, Symbol(1));
-
-  let block = func.entry.get();
-  assert_eq!(block.name, Symbol(0));
-  assert!(block.params.is_empty());
-  assert_eq!(block.insts.len(), 1);
-
-  let inst = &block.insts[0];
-  assert_eq!(inst.op, 1);
-  assert_eq!(inst.typ, Type(0));
-  assert_eq!(inst.args.len(), 1);
-  assert_eq!(inst.args[0], Value::Const(42));
-
-  match &block.term {
-    Term::Jmp(jmp) => {
-      assert_eq!(jmp.args.len(), 1);
-      assert_eq!(jmp.args[0], Value::Const(1));
-      let exit = jmp.target.get();
-      match &exit.term {
-        Term::Ret { values } => {
-          assert_eq!(values.len(), 1);
-          assert_eq!(values[0], Value::Const(42));
-        }
-        Term::Jmp(_) => panic!("expected Ret in exit block"),
-      }
-    }
-    Term::Ret { .. } => panic!("expected Jmp, got Ret"),
-  }
-}
-
-#[test]
-fn emit_multi_block() {
-  // Multi-block function built entirely with the emitter API.
-  // Entry block jumps to exit block; exit block returns.
-  let region: Region<Func> = Region::new(Func::make(
-    Symbol(10),
-    near(Block::make(
-      Symbol(0),
-      empty(),
-      empty(),
-      Term::make_jmp(Jmp::make(
-        empty(),
-        near(Block::make(Symbol(1), empty(), empty(), Term::make_ret(list([Value::Const(99)])))),
-      )),
-    )),
-  ));
-
-  let func: &Func = &region;
-  assert_eq!(func.name, Symbol(10));
-
-  let entry = func.entry.get();
-  assert_eq!(entry.name, Symbol(0));
-  assert!(entry.insts.is_empty());
-
-  match &entry.term {
-    Term::Jmp(jmp) => {
-      let exit = jmp.target.get();
-      assert_eq!(exit.name, Symbol(1));
-      assert!(jmp.args.is_empty());
-
-      match &exit.term {
-        Term::Ret { values } => {
-          assert_eq!(values.len(), 1);
-          assert_eq!(values[0], Value::Const(99));
-        }
-        Term::Jmp(_) => panic!("exit block should have Ret"),
-      }
-    }
-    Term::Ret { .. } => panic!("entry block should have Jmp"),
-  }
-}
-
-#[test]
-fn clone_preserves_offsets() {
-  let region = build_simple_func(2);
-  let cloned = region.clone();
-
-  let func1: &Func = &region;
-  let func2: &Func = &cloned;
-
-  assert_eq!(func1.name, func2.name);
-
-  let block1 = func1.entry.get();
-  let block2 = func2.entry.get();
-  assert_eq!(block1.name, block2.name);
-  assert_eq!(block1.insts.len(), block2.insts.len());
-  assert_eq!(block1.insts[0].op, block2.insts[0].op);
-  assert_eq!(block1.insts[0].args[0], block2.insts[0].args[0]);
-
-  drop(cloned);
-  assert_eq!(func1.name, Symbol(2));
-}
-
-#[test]
-fn near_list_iteration() {
-  let region = build_simple_func(4);
-  let func: &Func = &region;
-  let block = func.entry.get();
-
-  let args: Vec<&Value> = block.insts[0].args.iter().collect();
-  assert_eq!(args.len(), 1);
-  assert_eq!(*args[0], Value::Const(42));
-
-  let mut count = 0;
-  for val in &block.insts[0].args {
-    assert_eq!(*val, Value::Const(42));
-    count += 1;
-  }
-  assert_eq!(count, 1);
-
-  assert_eq!(block.insts[0].args.len(), 1);
-  assert_eq!(block.insts[0].args[0], Value::Const(42));
-}
-
-#[test]
-fn region_debug() {
-  let region = build_simple_func(42);
-  let debug_str = format!("{region:?}");
-  assert!(debug_str.contains("Region"));
-}
-
-#[test]
-fn empty_slices() {
-  let region: Region<Func> = Region::new(Func::make(
-    Symbol(99),
-    near(Block::make(Symbol(0), empty(), empty(), Term::make_ret(empty()))),
-  ));
-
-  let func: &Func = &region;
-  let block = func.entry.get();
-  assert!(block.params.is_empty());
-  assert!(block.insts.is_empty());
-
-  match &block.term {
-    Term::Ret { values } => assert!(values.is_empty()),
-    Term::Jmp(_) => panic!("expected Ret"),
-  }
-}
-
-#[test]
-fn multiple_instructions() {
-  let region: Region<Func> = Region::new(Func::make(
-    Symbol(5),
-    near(Block::make(
-      Symbol(0),
-      list([(Symbol(1), Type(0)), (Symbol(2), Type(1))]),
-      list([
-        Inst::make(1, Type(0), list([Value::Const(10), Value::Const(11)])),
-        Inst::make(2, Type(1), list([Value::Const(20), Value::Type(Type(0))])),
-        Inst::make(3, Type(0), list([Value::Const(30), Value::Const(31)])),
-      ]),
-      Term::make_ret(list([Value::Const(10), Value::Const(20)])),
-    )),
-  ));
-
-  let func: &Func = &region;
-  assert_eq!(func.name, Symbol(5));
-
-  let block = func.entry.get();
-  assert_eq!(block.params.len(), 2);
-  assert_eq!(block.params[0], (Symbol(1), Type(0)));
-  assert_eq!(block.params[1], (Symbol(2), Type(1)));
-
-  assert_eq!(block.insts.len(), 3);
-  assert_eq!(block.insts[0].op, 1);
-  assert_eq!(block.insts[0].args.len(), 2);
-  assert_eq!(block.insts[0].args[0], Value::Const(10));
-  assert_eq!(block.insts[1].op, 2);
-  assert_eq!(block.insts[1].args.len(), 2);
-  assert_eq!(block.insts[1].args[1], Value::Type(Type(0)));
-  assert_eq!(block.insts[2].op, 3);
-  assert_eq!(block.insts[2].args.len(), 2);
-}
-
-// ===========================================================================
-// Session API tests — navigate with immutable closures, mutate via Ref
-// ===========================================================================
-
-#[test]
-fn session_roundtrip() {
-  let mut region = build_simple_func(7);
-  region.session(|_s| {
-    // Just open and drop — no mutation.
-  });
-
-  let func: &Func = &region;
-  assert_eq!(func.name, Symbol(7));
-  let block = func.entry.get();
-  assert_eq!(block.insts[0].op, 1);
-  assert_eq!(block.insts[0].args[0], Value::Const(42));
-}
-
-// ===========================================================================
-// Splice API tests — structural mutations: redirect Near/NearList
-// ===========================================================================
-
-#[test]
-fn session_splice_near_replaces_jmp_target() {
-  // Build: entry → jmp([Const(1)]) → exit(ret [Const(42)])
-  let mut region = build_simple_func(1);
-
-  // Replace the exit block with a completely new block.
-  region.session(|s| {
-    let jmp_target = s.nav(s.root(), |f| match &f.entry.term {
-      Term::Jmp(jmp) => &jmp.target,
-      Term::Ret { .. } => panic!("expected Jmp"),
-    });
-    s.splice(
-      jmp_target,
-      Block::make(
-        Symbol(99),
-        empty(),
-        list([Inst::make(7, Type(1), list([Value::Const(77)]))]),
-        Term::make_ret(list([Value::Const(99)])),
-      ),
-    );
-  });
-
-  let func: &Func = &region;
-  assert_eq!(func.name, Symbol(1)); // root unchanged
-
-  let entry = func.entry.get();
-  match &entry.term {
-    Term::Jmp(jmp) => {
-      // jmp args unchanged
-      assert_eq!(jmp.args.len(), 1);
-      assert_eq!(jmp.args[0], Value::Const(1));
-
-      let exit = jmp.target.get();
-      assert_eq!(exit.name, Symbol(99));
-      assert_eq!(exit.insts.len(), 1);
-      assert_eq!(exit.insts[0].op, 7);
-      assert_eq!(exit.insts[0].typ, Type(1));
-      assert_eq!(exit.insts[0].args[0], Value::Const(77));
-      match &exit.term {
-        Term::Ret { values } => {
-          assert_eq!(values.len(), 1);
-          assert_eq!(values[0], Value::Const(99));
-        }
-        Term::Jmp(_) => panic!("expected Ret in new exit block"),
-      }
-    }
-    Term::Ret { .. } => panic!("expected Jmp"),
-  }
-}
-
-#[test]
-fn session_splice_list_replaces_insts() {
-  // Build a function with 1 instruction.
-  let mut region: Region<Func> = Region::new(Func::make(
-    Symbol(1),
-    near(Block::make(
-      Symbol(0),
-      empty(),
-      list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
-      Term::make_ret(list([Value::Const(42)])),
-    )),
-  ));
-
-  // Replace with 3 instructions (growing the buffer).
-  region.session(|s| {
-    let insts = s.nav(s.root(), |f| &f.entry.insts);
-    s.splice_list(
-      insts,
-      [
-        Inst::make(10, Type(0), list(vec![Value::Const(1)])),
-        Inst::make(20, Type(1), list(vec![Value::Const(2), Value::Const(3)])),
-        Inst::make(30, Type(0), list(vec![])),
-      ],
-    );
-  });
-
-  let func: &Func = &region;
-  let block = func.entry.get();
-
-  assert_eq!(block.insts.len(), 3);
-
-  assert_eq!(block.insts[0].op, 10);
-  assert_eq!(block.insts[0].args.len(), 1);
-  assert_eq!(block.insts[0].args[0], Value::Const(1));
-
-  assert_eq!(block.insts[1].op, 20);
-  assert_eq!(block.insts[1].args.len(), 2);
-  assert_eq!(block.insts[1].args[0], Value::Const(2));
-  assert_eq!(block.insts[1].args[1], Value::Const(3));
-
-  assert_eq!(block.insts[2].op, 30);
-  assert!(block.insts[2].args.is_empty());
-
-  // Term unchanged.
-  match &block.term {
-    Term::Ret { values } => {
-      assert_eq!(values.len(), 1);
-      assert_eq!(values[0], Value::Const(42));
-    }
-    Term::Jmp(_) => panic!("expected Ret"),
-  }
-}
-
-#[test]
-fn session_splice_list_to_empty() {
-  let mut region = build_simple_func(1);
-
-  // Replace entry block instructions with an empty slice.
-  region.session(|s| {
-    let insts = s.nav(s.root(), |f| &f.entry.insts);
-    s.splice_list(insts, core::iter::empty::<Inst>());
-  });
-
-  let func: &Func = &region;
-  assert!(func.entry.get().insts.is_empty());
-}
-
-#[test]
-fn session_splice_list_params() {
-  // Build a block with 2 params, then replace them with 3.
-  let mut region: Region<Func> = Region::new(Func::make(
-    Symbol(1),
-    near(Block::make(
-      Symbol(0),
-      list([(Symbol(1), Type(0)), (Symbol(2), Type(1))]),
-      empty(),
-      Term::make_ret(empty()),
-    )),
-  ));
-
-  region.session(|s| {
-    let params = s.nav(s.root(), |f| &f.entry.params);
-    s.splice_list(params, [(Symbol(10), Type(0)), (Symbol(11), Type(1)), (Symbol(12), Type(2))]);
-  });
-
-  let func: &Func = &region;
-  let block = func.entry.get();
-  assert_eq!(block.params.len(), 3);
-  assert_eq!(block.params[0], (Symbol(10), Type(0)));
-  assert_eq!(block.params[1], (Symbol(11), Type(1)));
-  assert_eq!(block.params[2], (Symbol(12), Type(2)));
-}
-
-#[test]
-fn session_inline_callee_block() {
-  // Simulate function inlining: replace a jmp target with a new block
-  // that contains the "callee's" instructions.
-
-  // Caller: entry(empty) → jmp → exit(ret 0)
-  let mut region: Region<Func> = Region::new(Func::make(
-    Symbol(1),
-    near(Block::make(
-      Symbol(0),
-      empty(),
-      empty(),
-      Term::make_jmp(Jmp::make(
-        empty(),
-        near(Block::make(Symbol(1), empty(), empty(), Term::make_ret(list([Value::Const(0)])))),
-      )),
-    )),
-  ));
-
-  // "Inline" the callee: replace exit block with callee's body.
-  region.session(|s| {
-    let jmp_target = s.nav(s.root(), |f| match &f.entry.term {
-      Term::Jmp(jmp) => &jmp.target,
-      Term::Ret { .. } => panic!("expected Jmp"),
-    });
-    s.splice(
-      jmp_target,
-      Block::make(
-        Symbol(100),
-        list([(Symbol(10), Type(0))]),
-        list([
-          Inst::make(1, Type(0), list(vec![Value::Const(10)])),
-          Inst::make(2, Type(0), list(vec![Value::Const(20), Value::Type(Type(1))])),
-        ]),
-        Term::make_ret(list([Value::Const(42)])),
-      ),
-    );
-  });
-
-  let func: &Func = &region;
-  assert_eq!(func.name, Symbol(1));
-
-  let entry = func.entry.get();
-  assert_eq!(entry.name, Symbol(0));
-  assert!(entry.insts.is_empty());
-
-  match &entry.term {
-    Term::Jmp(jmp) => {
-      let inlined = jmp.target.get();
-      assert_eq!(inlined.name, Symbol(100));
-      assert_eq!(inlined.params.len(), 1);
-      assert_eq!(inlined.params[0], (Symbol(10), Type(0)));
-      assert_eq!(inlined.insts.len(), 2);
-      assert_eq!(inlined.insts[0].op, 1);
-      assert_eq!(inlined.insts[0].args[0], Value::Const(10));
-      assert_eq!(inlined.insts[1].op, 2);
-      assert_eq!(inlined.insts[1].args.len(), 2);
-      assert_eq!(inlined.insts[1].args[0], Value::Const(20));
-      assert_eq!(inlined.insts[1].args[1], Value::Type(Type(1)));
-      match &inlined.term {
-        Term::Ret { values } => {
-          assert_eq!(values.len(), 1);
-          assert_eq!(values[0], Value::Const(42));
-        }
-        Term::Jmp(_) => panic!("expected Ret in inlined block"),
-      }
-    }
-    Term::Ret { .. } => panic!("expected Jmp"),
-  }
-}
-
-#[test]
-fn session_splice_then_set() {
-  // Splice a new block, then use set to modify a scalar within it.
-  let mut region = build_simple_func(1);
-
-  // Replace exit block.
-  region.session(|s| {
-    let jmp_target = s.nav(s.root(), |f| match &f.entry.term {
-      Term::Jmp(jmp) => &jmp.target,
-      Term::Ret { .. } => panic!("expected Jmp"),
-    });
-    s.splice(
-      jmp_target,
-      Block::make(Symbol(50), empty(), empty(), Term::make_ret(list([Value::Const(0)]))),
-    );
-  });
-
-  // Now modify a scalar in the spliced block.
-  region.session(|s| {
-    let name = s.nav(s.root(), |f| match &f.entry.term {
-      Term::Jmp(jmp) => &jmp.target.name,
-      Term::Ret { .. } => panic!("expected Jmp"),
-    });
-    s.set(name, Symbol(77));
-  });
-
-  let func: &Func = &region;
-  match &func.entry.get().term {
-    Term::Jmp(jmp) => {
-      assert_eq!(jmp.target.get().name, Symbol(77));
-      match &jmp.target.get().term {
-        Term::Ret { values } => {
-          assert_eq!(values.len(), 1);
-          assert_eq!(values[0], Value::Const(0));
-        }
-        Term::Jmp(_) => panic!("expected Ret"),
-      }
-    }
-    Term::Ret { .. } => panic!("expected Jmp"),
-  }
-}
-
-// ===========================================================================
-// Cursor chain tests — session::Cursor
-// ===========================================================================
-
-#[test]
-fn cursor_chain_set() {
-  let mut region = build_simple_func(1);
-  region.session(|s| {
-    s.cursor().at(|f| &f.name).set(Symbol(42));
-  });
-  let func: &Func = &region;
-  assert_eq!(func.name, Symbol(42));
-}
-
-#[test]
-fn cursor_chain_splice() {
-  let mut region = build_simple_func(1);
-  region.session(|s| {
-    s.cursor()
-      .at(|f| &f.entry)
-      .follow()
-      .at(|b| match &b.term {
-        Term::Jmp(jmp) => &jmp.target,
-        Term::Ret { .. } => panic!("expected Jmp"),
-      })
-      .splice(Block::make(Symbol(99), empty(), empty(), Term::make_ret(list([Value::Const(99)]))));
-  });
-
-  let func: &Func = &region;
-  let entry = func.entry.get();
-  match &entry.term {
-    Term::Jmp(jmp) => {
-      assert_eq!(jmp.target.get().name, Symbol(99));
-    }
-    Term::Ret { .. } => panic!("expected Jmp"),
-  }
-}
-
-// ===========================================================================
-// Generic type tests — derive(Flat) with type parameters
-// ===========================================================================
-
-#[test]
-fn generic_struct_empty_custom() {
-  // Signature<u8> with an empty custom slice.
-  let region: Region<Signature<u8>> =
-    Region::new(Signature::<u8>::make(list([Type(1), Type(2)]), list([Type(3)]), empty()));
-  let sig: &Signature<u8> = &region;
-  assert_eq!(sig.params.len(), 2);
-  assert_eq!(sig.params[0], Type(1));
-  assert_eq!(sig.params[1], Type(2));
-  assert_eq!(sig.returns.len(), 1);
-  assert_eq!(sig.returns[0], Type(3));
-  assert!(sig.custom.is_empty());
-}
-
-#[test]
-fn generic_struct_concrete_param() {
-  // Signature<u32> — custom slice holds u32 values.
-  let region: Region<Signature<u32>> =
-    Region::new(Signature::<u32>::make(list([Type(0)]), empty(), list([10u32, 20, 30])));
-  let sig: &Signature<u32> = &region;
-  assert_eq!(sig.params.len(), 1);
-  assert_eq!(sig.params[0], Type(0));
-  assert!(sig.returns.is_empty());
-  assert_eq!(sig.custom.len(), 3);
-  assert_eq!(sig.custom[0], 10);
-  assert_eq!(sig.custom[1], 20);
-  assert_eq!(sig.custom[2], 30);
-}
-
-#[test]
-fn generic_enum_unit_variant() {
-  let region: Region<Wrapper<u8>> = Region::new(Wrapper::<u8>::make_empty());
-  let w: &Wrapper<u8> = &region;
-  assert!(matches!(w, Wrapper::Empty));
-}
-
-#[test]
-fn generic_enum_named_variant() {
-  let region: Region<Wrapper<u8>> = Region::new(Wrapper::<u8>::make_with_sig(near(
-    Signature::<u8>::make(list([Type(1)]), list([Type(2)]), empty()),
-  )));
-  let w: &Wrapper<u8> = &region;
-  match w {
-    Wrapper::WithSig { sig } => {
-      let s = sig.get();
-      assert_eq!(s.params.len(), 1);
-      assert_eq!(s.params[0], Type(1));
-      assert_eq!(s.returns.len(), 1);
-      assert_eq!(s.returns[0], Type(2));
-    }
-    _ => panic!("expected WithSig"),
-  }
-}
-
-#[test]
-fn generic_enum_unnamed_variant() {
-  let region: Region<Wrapper<u32>> = Region::new(Wrapper::<u32>::make_pair(42u32, 7));
-  let w: &Wrapper<u32> = &region;
-  match w {
-    Wrapper::Pair(a, b) => {
-      assert_eq!(*a, 42);
-      assert_eq!(*b, 7);
-    }
-    _ => panic!("expected Pair"),
-  }
-}
-
-#[test]
-fn generic_struct_clone() {
-  let region: Region<Signature<u32>> =
-    Region::new(Signature::<u32>::make(list([Type(5)]), list([Type(6), Type(7)]), list([100u32])));
-  let cloned = region.clone();
-  let s1: &Signature<u32> = &region;
-  let s2: &Signature<u32> = &cloned;
-  assert_eq!(s1.params[0], s2.params[0]);
-  assert_eq!(s1.returns.len(), s2.returns.len());
-  assert_eq!(s1.custom[0], s2.custom[0]);
-}
-
-// ===========================================================================
-// Trim tests — compact regions after splice mutations
-// ===========================================================================
-
-#[test]
-fn trim_after_splice_shrinks_region() {
-  // Build a function, splice in a new exit block (leaving old data as dead bytes),
-  // then trim.
-  let mut region = build_simple_func(1);
-  let before = region.byte_len();
-
-  region.session(|s| {
-    let jmp_target = s.nav(s.root(), |f| match &f.entry.term {
-      Term::Jmp(jmp) => &jmp.target,
-      Term::Ret { .. } => panic!("expected Jmp"),
-    });
-    s.splice(
-      jmp_target,
-      Block::make(Symbol(50), empty(), empty(), Term::make_ret(list([Value::Const(0)]))),
-    );
-  });
-
-  let after_splice = region.byte_len();
-
-  // Splice appended data → region grew.
-  assert!(after_splice > before, "splice should grow the buffer");
-
-  region.trim();
-  let after_trim = region.byte_len();
-
-  // Trim removed dead bytes → region shrunk (at most as large as a fresh build).
-  assert!(after_trim < after_splice, "trim should shrink: {after_trim} < {after_splice}");
-
-  // Verify the data is still correct.
-  let func: &Func = &region;
-  assert_eq!(func.name, Symbol(1));
-  let entry = func.entry.get();
-  assert_eq!(entry.insts.len(), 1);
-  assert_eq!(entry.insts[0].op, 1);
-  match &entry.term {
-    Term::Jmp(jmp) => {
-      assert_eq!(jmp.target.get().name, Symbol(50));
-      match &jmp.target.get().term {
-        Term::Ret { values } => {
-          assert_eq!(values.len(), 1);
-          assert_eq!(values[0], Value::Const(0));
-        }
-        Term::Jmp(_) => panic!("expected Ret"),
-      }
-    }
-    Term::Ret { .. } => panic!("expected Jmp"),
-  }
-}
-
-#[test]
-fn trim_preserves_fresh_region() {
-  // A freshly built region has no dead data — trim should preserve all content.
-  let mut region = build_simple_func(42);
-  let before = region.byte_len();
-
-  region.trim();
-
-  // Size is the same (fresh build already minimal).
-  assert_eq!(region.byte_len(), before);
-
-  // All data intact.
-  let func: &Func = &region;
-  assert_eq!(func.name, Symbol(42));
-  let block = func.entry.get();
-  assert_eq!(block.insts.len(), 1);
-  assert_eq!(block.insts[0].args[0], Value::Const(42));
-  match &block.term {
-    Term::Jmp(jmp) => {
-      let exit = jmp.target.get();
-      match &exit.term {
-        Term::Ret { values } => assert_eq!(values[0], Value::Const(42)),
-        Term::Jmp(_) => panic!("expected Ret"),
-      }
-    }
-    Term::Ret { .. } => panic!("expected Jmp"),
-  }
-}
-
-#[test]
-fn trim_after_splice_list() {
-  // Replace instructions with a different set, then trim.
-  let mut region: Region<Func> = Region::new(Func::make(
-    Symbol(1),
-    near(Block::make(
-      Symbol(0),
-      empty(),
-      list([
-        Inst::make(1, Type(0), list(vec![Value::Const(10), Value::Const(11)])),
-        Inst::make(2, Type(1), list(vec![Value::Const(20)])),
-      ]),
-      Term::make_ret(list([Value::Const(42)])),
-    )),
-  ));
-
-  region.session(|s| {
-    let insts = s.nav(s.root(), |f| &f.entry.insts);
-    s.splice_list(insts, [Inst::make(9, Type(0), list(vec![Value::Const(99)]))]);
-  });
-
-  region.trim();
-
-  let func: &Func = &region;
-  let block = func.entry.get();
-  assert_eq!(block.insts.len(), 1);
-  assert_eq!(block.insts[0].op, 9);
-  assert_eq!(block.insts[0].args[0], Value::Const(99));
-  match &block.term {
-    Term::Ret { values } => {
-      assert_eq!(values.len(), 1);
-      assert_eq!(values[0], Value::Const(42));
-    }
-    Term::Jmp(_) => panic!("expected Ret"),
-  }
-}
-
-#[test]
-fn trim_generic_type() {
-  // Trim on a generic type (Signature<u32>).
-  let mut region: Region<Signature<u32>> = Region::new(Signature::<u32>::make(
-    list([Type(1), Type(2)]),
-    list([Type(3)]),
-    list([100u32, 200]),
-  ));
-  let before = region.byte_len();
-  region.trim();
-  assert_eq!(region.byte_len(), before);
-
-  let sig: &Signature<u32> = &region;
-  assert_eq!(sig.params.len(), 2);
-  assert_eq!(sig.params[0], Type(1));
-  assert_eq!(sig.returns[0], Type(3));
-  assert_eq!(sig.custom[0], 100);
-  assert_eq!(sig.custom[1], 200);
-}
-
-// ===========================================================================
-// NearList tests
-// ===========================================================================
-
-/// A struct with a `NearList` field for testing.
-#[derive(Flat, Debug)]
-struct ListBlock {
-  name: Symbol,
-  items: NearList<Value>,
-}
-
-/// A struct using `NearList` for nested data (instructions with pointer fields).
-#[derive(Flat, Debug)]
-struct ListFunc {
-  name: Symbol,
-  insts: NearList<Inst>,
-}
-
-#[test]
-fn near_list_empty() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-  let block: &ListBlock = &region;
-  assert_eq!(block.name, Symbol(1));
-  assert!(block.items.is_empty());
-  assert_eq!(block.items.len(), 0);
-  assert!(block.items.first().is_none());
-  assert_eq!(block.items.iter().count(), 0);
-}
-
-#[test]
-fn near_list_single_element() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(2), list([Value::Const(42)])));
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 1);
-  assert_eq!(*block.items.first().unwrap(), Value::Const(42));
-
-  let collected: Vec<&Value> = block.items.iter().collect();
-  assert_eq!(collected.len(), 1);
-  assert_eq!(*collected[0], Value::Const(42));
-}
-
-#[test]
-fn near_list_multiple_elements() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(3),
-    list([Value::Const(10), Value::Type(Type(1)), Value::Const(30)]),
-  ));
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 3);
-
-  let vals: Vec<&Value> = block.items.iter().collect();
-  assert_eq!(*vals[0], Value::Const(10));
-  assert_eq!(*vals[1], Value::Type(Type(1)));
-  assert_eq!(*vals[2], Value::Const(30));
-}
-
-#[test]
-fn near_list_into_iter() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(4), list([Value::Const(1), Value::Const(2)])));
-  let block: &ListBlock = &region;
-
-  let mut count = 0;
-  for val in &block.items {
-    assert!(matches!(val, Value::Const(1 | 2)));
-    count += 1;
-  }
-  assert_eq!(count, 2);
-}
-
-#[test]
-fn near_list_with_pointer_fields() {
-  // NearList<Inst> where Inst contains NearList<Value> (nested linked lists)
-  let region: Region<ListFunc> = Region::new(ListFunc::make(
-    Symbol(5),
-    list([
-      Inst::make(1, Type(0), list([Value::Const(10), Value::Const(11)].as_slice())),
-      Inst::make(2, Type(1), list([Value::Const(20)].as_slice())),
-      Inst::make(3, Type(0), list([].as_slice())),
-    ]),
-  ));
-  let func: &ListFunc = &region;
-  assert_eq!(func.name, Symbol(5));
-  assert_eq!(func.insts.len(), 3);
-
-  let insts: Vec<&Inst> = func.insts.iter().collect();
-  assert_eq!(insts[0].op, 1);
-  assert_eq!(insts[0].args.len(), 2);
-  assert_eq!(insts[0].args[0], Value::Const(10));
-  assert_eq!(insts[0].args[1], Value::Const(11));
-
-  assert_eq!(insts[1].op, 2);
-  assert_eq!(insts[1].args.len(), 1);
-  assert_eq!(insts[1].args[0], Value::Const(20));
-
-  assert_eq!(insts[2].op, 3);
-  assert!(insts[2].args.is_empty());
-}
-
-#[test]
-fn near_list_clone_preserves() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(6),
-    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
-  ));
-  let cloned = region.clone();
-
-  let b1: &ListBlock = &region;
-  let b2: &ListBlock = &cloned;
-
-  assert_eq!(b1.name, b2.name);
-  assert_eq!(b1.items.len(), b2.items.len());
-
-  let v1: Vec<&Value> = b1.items.iter().collect();
-  let v2: Vec<&Value> = b2.items.iter().collect();
-  for (a, b) in v1.iter().zip(v2.iter()) {
-    assert_eq!(**a, **b);
-  }
-}
-
-#[test]
-fn near_list_debug() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(7), list([Value::Const(42)])));
-  let debug_str = format!("{:?}", &*region);
-  assert!(debug_str.contains("ListBlock"));
-}
-
-#[test]
-fn near_list_splice_list() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.splice_list(items, [Value::Const(10), Value::Const(20), Value::Const(30)]);
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 3);
-
-  let vals: Vec<&Value> = block.items.iter().collect();
-  assert_eq!(*vals[0], Value::Const(10));
-  assert_eq!(*vals[1], Value::Const(20));
-  assert_eq!(*vals[2], Value::Const(30));
-}
-
-#[test]
-fn near_list_splice_list_to_empty() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1), Value::Const(2)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.splice_list(items, core::iter::empty::<Value>());
-  });
-
-  let block: &ListBlock = &region;
-  assert!(block.items.is_empty());
-}
-
-#[test]
-fn near_list_push_front() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.push_front(items, Value::Const(1));
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 3);
-
-  let vals: Vec<&Value> = block.items.iter().collect();
-  assert_eq!(*vals[0], Value::Const(1));
-  assert_eq!(*vals[1], Value::Const(2));
-  assert_eq!(*vals[2], Value::Const(3));
-}
-
-#[test]
-fn near_list_push_front_empty() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.push_front(items, Value::Const(42));
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 1);
-  assert_eq!(*block.items.first().unwrap(), Value::Const(42));
-}
-
-#[test]
-fn near_list_trim() {
-  // Build, splice, then trim — verify deep-copy works for NearList.
-  let mut region: Region<ListFunc> = Region::new(ListFunc::make(
-    Symbol(1),
-    list([
-      Inst::make(1, Type(0), list([Value::Const(10)].as_slice())),
-      Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)].as_slice())),
-    ]),
-  ));
-  let before = region.byte_len();
-
-  // Splice to replace with smaller list
-  region.session(|s| {
-    let insts = s.nav(s.root(), |f| &f.insts);
-    s.splice_list(insts, [Inst::make(9, Type(0), list([Value::Const(99)]))]);
-  });
-
-  let after_splice = region.byte_len();
-  assert!(after_splice >= before, "splice should not shrink");
-
-  region.trim();
-  let after_trim = region.byte_len();
-  assert!(after_trim <= after_splice, "trim should not grow");
-
-  // Verify data integrity after trim.
-  let func: &ListFunc = &region;
-  assert_eq!(func.name, Symbol(1));
-  assert_eq!(func.insts.len(), 1);
-  let insts: Vec<&Inst> = func.insts.iter().collect();
-  assert_eq!(insts[0].op, 9);
-  assert_eq!(insts[0].args.len(), 1);
-  assert_eq!(insts[0].args[0], Value::Const(99));
-}
-
-#[test]
-fn near_list_trim_preserves_fresh() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
-  ));
-  let before = region.byte_len();
-
-  region.trim();
-  assert_eq!(region.byte_len(), before);
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 3);
-  let vals: Vec<&Value> = block.items.iter().collect();
-  assert_eq!(*vals[0], Value::Const(1));
-  assert_eq!(*vals[1], Value::Const(2));
-  assert_eq!(*vals[2], Value::Const(3));
-}
-
-#[test]
-fn near_list_exact_size_iterator() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
-  ));
-  let block: &ListBlock = &region;
-  let iter = block.items.iter();
-  assert_eq!(iter.len(), 3);
-}
-
-#[test]
-fn near_list_fused_iterator() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1), Value::Const(2)])));
-  let block: &ListBlock = &region;
-  let mut iter = block.items.iter();
-
-  // Exhaust the iterator.
-  assert!(iter.next().is_some());
-  assert!(iter.next().is_some());
-  assert!(iter.next().is_none());
-
-  // FusedIterator guarantee: keeps returning None.
-  assert!(iter.next().is_none());
-  assert!(iter.next().is_none());
-}
-
-#[test]
-fn near_list_fused_iterator_empty() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-  let block: &ListBlock = &region;
-  let mut iter = block.items.iter();
-
-  // Empty list: returns None immediately and repeatedly.
-  assert!(iter.next().is_none());
-  assert!(iter.next().is_none());
-}
-
-#[test]
-fn near_list_last_single_segment() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
-  ));
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.last(), Some(&Value::Const(30)));
-}
-
-#[test]
-fn near_list_last_empty() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.last(), None);
-}
-
-#[test]
-fn near_list_last_single_element() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list([Value::Const(42)])));
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.last(), Some(&Value::Const(42)));
-  // first and last should be the same for a single-element list.
-  assert_eq!(block.items.first(), block.items.last());
-}
-
-#[test]
-fn near_list_last_multi_segment() {
-  // push_front creates a second segment, so last() must walk segments.
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.push_front(items, Value::Const(1));
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.segment_count(), 2);
-  // Last element should still be 3 (from the original segment).
-  assert_eq!(block.items.last(), Some(&Value::Const(3)));
-}
-
-#[test]
-fn near_list_last_multi_segment_after_trim() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.push_front(items, Value::Const(1));
-  });
-
-  region.trim();
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.segment_count(), 1);
-  assert_eq!(block.items.last(), Some(&Value::Const(3)));
-}
-
-#[test]
-fn near_list_fused_iterator_multi_segment() {
-  // FusedIterator should hold across segment boundaries.
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.push_front(items, Value::Const(1));
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.segment_count(), 2);
-
-  let mut iter = block.items.iter();
-  assert_eq!(iter.len(), 3);
-  assert_eq!(iter.next(), Some(&Value::Const(1)));
-  assert_eq!(iter.next(), Some(&Value::Const(2)));
-  assert_eq!(iter.next(), Some(&Value::Const(3)));
-  assert!(iter.next().is_none());
-  // Fused: stays None.
-  assert!(iter.next().is_none());
-}
-
-// ===========================================================================
-// extend_list tests
-// ===========================================================================
-
-#[test]
-fn extend_list_appends_to_existing() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1), Value::Const(2)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.extend_list(items, [Value::Const(3), Value::Const(4)]);
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 4);
-  assert_eq!(block.items[0], Value::Const(1));
-  assert_eq!(block.items[1], Value::Const(2));
-  assert_eq!(block.items[2], Value::Const(3));
-  assert_eq!(block.items[3], Value::Const(4));
-}
-
-#[test]
-fn extend_list_on_empty() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.extend_list(items, [Value::Const(10), Value::Const(20)]);
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 2);
-  assert_eq!(block.items[0], Value::Const(10));
-  assert_eq!(block.items[1], Value::Const(20));
-}
-
-#[test]
-fn extend_list_with_empty_extra() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.extend_list(items, core::iter::empty::<Value>());
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 1);
-  assert_eq!(block.items[0], Value::Const(1));
-}
-
-#[test]
-fn extend_list_single_element() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
-  ));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.extend_list(items, [Value::Const(4)]);
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 4);
-  assert_eq!(block.items[0], Value::Const(1));
-  assert_eq!(block.items[1], Value::Const(2));
-  assert_eq!(block.items[2], Value::Const(3));
-  assert_eq!(block.items[3], Value::Const(4));
-}
-
-#[test]
-fn extend_list_with_iterator() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.extend_list(items, (0..3).map(|k| Value::Const(10 + k)));
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 4);
-  assert_eq!(block.items[0], Value::Const(1));
-  assert_eq!(block.items[1], Value::Const(10));
-  assert_eq!(block.items[2], Value::Const(11));
-  assert_eq!(block.items[3], Value::Const(12));
-}
-
-#[test]
-fn extend_list_preserves_after_trim() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.extend_list(items, [Value::Const(2), Value::Const(3)]);
-  });
-
-  region.trim();
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 3);
-  assert_eq!(block.items[0], Value::Const(1));
-  assert_eq!(block.items[1], Value::Const(2));
-  assert_eq!(block.items[2], Value::Const(3));
-}
-
-// ===========================================================================
-// Ref<T> deep-copy tests — push_front / splice_list with Ref items
-// ===========================================================================
-
-#[test]
-fn push_front_with_ref_deep_copies() {
-  // Verify that push_front with a Ref<Inst> deep-copies the value
-  // (including nested NearList<Value>) into the new node.
-  let mut region: Region<ListFunc> = Region::new(ListFunc::make(
-    Symbol(1),
-    list([Inst::make(1, Type(0), list([Value::Const(42)].as_slice()))]),
-  ));
-
-  region.session(|s| {
-    let first_inst = s.nav(s.root(), |f| &f.insts[0]);
-    let insts = s.nav(s.root(), |f| &f.insts);
-    s.push_front(insts, first_inst);
-  });
-
-  let func: &ListFunc = &region;
-  assert_eq!(func.insts.len(), 2);
-
-  let insts: Vec<&Inst> = func.insts.iter().collect();
-  // The pushed copy should be identical to the original.
-  assert_eq!(insts[0].op, 1);
-  assert_eq!(insts[0].typ, Type(0));
-  assert_eq!(insts[0].args.len(), 1);
-  assert_eq!(insts[0].args[0], Value::Const(42));
-  // Original still intact.
-  assert_eq!(insts[1].op, 1);
-  assert_eq!(insts[1].args[0], Value::Const(42));
-}
-
-#[test]
-fn splice_list_with_refs_deep_copies() {
-  // Verify that splice_list with Ref items deep-copies values
-  // and can reverse the order.
-  let mut region: Region<ListFunc> = Region::new(ListFunc::make(
-    Symbol(1),
-    list([
-      Inst::make(1, Type(0), list([Value::Const(10)].as_slice())),
-      Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)].as_slice())),
-    ]),
-  ));
-
-  region.session(|s| {
-    let ref0 = s.nav(s.root(), |f| &f.insts[0]);
-    let ref1 = s.nav(s.root(), |f| &f.insts[1]);
-    let insts = s.nav(s.root(), |f| &f.insts);
-    s.splice_list(insts, [ref1, ref0]);
-  });
-
-  let func: &ListFunc = &region;
-  assert_eq!(func.insts.len(), 2);
-
-  let insts: Vec<&Inst> = func.insts.iter().collect();
-  // Reversed order — inst[1] is now first.
-  assert_eq!(insts[0].op, 2);
-  assert_eq!(insts[0].args.len(), 2);
-  assert_eq!(insts[0].args[0], Value::Const(20));
-  assert_eq!(insts[0].args[1], Value::Const(21));
-  assert_eq!(insts[1].op, 1);
-  assert_eq!(insts[1].args.len(), 1);
-  assert_eq!(insts[1].args[0], Value::Const(10));
-}
-
-#[test]
-fn push_front_ref_primitive_list() {
-  // Ref deep-copy on a list of primitive values.
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(10), Value::Const(20)])));
-
-  region.session(|s| {
-    let first_val = s.nav(s.root(), |b| &b.items[0]);
-    let items = s.nav(s.root(), |b| &b.items);
-    s.push_front(items, first_val);
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 3);
-  assert_eq!(block.items[0], Value::Const(10));
-  assert_eq!(block.items[1], Value::Const(10));
-  assert_eq!(block.items[2], Value::Const(20));
-}
-
-// ===========================================================================
-// Option<Near<T>> tests
-// ===========================================================================
-
-/// A struct with an `Option<Near<T>>` field for testing the `OptionNear` derive.
-#[derive(Flat, Debug)]
-struct OptBlock {
-  name: Symbol,
+#[flat]
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct Block {
+  id: u32,
+  insts: Near<[Inst]>,
   next: Option<Near<Block>>,
 }
 
-#[test]
-fn option_near_some_roundtrip() {
-  let region: Region<OptBlock> = Region::new(OptBlock::make(
-    Symbol(1),
-    maybe(Some(Block::make(Symbol(2), empty(), empty(), Term::make_ret(list([Value::Const(42)]))))),
-  ));
+#[flat]
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct Inst {
+  op: u8,
+  args: Near<[u32]>,
+}
 
-  let ob: &OptBlock = &region;
-  assert_eq!(ob.name, Symbol(1));
-  let next = ob.next.as_ref().expect("should be Some");
-  let block = next.get();
-  assert_eq!(block.name, Symbol(2));
-  match &block.term {
-    Term::Ret { values } => {
-      assert_eq!(values.len(), 1);
-      assert_eq!(values[0], Value::Const(42));
+#[flat]
+#[derive(Debug, PartialEq)]
+enum Expr {
+  Lit(i64),
+  Neg(Near<Expr>),
+  Add(Near<Expr>, Near<Expr>),
+}
+
+/// Plain data with padding.
+#[flat]
+#[derive(Debug, PartialEq, Clone, Copy)]
+struct Pad {
+  a: u8,
+  b: u32,
+}
+
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Prims {
+  a: u8,
+  b: u16,
+  c: u32,
+  d: u64,
+  e: i8,
+  f: i16,
+  g: i32,
+  h: i64,
+  i: f32,
+  j: f64,
+  k: bool,
+  l: char,
+  m: [u16; 3],
+}
+
+#[flat]
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Color {
+  Red,
+  Green,
+  Blue,
+}
+
+/// Plain data without padding.
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Rgb {
+  r: u8,
+  g: u8,
+  b: u8,
+  c: Color,
+}
+
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Wrap(u32, Near<[Color]>);
+
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Unit;
+
+#[flat]
+#[derive(Debug, PartialEq)]
+enum Stmt {
+  Nop,
+  Return { value: Option<Near<Expr>> },
+  Let(Near<str>, Near<Expr>),
+  Block { body: Near<[Stmt]>, unit: Unit },
+  IntLit(i64),
+  Gen(u8),
+}
+
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Pair<A, B: ?Sized> {
+  first: A,
+  second: Near<B>,
+}
+
+#[flat]
+#[derive(Debug, PartialEq)]
+enum Tree<T> {
+  Leaf(T),
+  Node(Near<Tree<T>>, Near<Tree<T>>),
+}
+
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Arr<const N: usize> {
+  items: [u64; N],
+  rest: Near<[[u8; N]]>,
+}
+
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Aligned {
+  small: Near<[u8]>,
+  big: Near<[u64]>,
+  text: Near<str>,
+  wide: Near<[u16]>,
+}
+
+/// A recursive type spelled with `Self`.
+#[flat]
+#[derive(Debug, PartialEq)]
+enum Chain {
+  End,
+  Link(u32, Near<Self>),
+}
+
+fn func() -> Region<Func> {
+  Region::new(Func::new(
+    "main",
+    Near::new(Block::new(
+      0,
+      (Inst::new(1, [10, 20, 30]), Inst::new(2, ())),
+      Near::new(Block::new(1, [Inst::new(3, Near::from_iter(0..5))], None)),
+    )),
+    true,
+  ))
+}
+
+fn eval(e: &Expr) -> i64 {
+  match e {
+    Expr::Lit(n) => *n,
+    Expr::Neg(a) => -eval(a),
+    Expr::Add(a, b) => eval(a) + eval(b),
+  }
+}
+
+fn ops(b: &Block) -> Vec<u8> {
+  b.insts.iter().map(|i| i.op).collect()
+}
+
+fn hash<T: Hash + ?Sized>(t: &T) -> u64 {
+  let mut h = DefaultHasher::new();
+  t.hash(&mut h);
+  h.finish()
+}
+
+#[test]
+fn build_and_read() {
+  let f = func();
+  assert_eq!(&*f.name, "main");
+  assert!(f.flag);
+  assert_eq!(f.entry.id, 0);
+  assert_eq!(f.entry.insts.len(), 2);
+  assert_eq!(f.entry.insts[0].args[..], [10, 20, 30]);
+  assert!(f.entry.insts[1].args.is_empty());
+  let next = f.entry.next.as_ref().unwrap();
+  assert_eq!((next.id, &next.insts[0].args[..]), (1, &[0, 1, 2, 3, 4][..]));
+  assert!(next.next.is_none());
+  assert_eq!(*Region::new(7u32), 7);
+  assert_eq!(*Region::new(Pad { a: 1, b: 2 }), Pad { a: 1, b: 2 });
+}
+
+#[test]
+fn every_primitive() {
+  let p = Prims {
+    a: u8::MAX,
+    b: u16::MAX - 1,
+    c: 0xdead_beef,
+    d: u64::MAX - 2,
+    e: i8::MIN,
+    f: -2,
+    g: i32::MIN + 3,
+    h: -4,
+    i: 1.5,
+    j: -2.25,
+    k: true,
+    l: 'é',
+    m: [1, 2, 3],
+  };
+  let r = Region::new(&p);
+  assert_eq!(*r, p);
+  // The same through the generated constructor, and as list elements.
+  let q = Region::new(Prims::new(
+    1u8,
+    2u16,
+    3u32,
+    4u64,
+    5i8,
+    6i16,
+    7i32,
+    8i64,
+    9.0f32,
+    10.0f64,
+    false,
+    'x',
+    [4, 5, 6],
+  ));
+  assert_eq!((q.a, q.h, q.l, q.m), (1, 8, 'x', [4, 5, 6]));
+  const { assert!(Rgb::PLAIN && <[u16; 3]>::PLAIN && Color::PLAIN && Unit::PLAIN) };
+  const { assert!(!Prims::PLAIN && !Pad::PLAIN && !Func::PLAIN && !Expr::PLAIN) };
+  const { assert!(!<Near<u8>>::PLAIN && !<Option<Near<u8>>>::PLAIN) };
+  assert_eq!(
+    *Region::new(Rgb { r: 1, g: 2, b: 3, c: Color::Blue }),
+    Rgb { r: 1, g: 2, b: 3, c: Color::Blue }
+  );
+  let lists = Region::new(Pair::<u8, [Prims]>::new(0, [&p, &p]));
+  assert_eq!(lists.second[1], p);
+}
+
+#[test]
+fn every_emit_source() {
+  let other = func();
+  let v = [5u32, 6, 7];
+  let r = Region::new(Block::new(
+    9, // a value
+    (
+      Inst::new(1, &v[..]),                                   // a slice copy
+      Inst::new(2, [1, 2]),                                   // an array
+      Inst::new(3, (4, 5, 6)),                                // a tuple
+      Inst::new(4, ()),                                       // the empty list
+      Inst::new(5, Near::from_iter(v.iter().map(|x| x * 2))), // an iterator
+    ),
+    Near::new(&*other.entry), // a deep copy from another region
+  ));
+  assert_eq!(ops(&r), [1, 2, 3, 4, 5]);
+  assert_eq!(r.insts[0].args[..], [5, 6, 7]);
+  assert_eq!(r.insts[2].args[..], [4, 5, 6]);
+  assert_eq!(r.insts[4].args[..], [10, 12, 14]);
+  assert_eq!(**r.next.as_ref().unwrap(), *other.entry);
+
+  // Tuples mix builders, values and copies; lists of lists.
+  let inst = Region::new(Inst::new(8, [9]));
+  let mixed = Region::new(Block::new(
+    0,
+    (Inst::new(1, ()), &*inst, Inst::new(3, Near::from_iter(None::<u32>))),
+    None,
+  ));
+  assert_eq!(ops(&mixed), [1, 8, 3]);
+  let t12 = Region::new(Inst::new(0, (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)));
+  assert_eq!(t12.args.iter().sum::<u32>(), 78);
+  let nested = Region::new(Pair::<u8, [Near<[u8]>]>::new(0, ([1u8], (), [2, 3])));
+  assert_eq!(nested.second.iter().map(|l| l.len()).collect::<Vec<_>>(), [1, 0, 2]);
+
+  // `Near::new` writes `Near<T>` and `Option<Near<T>>`; `None` is a value.
+  let e = Region::new(Stmt::r#return(Near::new(Expr::Lit(1))));
+  assert!(matches!(&*e, Stmt::Return { value: Some(v) } if **v == Expr::Lit(1)));
+  let e = Region::new(Stmt::r#return(None));
+  assert_eq!(*e, Stmt::Return { value: None });
+  // Keywords, including those reserved by the edition, become raw identifiers.
+  assert_eq!(*Region::new(Stmt::r#gen(3)), Stmt::Gen(3));
+
+  // Text, including non-ASCII.
+  let s = Region::new(Stmt::r#let("héllo, 世界 🦀", Near::new(Expr::Lit(0))));
+  let Stmt::Let(name, _) = &*s else { unreachable!() };
+  assert_eq!(&**name, "héllo, 世界 🦀");
+  assert_eq!(name.chars().count(), 11);
+  assert_eq!(&*Region::new(Pair::<u8, str>::new(0, "")).second, "");
+}
+
+#[test]
+fn enums_generics_and_nesting() {
+  fn sum(tree: &Tree<u16>) -> u16 {
+    match tree {
+      Tree::Leaf(x) => *x,
+      Tree::Node(l, r) => sum(l) + sum(r),
     }
-    Term::Jmp(_) => panic!("expected Ret"),
+  }
+  let expr =
+    Region::new(Expr::add(Near::new(Expr::Lit(2)), Near::new(Expr::neg(Near::new(Expr::lit(5))))));
+  assert_eq!(eval(&expr), -3);
+
+  let stmt = Region::new(Stmt::block(
+    (Stmt::Nop, Stmt::int_lit(3), Stmt::block([Stmt::IntLit(4)], Unit)),
+    Unit,
+  ));
+  let Stmt::Block { body, .. } = &*stmt else { unreachable!() };
+  assert_eq!(body[0], Stmt::Nop);
+  assert_eq!(body[1], Stmt::IntLit(3));
+  assert!(matches!(&body[2], Stmt::Block { body, .. } if body[0] == Stmt::IntLit(4)));
+
+  let tree = Region::new(Tree::node(
+    Near::new(Tree::Leaf(1u16)),
+    Near::new(Tree::node(Near::new(Tree::leaf(2)), Near::new(Tree::Leaf(3)))),
+  ));
+  assert_eq!(sum(&tree), 6);
+  let pair = Region::new(Pair::new(
+    Color::Blue,
+    Near::new(Tree::leaf(Wrap::new(1, [Color::Red, Color::Green]))),
+  ));
+  assert_eq!(pair.first, Color::Blue);
+  assert!(matches!(&*pair.second, Tree::Leaf(Wrap(1, c)) if c[..] == [Color::Red, Color::Green]));
+
+  let arr = Region::new(Arr::<2>::new([1, 2], [[3, 4], [5, 6]]));
+  assert_eq!((arr.items, &arr.rest[..]), ([1, 2], &[[3, 4], [5, 6]][..]));
+  let chain = Region::new(Chain::link(1, Near::new(Chain::link(2, Near::new(Chain::End)))));
+  assert!(
+    matches!(&*chain, Chain::Link(1, n) if matches!(&**n, Chain::Link(2, e) if **e == Chain::End))
+  );
+}
+
+#[test]
+fn lists_are_aligned() {
+  let r = Region::new(Aligned::new([1u8], [2u64, 3], "abc", [4u16]));
+  let r2 = Region::new(Aligned::new((), (), "", ()));
+  for r in [&r, &r2, &r.clone()] {
+    assert_eq!(r.big.as_ptr().addr() % 8, 0);
+    assert_eq!(r.wide.as_ptr().addr() % 2, 0);
+  }
+  assert_eq!(r.big[..], [2, 3]);
+  assert!(r2.small.is_empty() && r2.big.is_empty() && r2.text.is_empty());
+  assert_eq!(size_of::<Near<[u64]>>(), 4);
+  assert_eq!(size_of::<Option<Near<Expr>>>(), 4);
+}
+
+#[test]
+fn near_traits() {
+  let r = Region::new(Pair::<Inst, [Inst]>::new(
+    Inst::new(1, [2]),
+    (Inst::new(1, [2]), Inst::new(1, [3])),
+  ));
+  let (a, b) = (&r.second[0], &r.second[1]);
+  assert_eq!(a, &r.first);
+  assert!(a < b);
+  assert_eq!(a.args.cmp(&b.args), std::cmp::Ordering::Less);
+  assert_eq!(a.args.partial_cmp(&b.args), Some(std::cmp::Ordering::Less));
+  assert_eq!(hash(&a.args), hash(&r.first.args));
+  assert_ne!(a.args, b.args);
+  assert_eq!(format!("{:?}", a.args), "[2]");
+  assert_eq!(format!("{:?}", &*r.second), "[Inst { op: 1, args: [2] }, Inst { op: 1, args: [3] }]");
+  let total: u32 = (&r.second).into_iter().map(|i| i.args[0]).sum();
+  assert_eq!(total, 5);
+}
+
+#[test]
+fn region_traits() {
+  let f = func();
+  let g = f.clone();
+  assert_eq!(f, g);
+  assert_eq!(hash(&f), hash(&g));
+  assert_eq!(format!("{f:?}"), format!("{:?}", *g));
+  assert!(format!("{f:?}").starts_with("Func { name: \"main\""));
+  // The clone is independent.
+  let mut h = f.clone();
+  h.edit(|root, slot| {
+    let Func { flag, name, .. } = root;
+    *flag.get_mut() = false;
+    slot.at(name, |_, new| new.put("other"));
+  });
+  assert_eq!((&*f.name, f.flag, &*h.name, h.flag), ("main", true, "other", false));
+  assert_ne!(f, h);
+  drop(f);
+  assert_eq!(*g.entry, *h.entry);
+}
+
+#[test]
+fn edit_in_place_needs_no_api() {
+  let mut f = func();
+  let before = f.byte_len();
+  let out = f.edit(|root, _| {
+    let Func { flag, entry, .. } = root;
+    *flag.get_mut() = false;
+    let Block { id, insts, next } = entry.as_pin_mut();
+    *id.get_mut() = 9;
+    for inst in insts {
+      let Inst { op, args } = inst;
+      *op.get_mut() += 10;
+      args.as_pin_mut().get_mut().reverse();
+    }
+    let mut next = next;
+    next.set(None);
+    "out"
+  });
+  assert_eq!(out, "out");
+  assert_eq!(f.byte_len(), before);
+  assert_eq!((f.flag, f.entry.id, f.entry.next.is_none()), (false, 9, true));
+  assert_eq!((f.entry.insts[0].op, &f.entry.insts[0].args[..]), (11, &[30, 20, 10][..]));
+
+  let mut e = Region::new(Expr::Lit(1));
+  e.edit(|e, _| {
+    let mut e = e;
+    e.set(Expr::Lit(5));
+  });
+  assert_eq!(*e, Expr::Lit(5));
+  let mut l = Region::new(Inst::new(0, [3, 1, 2]));
+  l.edit(|root, _| {
+    let Inst { args, .. } = root;
+    args.as_pin_mut().get_mut().sort_unstable();
+  });
+  assert_eq!(l.args[..], [1, 2, 3]);
+  let mut c = Region::new(Wrap::new(0, [Color::Red, Color::Blue]));
+  c.edit(|root, _| {
+    let Wrap(_, colors) = root;
+    for c in colors {
+      let mut c = c;
+      c.set(Color::Green);
+    }
+  });
+  assert_eq!(c.1[..], [Color::Green; 2]);
+}
+
+#[test]
+fn edits_that_allocate() {
+  let mut f = func();
+  f.edit(|root, slot| {
+    let Func { entry, name, .. } = root;
+    slot.at(name, |_, new| new.put("renamed"));
+    let Block { insts, next, .. } = entry.as_pin_mut();
+    slot.at(insts, |old, new| {
+      for inst in old {
+        if inst.op == 1 {
+          new.push(inst);
+        }
+      }
+      new.push(Inst::new(7, [70, 71]));
+    });
+    let Block { insts, next, .. } = next.as_pin_mut().unwrap().as_pin_mut();
+    slot.at(insts, |_, new| {
+      new.put(Near::from_iter((0..3u8).map(|op| Inst::new(op, [u32::from(op)]))));
+    });
+    slot.at(next, |_, new| new.put(Near::new(Block::new(2, (), None))));
+  });
+  assert_eq!(&*f.name, "renamed");
+  let b0 = &f.entry;
+  assert_eq!(ops(b0), [1, 7]);
+  assert_eq!((&b0.insts[0].args[..], &b0.insts[1].args[..]), (&[10, 20, 30][..], &[70, 71][..]));
+  let b1 = b0.next.as_ref().unwrap();
+  assert_eq!(
+    b1.insts.iter().map(|i| (i.op, i.args[0])).collect::<Vec<_>>(),
+    [(0, 0), (1, 1), (2, 2)]
+  );
+  assert_eq!(b1.next.as_ref().unwrap().id, 2);
+
+  let compact = Region::new(&*f);
+  assert!(compact.byte_len() < f.byte_len());
+  assert_eq!(*compact, *f);
+}
+
+#[test]
+fn put_push_and_at_semantics() {
+  let mut r = Region::new(Inst::new(0, [1, 2]));
+  // Neither `put` nor `push`: the place is left as is.
+  r.edit(|root, slot| {
+    let Inst { args, .. } = root;
+    slot.at(args, |_, _| {});
+  });
+  assert_eq!(r.args[..], [1, 2]);
+  // The last `put` wins; `push` after `put` starts a new list; `put` after `push` replaces it.
+  r.edit(|root, slot| {
+    let Inst { args, .. } = root;
+    slot.at(args, |_, new| {
+      new.put([9]);
+      new.put([8]);
+      new.push(5);
+      new.push(6);
+    });
+  });
+  assert_eq!(r.args[..], [5, 6]);
+  r.edit(|root, slot| {
+    let Inst { args, .. } = root;
+    slot.at(args, |_, new| {
+      new.push(5);
+      new.put(());
+    });
+  });
+  assert!(r.args.is_empty());
+  // Many pushes grow the list, also with elements that allocate.
+  let mut b = Region::new(Block::new(0, (), None));
+  b.edit(|root, slot| {
+    let Block { insts, .. } = root;
+    slot.at(insts, |_, new| {
+      for i in 0..100u8 {
+        new.push(Inst::new(i, Near::from_iter(0..u32::from(i % 7))));
+      }
+    });
+  });
+  assert_eq!(b.insts.len(), 100);
+  assert!(b.insts.iter().enumerate().all(|(i, x)| x.op as usize == i && x.args.len() == i % 7));
+  // The root's own slot, with a value from another region.
+  let other = func();
+  let mut f = func();
+  f.edit(|_, slot| slot.put(Func::new("x", &other.entry, false)));
+  assert_eq!((&*f.name, &*f.entry, f.flag), ("x", &*other.entry, false));
+}
+
+#[test]
+fn nested_and_sibling_ats() {
+  // Three levels of chained blocks, each edited at every level.
+  let mut r = Region::new(Block::new(
+    0,
+    [Inst::new(0, [0])],
+    Near::new(Block::new(
+      1,
+      [Inst::new(1, [1])],
+      Near::new(Block::new(2, [Inst::new(2, [2])], None)),
+    )),
+  ));
+  let depth = r.edit(|root, slot| {
+    let Block { insts, next, .. } = root;
+    slot.at(insts, |old, new| {
+      for i in old {
+        new.push(i);
+      }
+      new.push(Inst::new(10, ()));
+    });
+    slot.at(next, |next, slot| {
+      let Block { insts, next, .. } = next.as_pin_mut().unwrap().as_pin_mut();
+      // Sibling places at the same level.
+      let Inst { args: a0, .. } = insts.into_iter().next().unwrap();
+      slot.at(a0, |old, new| new.put(Near::from_iter(old.iter().map(|x| x + 100))));
+      slot.at(next, |next, slot| {
+        let Block { insts, next, .. } = next.as_pin_mut().unwrap().as_pin_mut();
+        slot.at(insts, |old, slot| {
+          let Inst { args, .. } = old.into_iter().next().unwrap();
+          slot.at(args, |_, new| {
+            new.push(7);
+            new.push(8);
+          });
+        });
+        slot.at(next, |_, new| new.put(Near::new(Block::new(3, (), None))));
+        4
+      })
+    })
+  });
+  assert_eq!(depth, 4);
+  assert_eq!(ops(&r), [0, 10]);
+  let b1 = r.next.as_ref().unwrap();
+  assert_eq!(b1.insts[0].args[..], [101]);
+  let b2 = b1.next.as_ref().unwrap();
+  assert_eq!(b2.insts[0].args[..], [7, 8]);
+  assert_eq!(b2.next.as_ref().unwrap().id, 3);
+  assert_eq!(*Region::new(&*r), *r);
+
+  // Sibling elements of one list, each replaced.
+  let mut l =
+    Region::new(Block::new(0, (Inst::new(0, [1]), Inst::new(1, [2]), Inst::new(2, [3])), None));
+  l.edit(|root, slot| {
+    let Block { insts, .. } = root;
+    for (k, inst) in insts.into_iter().enumerate() {
+      let Inst { args, .. } = inst;
+      slot.at(args, |old, new| {
+        new.put(Near::from_iter(old.iter().copied().chain([k as u32 * 10])));
+      });
+    }
+  });
+  assert_eq!(
+    l.insts.iter().map(|i| i.args.to_vec()).collect::<Vec<_>>(),
+    [vec![1, 0], vec![2, 10], vec![3, 20]]
+  );
+}
+
+#[test]
+fn moves_wrap_unwrap_rotate() {
+  let mut e = Region::new(Expr::add(Near::new(Expr::Lit(2)), Near::new(Expr::Lit(5))));
+  // x -> Neg(x)
+  e.edit(|old, slot| slot.put(Expr::neg(Near::new(old))));
+  assert_eq!(eval(&e), -7);
+  // Neg(x) -> x
+  e.edit(|old, slot| {
+    if let Expr::Neg(inner) = old {
+      slot.put(inner.as_pin_mut());
+    }
+  });
+  assert_eq!(eval(&e), 7);
+  // Add(a, b) -> Add(b, Neg(a)): pointers are re-linked, nothing is copied.
+  let before = e.byte_len();
+  e.edit(|old, slot| {
+    if let Expr::Add(a, b) = old {
+      slot.put(Expr::add(b, Near::new(Expr::neg(a))));
+    }
+  });
+  assert_eq!(eval(&e), 3);
+  assert!(e.byte_len() - before <= 64);
+  assert!(matches!(&*e, Expr::Add(b, _) if **b == Expr::Lit(5)));
+  // Move a grandchild up while replacing a child, inside a nested slot.
+  e.edit(|old, slot| {
+    if let Expr::Add(_, n) = old {
+      slot.at(n, |n, slot| {
+        if let Expr::Neg(a) = n.as_pin_mut() {
+          slot.put(Near::new(Expr::add(a, Near::new(Expr::Lit(10)))));
+        }
+      });
+    }
+  });
+  assert_eq!(eval(&e), 17);
+  assert_eq!(eval(&Region::new(&*e)), 17);
+}
+
+#[test]
+fn list_moves() {
+  let mut b = Region::new(Block::new(
+    0,
+    Near::from_iter((0..6u8).map(|i| Inst::new(i, [u32::from(i); 2]))),
+    None,
+  ));
+  // Filter.
+  b.edit(|root, slot| {
+    let Block { insts, .. } = root;
+    slot.at(insts, |old, new| new.put(Near::from_iter(old.into_iter().filter(|i| i.op % 2 == 0))));
+  });
+  assert_eq!(ops(&b), [0, 2, 4]);
+  // Reverse.
+  b.edit(|root, slot| {
+    let Block { insts, .. } = root;
+    slot.at(insts, |old, new| new.put(Near::from_iter(old.into_iter().rev())));
+  });
+  assert_eq!(ops(&b), [4, 2, 0]);
+  // Insert in the middle.
+  b.edit(|root, slot| {
+    let Block { insts, .. } = root;
+    slot.at(insts, |old, new| {
+      for (k, i) in old.into_iter().enumerate() {
+        if k == 1 {
+          new.push(Inst::new(9, [9]));
+        }
+        new.push(i);
+      }
+    });
+  });
+  assert_eq!(ops(&b), [4, 9, 2, 0]);
+  assert!(b.insts.iter().all(|i| i.args.iter().all(|&a| a == u32::from(i.op))));
+  // Duplicate: copies of old elements may be taken as often as wanted.
+  b.edit(|root, slot| {
+    let Block { insts, .. } = root;
+    slot.at(insts, |old, new| {
+      let copies: Vec<&Inst> = old.iter().collect();
+      new.put(Near::from_iter(copies.iter().chain(copies.iter()).copied()));
+    });
+  });
+  assert_eq!(ops(&b), [4, 9, 2, 0, 4, 9, 2, 0]);
+  assert_eq!(*Region::new(&*b), *b);
+}
+
+#[test]
+fn copies_between_and_within_regions() {
+  let a = func();
+  let mut b = func();
+  b.edit(|root, slot| {
+    let Func { entry, .. } = root;
+    let Block { next, .. } = entry.as_pin_mut();
+    slot.at(next, |_, new| new.put(Near::new(&*a.entry)));
+  });
+  assert_eq!(**b.entry.next.as_ref().unwrap(), *a.entry);
+  // Within one region: copy the first block into its own tail.
+  b.edit(|root, slot| {
+    let Func { entry, .. } = root;
+    let Block { insts, next, .. } = entry.as_pin_mut();
+    let first: Vec<&Inst> = insts.iter().collect();
+    slot.at(next, |_, new| new.put(Near::new(Block::new(5, Near::from_iter(first), None))));
+  });
+  assert_eq!(ops(b.entry.next.as_ref().unwrap()), ops(&a.entry));
+  drop(a);
+  assert_eq!(&*b.name, "main");
+}
+
+#[test]
+fn compaction() {
+  let mut b = Region::new(Block::new(0, (), None));
+  for i in 0..20u8 {
+    b.edit(|root, slot| {
+      let Block { insts, .. } = root;
+      slot.at(insts, |old, new| {
+        for x in old {
+          new.push(x);
+        }
+        new.push(Inst::new(i, [u32::from(i)]));
+      });
+    });
+  }
+  let c = Region::new(&*b);
+  assert!(c.byte_len() * 2 < b.byte_len());
+  assert_eq!(*c, *b);
+  assert_eq!(Region::new(&*c).byte_len(), c.byte_len());
+}
+
+#[test]
+fn bytes_round_trip() {
+  let mut r = Region::<[Pad; 2]>::new([Pad { a: 1, b: 2 }, Pad { a: 3, b: 4 }]);
+  r.edit(|root, _| {
+    let [first, _] = root;
+    let mut first = first;
+    first.set(Pad { a: 9, b: 9 }); // may leave padding uninitialized in the buffer
+  });
+  let bytes = r.to_bytes();
+  assert!(bytes.iter().map(|&b| u32::from(b)).sum::<u32>() > 0); // every byte is initialized
+  // SAFETY: from `to_bytes` of the same type.
+  let back = unsafe { Region::<[Pad; 2]>::from_bytes(&bytes) };
+  assert_eq!(*back, [Pad { a: 9, b: 9 }, Pad { a: 3, b: 4 }]);
+  let f = func();
+  let bytes = f.to_bytes();
+  assert_eq!(bytes.len(), Region::new(&*f).byte_len());
+  // SAFETY: from `to_bytes` of the same type.
+  let back = unsafe { Region::<Func>::from_bytes(&bytes) };
+  assert_eq!(*back, *f);
+  assert_eq!(back.to_bytes(), bytes);
+}
+
+#[test]
+fn panic_mid_edit_leaves_a_valid_region() {
+  let mut f = func();
+  let r = catch_unwind(AssertUnwindSafe(|| {
+    f.edit(|root, slot| {
+      let Func { entry, name, .. } = root;
+      slot.at(name, |_, new| new.put("committed before the panic"));
+      let Block { insts, .. } = entry.as_pin_mut();
+      slot.at(insts, |_, new| {
+        new.push(Inst::new(1, [1]));
+        new.put(Near::from_iter(
+          (0..3).map(|i| if i == 2 { panic!("user code panics") } else { Inst::new(i, ()) }),
+        ));
+      });
+    });
+  }));
+  assert!(r.is_err());
+  assert_eq!(&*f.name, "committed before the panic");
+  assert_eq!(f.entry.insts.len(), 2);
+  assert_eq!(*Region::new(&*f), *f);
+  // The region stays usable.
+  f.edit(|root, slot| {
+    let Func { name, .. } = root;
+    slot.at(name, |_, new| new.put("again"));
+  });
+  assert_eq!(&*f.name, "again");
+}
+
+#[flat]
+struct Item {
+  next: Option<Near<u32>>,
+  cells: Near<[u32]>,
+}
+
+#[flat]
+struct Items {
+  items: Near<[Item]>,
+}
+
+#[test]
+fn a_caught_panic_mid_push_leaves_no_stale_bytes() {
+  let mut r = Region::new(Items::new(()));
+  r.edit(|root, slot| {
+    let Items { items } = root;
+    slot.at(items, |_, new| {
+      let boom = (0..2u32).map(|i| if i == 1 { panic!("boom") } else { i });
+      let item = Item::new(Near::new(7u32), Near::from_iter(boom));
+      assert!(catch_unwind(AssertUnwindSafe(|| new.push(item))).is_err());
+      new.push(Item::new(None, [1, 2]));
+    });
+  });
+  assert_eq!(r.items.len(), 1);
+  assert_eq!(r.items[0].next.as_deref(), None);
+  assert_eq!(r.items[0].cells[..], [1, 2]);
+}
+
+/// Yields `n` items while claiming `hint` as its lower bound.
+struct Liar {
+  n: u32,
+  hint: usize,
+}
+
+impl Iterator for Liar {
+  type Item = u32;
+  fn next(&mut self) -> Option<u32> {
+    self.n = self.n.checked_sub(1)?;
+    Some(self.n)
+  }
+  fn size_hint(&self) -> (usize, Option<usize>) {
+    (self.hint, Some(self.hint))
   }
 }
 
 #[test]
-fn option_near_none_roundtrip() {
-  let region: Region<OptBlock> = Region::new(OptBlock::make(Symbol(1), none::<Block>()));
+fn size_hint_may_lie() {
+  for (n, hint) in [(3, 1000), (1000, 0), (50, 3), (0, 10)] {
+    let r = Region::new(Inst::new(0, Near::from_iter(Liar { n, hint })));
+    assert_eq!(r.args.to_vec(), (0..n).rev().collect::<Vec<_>>());
+    // Elements that allocate while the list grows.
+    let b = Region::new(Block::new(
+      0,
+      Near::from_iter(
+        Liar { n, hint }.map(|i| Inst::new((i % 5) as u8, Near::from_iter(0..i % 5))),
+      ),
+      None,
+    ));
+    assert_eq!(b.insts.len(), n as usize);
+    assert!(b.insts.iter().all(|i| i.args.len() == usize::from(i.op) % 5));
+  }
+}
 
-  let ob: &OptBlock = &region;
-  assert_eq!(ob.name, Symbol(1));
-  assert!(ob.next.is_none());
+/// Anything `impl Emit` can be passed on generically.
+fn wrap_twice<'o>(e: impl Emit<'o, Expr>) -> impl Emit<'o, Expr> {
+  Expr::neg(Near::new(Expr::neg(Near::new(e))))
 }
 
 #[test]
-fn option_near_trim() {
-  // Build with Some, verify trim preserves data.
-  let mut region: Region<OptBlock> = Region::new(OptBlock::make(
-    Symbol(1),
-    maybe(Some(Block::make(
-      Symbol(2),
-      empty(),
-      list([Inst::make(1, Type(0), list([Value::Const(10)]))]),
-      Term::make_ret(list([Value::Const(42)])),
-    ))),
-  ));
-
-  let before = region.byte_len();
-  region.trim();
-  assert_eq!(region.byte_len(), before);
-
-  let ob: &OptBlock = &region;
-  let next = ob.next.as_ref().expect("should be Some");
-  let block = next.get();
-  assert_eq!(block.name, Symbol(2));
-  assert_eq!(block.insts.len(), 1);
-  assert_eq!(block.insts[0].args[0], Value::Const(10));
+fn builders_compose() {
+  let r = Region::new(wrap_twice(Expr::Lit(4)));
+  assert_eq!(eval(&r), 4);
+  let mut r = r;
+  r.edit(|old, slot| slot.put(wrap_twice(old)));
+  assert_eq!(eval(&r), 4);
+  assert!(matches!(&*r, Expr::Neg(_)));
 }
 
 #[test]
-fn extend_list_nested_pointer_fields() {
-  let mut region: Region<ListFunc> = Region::new(ListFunc::make(
-    Symbol(1),
-    list([Inst::make(1, Type(0), list([Value::Const(10)].as_slice()))]),
-  ));
-
-  region.session(|s| {
-    let insts = s.nav(s.root(), |f| &f.insts);
-    s.extend_list(
-      insts,
-      [
-        Inst::make(2, Type(1), list(vec![Value::Const(20), Value::Const(21)])),
-        Inst::make(3, Type(0), list(vec![])),
-      ],
-    );
+fn pins_are_pins() {
+  let mut r = Region::new(Inst::new(1, [1, 2]));
+  r.edit(|root: Pin<&mut Inst>, _| {
+    let Inst { args, .. } = root;
+    let total: u32 = args.into_iter().map(|x: Pin<&mut u32>| *x).sum();
+    assert_eq!(total, 3);
   });
-
-  let func: &ListFunc = &region;
-  assert_eq!(func.insts.len(), 3);
-
-  let insts: Vec<&Inst> = func.insts.iter().collect();
-  assert_eq!(insts[0].op, 1);
-  assert_eq!(insts[0].args.len(), 1);
-  assert_eq!(insts[0].args[0], Value::Const(10));
-
-  assert_eq!(insts[1].op, 2);
-  assert_eq!(insts[1].args.len(), 2);
-  assert_eq!(insts[1].args[0], Value::Const(20));
-  assert_eq!(insts[1].args[1], Value::Const(21));
-
-  assert_eq!(insts[2].op, 3);
-  assert!(insts[2].args.is_empty());
-}
-
-// ===========================================================================
-// map_list tests
-// ===========================================================================
-
-#[test]
-fn session_map_list_identity() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
-  ));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.map_list(items, |v| v);
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 3);
-  assert_eq!(block.items[0], Value::Const(10));
-  assert_eq!(block.items[1], Value::Const(20));
-  assert_eq!(block.items[2], Value::Const(30));
 }
 
 #[test]
-fn session_map_list_transform() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
-  ));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.map_list(items, |v| match v {
-      Value::Const(n) => Value::Const(n * 10),
-      other @ Value::Type(_) => other,
-    });
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 3);
-  assert_eq!(block.items[0], Value::Const(10));
-  assert_eq!(block.items[1], Value::Const(20));
-  assert_eq!(block.items[2], Value::Const(30));
-}
-
-#[test]
-fn session_map_list_empty() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.map_list(items, |v| v);
-  });
-
-  let block: &ListBlock = &region;
-  assert!(block.items.is_empty());
-}
-
-// ===========================================================================
-// graft tests
-// ===========================================================================
-
-#[test]
-fn session_graft_copies_region() {
-  let grafted_block: Region<Block> = Region::new(Block::make(
-    Symbol(99),
-    empty(),
-    empty(),
-    Term::make_ret(list([Value::Const(77)])),
-  ));
-
-  let mut caller: Region<Func> = Region::new(Func::make(
-    Symbol(1),
-    near(Block::make(
-      Symbol(0),
-      empty(),
-      empty(),
-      Term::make_jmp(Jmp::make(
-        empty(),
-        near(Block::make(Symbol(1), empty(), empty(), Term::make_ret(empty()))),
-      )),
-    )),
-  ));
-
-  caller.session(|s| {
-    let grafted: Ref<'_, Block> = s.graft(&grafted_block);
-    // Redirect the jmp target to the grafted block.
-    let jmp_target = s.nav(s.root(), |f| match &f.entry.term {
-      Term::Jmp(jmp) => &jmp.target,
-      Term::Ret { .. } => panic!("expected Jmp"),
-    });
-    s.splice(jmp_target, grafted);
-  });
-
-  let func: &Func = &caller;
-  match &func.entry.term {
-    Term::Jmp(jmp) => {
-      let target = jmp.target.get();
-      assert_eq!(target.name, Symbol(99));
-      match &target.term {
-        Term::Ret { values } => {
-          assert_eq!(values.len(), 1);
-          assert_eq!(values[0], Value::Const(77));
+fn many_edits_match_a_model() {
+  type Model = Vec<(u8, Vec<u32>)>;
+  fn check(r: &Block, model: &Model) {
+    let got: Model = r.insts.iter().map(|i| (i.op, i.args.to_vec())).collect();
+    assert_eq!(&got, model);
+  }
+  let mut r = Region::new(Block::new(0, (), None));
+  let mut model: Model = Vec::new();
+  let mut seed = 0x2545_f491u32;
+  let mut rnd = move |n: u32| {
+    seed ^= seed << 13;
+    seed ^= seed >> 17;
+    seed ^= seed << 5;
+    seed % n
+  };
+  let steps = if cfg!(miri) { 60 } else { 2000 };
+  for step in 0..steps {
+    let k = if model.is_empty() { 0 } else { rnd(model.len() as u32) as usize };
+    match rnd(9) {
+      // Append, moving every old element.
+      0 => {
+        let (op, args) = (step as u8, (0..rnd(5)).collect::<Vec<_>>());
+        model.push((op, args.clone()));
+        r.edit(|root, slot| {
+          let Block { insts, .. } = root;
+          slot.at(insts, |old, new| {
+            for i in old {
+              new.push(i);
+            }
+            new.push(Inst::new(op, Near::from_iter(args.iter())));
+          });
+        });
+      }
+      // Remove one.
+      1 if !model.is_empty() => {
+        model.remove(k);
+        r.edit(|root, slot| {
+          let Block { insts, .. } = root;
+          slot.at(insts, |old, new| {
+            new.put(Near::from_iter(
+              old.into_iter().enumerate().filter(|(i, _)| *i != k).map(|(_, x)| x),
+            ));
+          });
+        });
+      }
+      // Reverse.
+      2 => {
+        model.reverse();
+        r.edit(|root, slot| {
+          let Block { insts, .. } = root;
+          slot.at(insts, |old, new| new.put(Near::from_iter(old.into_iter().rev())));
+        });
+      }
+      // Append to one element's arguments.
+      3 if !model.is_empty() => {
+        model[k].1.push(step);
+        r.edit(|root, slot| {
+          let Block { insts, .. } = root;
+          let Inst { args, .. } = insts.into_iter().nth(k).unwrap();
+          slot.at(args, |old, new| new.put(Near::from_iter(old.iter().copied().chain([step]))));
+        });
+      }
+      // Insert before `k`, copying element `k`.
+      4 if !model.is_empty() => {
+        model.insert(k, model[k].clone());
+        r.edit(|root, slot| {
+          let Block { insts, .. } = root;
+          slot.at(insts, |old, new| {
+            let copy = Region::new(&old[k]);
+            for (i, x) in old.into_iter().enumerate() {
+              if i == k {
+                new.push(&*copy);
+              }
+              new.push(x);
+            }
+          });
+        });
+      }
+      // Change in place.
+      5 if !model.is_empty() => {
+        model[k].0 = model[k].0.wrapping_add(1);
+        model[k].1.iter_mut().for_each(|a| *a *= 2);
+        r.edit(|root, _| {
+          let Block { insts, .. } = root;
+          let Inst { op, args } = insts.into_iter().nth(k).unwrap();
+          *op.get_mut() = op.wrapping_add(1);
+          args.as_pin_mut().get_mut().iter_mut().for_each(|a| *a *= 2);
+        });
+      }
+      // Swap two elements by rebuilding the list from moves.
+      6 if model.len() > 1 => {
+        let j = rnd(model.len() as u32) as usize;
+        model.swap(k, j);
+        r.edit(|root, slot| {
+          let Block { insts, .. } = root;
+          slot.at(insts, |old, new| {
+            let mut v: Vec<_> = old.into_iter().map(Some).collect();
+            let order = (0..v.len()).map(|i| {
+              if i == k {
+                j
+              } else if i == j {
+                k
+              } else {
+                i
+              }
+            });
+            new.put(Near::from_iter(
+              order.collect::<Vec<_>>().into_iter().map(|i| v[i].take().unwrap()),
+            ));
+          });
+        });
+      }
+      // Sort each element's arguments in place, and clear one list through a nested slot.
+      7 if !model.is_empty() => {
+        for (_, args) in &mut model {
+          args.sort_unstable();
         }
-        Term::Jmp(_) => panic!("expected Ret in grafted block"),
+        model[k].1.clear();
+        r.edit(|root, slot| {
+          let Block { insts, .. } = root;
+          for (i, inst) in insts.into_iter().enumerate() {
+            let Inst { args, .. } = inst;
+            if i == k {
+              slot.at(args, |_, new| new.put(()));
+            } else {
+              args.as_pin_mut().get_mut().sort_unstable();
+            }
+          }
+        });
+      }
+      // Compact, clone, or round-trip through bytes.
+      _ => {
+        r = match step % 3 {
+          0 => Region::new(&*r),
+          1 => r.clone(),
+          // SAFETY: from `to_bytes` of the same type.
+          _ => unsafe { Region::from_bytes(&r.to_bytes()) },
+        };
       }
     }
-    Term::Ret { .. } => panic!("expected Jmp"),
+    check(&r, &model);
   }
-}
-
-// ===========================================================================
-// list_refs tests
-// ===========================================================================
-
-#[test]
-fn session_list_refs_collects() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
-  ));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    let refs = s.list_refs(items);
-    assert_eq!(refs.len(), 3);
-    assert_eq!(*s.at(refs[0]), Value::Const(10));
-    assert_eq!(*s.at(refs[1]), Value::Const(20));
-    assert_eq!(*s.at(refs[2]), Value::Const(30));
-  });
-}
-
-#[test]
-fn session_list_refs_empty() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    let refs = s.list_refs(items);
-    assert!(refs.is_empty());
-  });
-}
-
-// ===========================================================================
-// Cursor extended tests
-// ===========================================================================
-
-#[test]
-fn cursor_pin_extracts_ref() {
-  let mut region = build_simple_func(1);
-  region.session(|s| {
-    let r = s.cursor().at(|f| &f.name).pin();
-    assert_eq!(*s.at(r), Symbol(1));
-  });
-}
-
-#[test]
-fn cursor_write_with_builder() {
-  let mut region: Region<Func> = Region::new(Func::make(
-    Symbol(1),
-    near(Block::make(Symbol(0), empty(), empty(), Term::make_ret(list([Value::Const(42)])))),
-  ));
-
-  region.session(|s| {
-    s.cursor()
-      .at(|f| &f.entry)
-      .follow()
-      .at(|b| &b.term)
-      .write_with(Term::make_ret(list([Value::Const(99)])));
-  });
-
-  let func: &Func = &region;
-  match &func.entry.term {
-    Term::Ret { values } => {
-      assert_eq!(values.len(), 1);
-      assert_eq!(values[0], Value::Const(99));
-    }
-    Term::Jmp(_) => panic!("expected Ret"),
-  }
-}
-
-// ===========================================================================
-// Panic-path tests (#[should_panic])
-// ===========================================================================
-
-// ===========================================================================
-// ZST tests
-// ===========================================================================
-
-#[derive(Flat, Copy, Clone, Debug, PartialEq, Eq)]
-struct Marker;
-
-#[derive(Flat, Debug)]
-struct TaggedList {
-  tag: Marker,
-  items: NearList<u32>,
-}
-
-#[test]
-fn zst_struct_in_region() {
-  let region: Region<Marker> = Region::new(Marker);
-  let _m: &Marker = &region;
-}
-
-#[test]
-fn zst_field_in_struct() {
-  let region: Region<TaggedList> = Region::new(TaggedList::make(Marker, list([1u32, 2, 3])));
-  let tl: &TaggedList = &region;
-  assert_eq!(tl.tag, Marker);
-  assert_eq!(tl.items.len(), 3);
-  assert_eq!(tl.items[0], 1);
-  assert_eq!(tl.items[1], 2);
-  assert_eq!(tl.items[2], 3);
-}
-
-#[derive(Flat, Debug)]
-struct MarkerList {
-  items: NearList<Marker>,
-}
-
-#[test]
-fn zst_list_elements() {
-  let region: Region<MarkerList> = Region::new(MarkerList::make(list([Marker, Marker, Marker])));
-  let ml: &MarkerList = &region;
-  assert_eq!(ml.items.len(), 3);
-  for m in &ml.items {
-    assert_eq!(*m, Marker);
-  }
-}
-
-// ===========================================================================
-// Segment contiguity tests
-// ===========================================================================
-
-#[test]
-fn fresh_build_single_segment() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
-  ));
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.segment_count(), 1);
-}
-
-#[test]
-fn splice_list_produces_single_segment() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.splice_list(items, [Value::Const(10), Value::Const(20), Value::Const(30)]);
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.segment_count(), 1);
-  assert_eq!(block.items.len(), 3);
-}
-
-#[test]
-fn push_front_creates_multi_segment() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.push_front(items, Value::Const(1));
-  });
-
-  let block: &ListBlock = &region;
-  // push_front creates a new 1-element segment → 2 segments total
-  assert_eq!(block.items.segment_count(), 2);
-  assert_eq!(block.items.len(), 3);
-}
-
-#[test]
-fn trim_compacts_to_single_segment() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
-
-  // push_front creates multi-segment chain
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.push_front(items, Value::Const(1));
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.segment_count(), 2);
-
-  // trim compacts to single segment
-  region.trim();
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.segment_count(), 1);
-  assert_eq!(block.items.len(), 3);
-  assert_eq!(block.items[0], Value::Const(1));
-  assert_eq!(block.items[1], Value::Const(2));
-  assert_eq!(block.items[2], Value::Const(3));
-}
-
-#[test]
-fn extend_then_trim_single_segment() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.extend_list(items, [Value::Const(2), Value::Const(3)]);
-  });
-
-  let block: &ListBlock = &region;
-  // extend_list appends a new segment → 2 segments
-  assert_eq!(block.items.segment_count(), 2);
-
-  region.trim();
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.segment_count(), 1);
-  assert_eq!(block.items.len(), 3);
-  assert_eq!(block.items[0], Value::Const(1));
-  assert_eq!(block.items[1], Value::Const(2));
-  assert_eq!(block.items[2], Value::Const(3));
-}
-
-#[test]
-fn empty_list_zero_segments() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.segment_count(), 0);
-}
-
-#[test]
-fn nested_list_trim_all_single_segment() {
-  let mut region: Region<ListFunc> = Region::new(ListFunc::make(
-    Symbol(1),
-    list([Inst::make(1, Type(0), list([Value::Const(10)].as_slice()))]),
-  ));
-
-  // extend creates multi-segment for outer list
-  region.session(|s| {
-    let insts = s.nav(s.root(), |f| &f.insts);
-    s.extend_list(insts, [Inst::make(2, Type(1), list(vec![Value::Const(20), Value::Const(21)]))]);
-  });
-
-  let func: &ListFunc = &region;
-  assert_eq!(func.insts.segment_count(), 2);
-
-  region.trim();
-
-  let func: &ListFunc = &region;
-  // After trim, both outer and inner lists are single-segment
-  assert_eq!(func.insts.segment_count(), 1);
-  assert_eq!(func.insts.len(), 2);
-  let insts: Vec<&Inst> = func.insts.iter().collect();
-  assert_eq!(insts[0].args.segment_count(), 1);
-  assert_eq!(insts[1].args.segment_count(), 1);
-}
-
-// ===========================================================================
-// NearList::get tests
-// ===========================================================================
-
-#[test]
-fn near_list_get_returns_some() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
-  ));
-  let block: &ListBlock = &region;
-  assert_eq!(*block.items.get(0).unwrap(), Value::Const(10));
-  assert_eq!(*block.items.get(1).unwrap(), Value::Const(20));
-  assert_eq!(*block.items.get(2).unwrap(), Value::Const(30));
-}
-
-#[test]
-fn near_list_get_returns_none_oob() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list([Value::Const(10)])));
-  let block: &ListBlock = &region;
-  assert!(block.items.get(1).is_none());
-  assert!(block.items.get(100).is_none());
-}
-
-#[test]
-fn near_list_get_empty_returns_none() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-  let block: &ListBlock = &region;
-  assert!(block.items.get(0).is_none());
-}
-
-#[test]
-fn index_single_segment_o1() {
-  // After fresh build, all elements are in a single segment → O(1) fast path.
-  let region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
-  ));
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.segment_count(), 1);
-  assert_eq!(block.items[0], Value::Const(10));
-  assert_eq!(block.items[1], Value::Const(20));
-  assert_eq!(block.items[2], Value::Const(30));
-}
-
-#[test]
-fn index_multi_segment_fallback() {
-  // After push_front, we have 2 segments → index falls back to iterator.
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(2), Value::Const(3)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.push_front(items, Value::Const(1));
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.segment_count(), 2);
-  assert_eq!(block.items[0], Value::Const(1));
-  assert_eq!(block.items[1], Value::Const(2));
-  assert_eq!(block.items[2], Value::Const(3));
-}
-
-// ===========================================================================
-// filter_list tests
-// ===========================================================================
-
-#[test]
-fn filter_list_keeps_matching() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(1), Value::Const(2), Value::Const(3), Value::Const(4)]),
-  ));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.filter_list(items, |v| matches!(v, Value::Const(n) if *n % 2 == 0));
-  });
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 2);
-  assert_eq!(block.items[0], Value::Const(2));
-  assert_eq!(block.items[1], Value::Const(4));
-}
-
-#[test]
-fn filter_list_removes_all() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(1), Value::Const(2)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.filter_list(items, |_| false);
-  });
-
-  let block: &ListBlock = &region;
-  assert!(block.items.is_empty());
-}
-
-#[test]
-fn filter_list_keeps_all_noop() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
-  ));
-  let before = region.byte_len();
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.filter_list(items, |_| true);
-  });
-
-  // No-op: nothing filtered, byte_len unchanged.
-  assert_eq!(region.byte_len(), before);
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 3);
-  assert_eq!(block.items[0], Value::Const(1));
-  assert_eq!(block.items[1], Value::Const(2));
-  assert_eq!(block.items[2], Value::Const(3));
-}
-
-#[test]
-fn filter_list_empty() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.filter_list(items, |_| true);
-  });
-
-  let block: &ListBlock = &region;
-  assert!(block.items.is_empty());
-}
-
-#[test]
-fn filter_list_nested_pointers() {
-  // Filter on NearList<Inst> where Inst has NearList<Value> fields.
-  let mut region: Region<ListFunc> = Region::new(ListFunc::make(
-    Symbol(1),
-    list([
-      Inst::make(1, Type(0), list([Value::Const(10)].as_slice())),
-      Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)].as_slice())),
-      Inst::make(3, Type(0), list([Value::Const(30)].as_slice())),
-    ]),
-  ));
-
-  // Keep only instructions with op != 2.
-  region.session(|s| {
-    let insts = s.nav(s.root(), |f| &f.insts);
-    s.filter_list(insts, |inst| inst.op != 2);
-  });
-
-  let func: &ListFunc = &region;
-  assert_eq!(func.insts.len(), 2);
-  let insts: Vec<&Inst> = func.insts.iter().collect();
-  assert_eq!(insts[0].op, 1);
-  assert_eq!(insts[0].args.len(), 1);
-  assert_eq!(insts[0].args[0], Value::Const(10));
-  assert_eq!(insts[1].op, 3);
-  assert_eq!(insts[1].args.len(), 1);
-  assert_eq!(insts[1].args[0], Value::Const(30));
-}
-
-#[test]
-fn filter_list_then_trim() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(1), Value::Const(2), Value::Const(3), Value::Const(4), Value::Const(5)]),
-  ));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.filter_list(items, |v| matches!(v, Value::Const(n) if *n <= 3));
-  });
-
-  region.trim();
-
-  let block: &ListBlock = &region;
-  assert_eq!(block.items.len(), 3);
-  assert_eq!(block.items.segment_count(), 1);
-  assert_eq!(block.items[0], Value::Const(1));
-  assert_eq!(block.items[1], Value::Const(2));
-  assert_eq!(block.items[2], Value::Const(3));
-}
-
-// ===========================================================================
-// list_item tests
-// ===========================================================================
-
-#[test]
-fn list_item_returns_correct_ref() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
-  ));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    let r0 = s.list_item(items, 0);
-    let r1 = s.list_item(items, 1);
-    let r2 = s.list_item(items, 2);
-    assert_eq!(*s.at(r0), Value::Const(10));
-    assert_eq!(*s.at(r1), Value::Const(20));
-    assert_eq!(*s.at(r2), Value::Const(30));
-  });
-}
-
-#[test]
-#[should_panic(expected = "NearList index out of bounds")]
-fn list_item_oob_panics() {
-  let mut region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(10)])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    let _ = s.list_item(items, 5);
-  });
-}
-
-// ===========================================================================
-// NearList::contains tests
-// ===========================================================================
-
-#[test]
-fn near_list_contains_present() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
-  ));
-  assert!(region.items.contains(&Value::Const(2)));
-}
-
-#[test]
-fn near_list_contains_absent() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(1), Value::Const(2), Value::Const(3)]),
-  ));
-  assert!(!region.items.contains(&Value::Const(99)));
-}
-
-#[test]
-fn near_list_contains_empty() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-  assert!(!region.items.contains(&Value::Const(1)));
-}
-
-#[test]
-fn near_list_contains_first_and_last() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(10), Value::Const(20), Value::Const(30)]),
-  ));
-  assert!(region.items.contains(&Value::Const(10)));
-  assert!(region.items.contains(&Value::Const(30)));
-}
-
-// ===========================================================================
-// reverse_list tests
-// ===========================================================================
-
-/// A simple struct with a `NearList<u32>` field for testing.
-#[derive(Flat, Debug)]
-struct U32List {
-  items: NearList<u32>,
-}
-
-#[test]
-fn reverse_list_basic() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 2, 3, 4, 5])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.reverse_list(items);
-  });
-
-  assert_eq!(region.items.len(), 5);
-  assert_eq!(region.items[0], 5);
-  assert_eq!(region.items[1], 4);
-  assert_eq!(region.items[2], 3);
-  assert_eq!(region.items[3], 2);
-  assert_eq!(region.items[4], 1);
-}
-
-#[test]
-fn reverse_list_single() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([42u32])));
-  let before = region.byte_len();
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.reverse_list(items);
-  });
-
-  // No-op: byte_len unchanged for single-element.
-  assert_eq!(region.byte_len(), before);
-  assert_eq!(region.items[0], 42);
-}
-
-#[test]
-fn reverse_list_empty() {
-  let mut region: Region<U32List> = Region::new(U32List::make(empty()));
-  let before = region.byte_len();
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.reverse_list(items);
-  });
-
-  assert_eq!(region.byte_len(), before);
-  assert!(region.items.is_empty());
-}
-
-#[test]
-fn reverse_list_two_elements() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([10u32, 20])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.reverse_list(items);
-  });
-
-  assert_eq!(region.items[0], 20);
-  assert_eq!(region.items[1], 10);
-}
-
-#[test]
-fn reverse_list_then_trim() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 2, 3])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.reverse_list(items);
-  });
-
-  region.trim();
-
-  assert_eq!(region.items.len(), 3);
-  assert_eq!(region.items.segment_count(), 1);
-  assert_eq!(region.items[0], 3);
-  assert_eq!(region.items[1], 2);
-  assert_eq!(region.items[2], 1);
-}
-
-// ===========================================================================
-// sort_list tests
-// ===========================================================================
-
-#[test]
-fn sort_list_basic() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([3u32, 1, 4, 1, 5, 9, 2, 6])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.sort_list(items, u32::cmp);
-  });
-
-  assert_eq!(region.items.len(), 8);
-  assert_eq!(region.items[0], 1);
-  assert_eq!(region.items[1], 1);
-  assert_eq!(region.items[2], 2);
-  assert_eq!(region.items[3], 3);
-  assert_eq!(region.items[4], 4);
-  assert_eq!(region.items[5], 5);
-  assert_eq!(region.items[6], 6);
-  assert_eq!(region.items[7], 9);
-}
-
-#[test]
-fn sort_list_descending() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 2, 3, 4, 5])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.sort_list(items, |a, b| b.cmp(a));
-  });
-
-  assert_eq!(region.items[0], 5);
-  assert_eq!(region.items[1], 4);
-  assert_eq!(region.items[2], 3);
-  assert_eq!(region.items[3], 2);
-  assert_eq!(region.items[4], 1);
-}
-
-#[test]
-fn sort_list_already_sorted() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 2, 3])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.sort_list(items, u32::cmp);
-  });
-
-  assert_eq!(region.items[0], 1);
-  assert_eq!(region.items[1], 2);
-  assert_eq!(region.items[2], 3);
-}
-
-#[test]
-fn sort_list_single() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([42u32])));
-  let before = region.byte_len();
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.sort_list(items, u32::cmp);
-  });
-
-  // No-op for single element.
-  assert_eq!(region.byte_len(), before);
-  assert_eq!(region.items[0], 42);
-}
-
-#[test]
-fn sort_list_empty() {
-  let mut region: Region<U32List> = Region::new(U32List::make(empty()));
-  let before = region.byte_len();
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.sort_list(items, u32::cmp);
-  });
-
-  assert_eq!(region.byte_len(), before);
-  assert!(region.items.is_empty());
-}
-
-#[test]
-fn sort_list_then_trim() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([5u32, 3, 1, 4, 2])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.sort_list(items, u32::cmp);
-  });
-
-  region.trim();
-
-  assert_eq!(region.items.len(), 5);
-  assert_eq!(region.items.segment_count(), 1);
-  let vals: Vec<u32> = region.items.iter().copied().collect();
-  assert_eq!(vals, vec![1, 2, 3, 4, 5]);
-}
-
-#[test]
-fn sort_list_with_value_enum() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(30), Value::Const(10), Value::Const(20)]),
-  ));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.sort_list(items, |a, b| {
-      let Value::Const(a_val) = a else { return core::cmp::Ordering::Equal };
-      let Value::Const(b_val) = b else { return core::cmp::Ordering::Equal };
-      a_val.cmp(b_val)
-    });
-  });
-
-  assert_eq!(region.items[0], Value::Const(10));
-  assert_eq!(region.items[1], Value::Const(20));
-  assert_eq!(region.items[2], Value::Const(30));
-}
-
-// ===========================================================================
-// dedup_list tests
-// ===========================================================================
-
-#[test]
-fn dedup_list_basic() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 1, 2, 3, 3, 3, 2])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.dedup_list(items, |a, b| a == b);
-  });
-
-  assert_eq!(region.items.len(), 4);
-  assert_eq!(region.items[0], 1);
-  assert_eq!(region.items[1], 2);
-  assert_eq!(region.items[2], 3);
-  assert_eq!(region.items[3], 2);
-}
-
-#[test]
-fn dedup_list_no_duplicates() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 2, 3, 4])));
-  let before = region.byte_len();
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.dedup_list(items, |a, b| a == b);
-  });
-
-  // No-op: nothing deduped, byte_len unchanged.
-  assert_eq!(region.byte_len(), before);
-  assert_eq!(region.items.len(), 4);
-}
-
-#[test]
-fn dedup_list_all_same() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([5u32, 5, 5, 5])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.dedup_list(items, |a, b| a == b);
-  });
-
-  assert_eq!(region.items.len(), 1);
-  assert_eq!(region.items[0], 5);
-}
-
-#[test]
-fn dedup_list_empty() {
-  let mut region: Region<U32List> = Region::new(U32List::make(empty()));
-  let before = region.byte_len();
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.dedup_list(items, |a, b| a == b);
-  });
-
-  assert_eq!(region.byte_len(), before);
-  assert!(region.items.is_empty());
-}
-
-#[test]
-fn dedup_list_single() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([42u32])));
-  let before = region.byte_len();
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.dedup_list(items, |a, b| a == b);
-  });
-
-  assert_eq!(region.byte_len(), before);
-  assert_eq!(region.items[0], 42);
-}
-
-#[test]
-fn dedup_list_then_trim() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([1u32, 1, 2, 2, 3, 3])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.dedup_list(items, |a, b| a == b);
-  });
-
-  region.trim();
-
-  assert_eq!(region.items.len(), 3);
-  assert_eq!(region.items.segment_count(), 1);
-  assert_eq!(region.items[0], 1);
-  assert_eq!(region.items[1], 2);
-  assert_eq!(region.items[2], 3);
-}
-
-#[test]
-fn dedup_list_with_value_enum() {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(
-    Symbol(1),
-    list([Value::Const(1), Value::Const(1), Value::Const(2), Value::Const(2), Value::Const(3)]),
-  ));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.dedup_list(items, |a, b| a == b);
-  });
-
-  assert_eq!(region.items.len(), 3);
-  assert_eq!(region.items[0], Value::Const(1));
-  assert_eq!(region.items[1], Value::Const(2));
-  assert_eq!(region.items[2], Value::Const(3));
-}
-
-#[test]
-fn sort_then_dedup() {
-  let mut region: Region<U32List> = Region::new(U32List::make(list([3u32, 1, 2, 1, 3, 2])));
-
-  region.session(|s| {
-    let items = s.nav(s.root(), |r| &r.items);
-    s.sort_list(items, u32::cmp);
-    s.dedup_list(items, |a, b| a == b);
-  });
-
-  assert_eq!(region.items.len(), 3);
-  assert_eq!(region.items[0], 1);
-  assert_eq!(region.items[1], 2);
-  assert_eq!(region.items[2], 3);
-}
-
-// ===========================================================================
-// Panic-path tests (#[should_panic])
-// ===========================================================================
-
-#[test]
-#[should_panic(expected = "NearList index out of bounds")]
-fn near_list_index_out_of_bounds_panics() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list([Value::Const(10)])));
-  let block: &ListBlock = &region;
-  let _ = block.items[5]; // only 1 element, index 5 is OOB
-}
-
-// ===========================================================================
-// Validation success tests
-// ===========================================================================
-
-#[test]
-fn validate_primitive_region() {
-  let region: Region<u32> = Region::new(42u32);
-  let bytes = region.as_bytes();
-  u32::validate(0, bytes).unwrap();
-}
-
-#[test]
-fn validate_struct_with_near() {
-  let region = build_simple_func(1);
-  let bytes = region.as_bytes();
-  Func::validate(0, bytes).unwrap();
-}
-
-#[test]
-fn validate_struct_with_near_list() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(10), Value::Const(20)])));
-  let bytes = region.as_bytes();
-  ListBlock::validate(0, bytes).unwrap();
-}
-
-#[test]
-fn validate_struct_with_option_near_some() {
-  let region: Region<OptBlock> = Region::new(OptBlock::make(
-    Symbol(1),
-    maybe(Some(Block::make(Symbol(2), empty(), empty(), Term::make_ret(list([Value::Const(42)]))))),
-  ));
-  let bytes = region.as_bytes();
-  OptBlock::validate(0, bytes).unwrap();
-}
-
-#[test]
-fn validate_struct_with_option_near_none() {
-  let region: Region<OptBlock> = Region::new(OptBlock::make(Symbol(1), none::<Block>()));
-  let bytes = region.as_bytes();
-  OptBlock::validate(0, bytes).unwrap();
-}
-
-#[test]
-fn validate_nested_structs() {
-  let region: Region<Func> = Region::new(Func::make(
-    Symbol(1),
-    near(Block::make(
-      Symbol(0),
-      list([(Symbol(1), Type(0))]),
-      list([
-        Inst::make(1, Type(0), list([Value::Const(10), Value::Const(11)])),
-        Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)])),
-      ]),
-      Term::make_jmp(Jmp::make(
-        list([Value::Const(1)]),
-        near(Block::make(Symbol(1), empty(), empty(), Term::make_ret(list([Value::Const(42)])))),
-      )),
-    )),
-  ));
-  let bytes = region.as_bytes();
-  Func::validate(0, bytes).unwrap();
-}
-
-#[test]
-fn validate_enum_all_variants() {
-  // Test Ret variant
-  let region: Region<Func> = Region::new(Func::make(
-    Symbol(1),
-    near(Block::make(Symbol(0), empty(), empty(), Term::make_ret(list([Value::Const(1)])))),
-  ));
-  Func::validate(0, region.as_bytes()).unwrap();
-
-  // Test Jmp variant
-  let region: Region<Func> = Region::new(Func::make(
-    Symbol(1),
-    near(Block::make(
-      Symbol(0),
-      empty(),
-      empty(),
-      Term::make_jmp(Jmp::make(
-        empty(),
-        near(Block::make(Symbol(1), empty(), empty(), Term::make_ret(empty()))),
-      )),
-    )),
-  ));
-  Func::validate(0, region.as_bytes()).unwrap();
-}
-
-#[test]
-fn validate_generic_struct() {
-  let region: Region<Signature<u32>> =
-    Region::new(Signature::<u32>::make(list([Type(1)]), list([Type(2)]), list([10u32, 20])));
-  Signature::<u32>::validate(0, region.as_bytes()).unwrap();
-}
-
-#[test]
-fn validate_after_mutation() {
-  let mut region = build_simple_func(1);
-  region.session(|s| {
-    let name = s.nav(s.root(), |f| &f.name);
-    s.set(name, Symbol(99));
-  });
-  Func::validate(0, region.as_bytes()).unwrap();
-}
-
-#[test]
-fn validate_after_trim() {
-  let mut region = build_simple_func(1);
-  region.session(|s| {
-    let jmp_target = s.nav(s.root(), |f| match &f.entry.term {
-      Term::Jmp(jmp) => &jmp.target,
-      Term::Ret { .. } => panic!("expected Jmp"),
-    });
-    s.splice(
-      jmp_target,
-      Block::make(Symbol(50), empty(), empty(), Term::make_ret(list([Value::Const(0)]))),
-    );
-  });
-  region.trim();
-  Func::validate(0, region.as_bytes()).unwrap();
-}
-
-#[test]
-fn validate_empty_list() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-  ListBlock::validate(0, region.as_bytes()).unwrap();
-}
-
-// ===========================================================================
-// Validation failure tests
-// ===========================================================================
-
-#[test]
-fn validate_empty_buffer() {
-  let result = u32::validate(0, &[]);
-  assert!(matches!(result, Err(ValidateError::OutOfBounds { .. })));
-}
-
-#[test]
-fn validate_truncated_buffer() {
-  let region = build_simple_func(1);
-  let bytes = region.as_bytes();
-  // Truncate to just 2 bytes — too small for Func root.
-  let result = Func::validate(0, &bytes[..2]);
-  assert!(matches!(result, Err(ValidateError::OutOfBounds { .. })));
-}
-
-#[test]
-fn validate_bad_near_offset_oob() {
-  let region = build_simple_func(1);
-  let mut bytes = region.as_bytes().to_vec();
-  // The Near<Block> field (entry) is at offset_of!(Func, entry) which is
-  // right after the Symbol(u32) name field = 4 bytes.
-  let near_offset = core::mem::offset_of!(Func, entry);
-  // Write an offset that points way past the buffer.
-  let bad_off: i32 = i32::try_from(bytes.len()).unwrap() * 2;
-  bytes[near_offset..near_offset + 4].copy_from_slice(&bad_off.to_ne_bytes());
-  let result = Func::validate(0, &bytes);
-  assert!(matches!(result, Err(ValidateError::OutOfBounds { .. })));
-}
-
-#[test]
-fn validate_bad_near_offset_zero() {
-  let region = build_simple_func(1);
-  let mut bytes = region.as_bytes().to_vec();
-  let near_offset = core::mem::offset_of!(Func, entry);
-  // Zero out the Near offset → NullNear.
-  bytes[near_offset..near_offset + 4].copy_from_slice(&0i32.to_ne_bytes());
-  let result = Func::validate(0, &bytes);
-  assert!(matches!(result, Err(ValidateError::NullNear { .. })));
-}
-
-#[test]
-fn validate_bad_near_alignment() {
-  let region = build_simple_func(1);
-  let mut bytes = region.as_bytes().to_vec();
-  let near_offset = core::mem::offset_of!(Func, entry);
-  // Set offset to point to an odd address (misaligned for Block which needs
-  // at least align_of::<i32>() = 4).
-  let bad_off: i32 = 1; // points to addr (near_offset + 1) which is odd.
-  bytes[near_offset..near_offset + 4].copy_from_slice(&bad_off.to_ne_bytes());
-  let result = Func::validate(0, &bytes);
-  // Should fail with either Misaligned or OutOfBounds depending on position.
-  assert!(result.is_err());
-}
-
-#[test]
-fn validate_bad_list_header_inconsistent() {
-  let region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), list([Value::Const(10)])));
-  let mut bytes = region.as_bytes().to_vec();
-  let list_offset = core::mem::offset_of!(ListBlock, items);
-  // Set head to non-zero but len to 0 → inconsistent.
-  bytes[list_offset..list_offset + 4].copy_from_slice(&42i32.to_ne_bytes());
-  bytes[list_offset + 4..list_offset + 8].copy_from_slice(&0u32.to_ne_bytes());
-  let result = ListBlock::validate(0, &bytes);
-  assert!(matches!(result, Err(ValidateError::InvalidListHeader { .. })));
-}
-
-#[test]
-fn validate_bad_list_len_mismatch() {
-  let region: Region<ListBlock> =
-    Region::new(ListBlock::make(Symbol(1), list([Value::Const(10), Value::Const(20)])));
-  let mut bytes = region.as_bytes().to_vec();
-  let list_offset = core::mem::offset_of!(ListBlock, items);
-  // Change the total len to 99 while segment has only 2 elements.
-  bytes[list_offset + 4..list_offset + 8].copy_from_slice(&99u32.to_ne_bytes());
-  let result = ListBlock::validate(0, &bytes);
-  assert!(matches!(result, Err(ValidateError::ListLenMismatch { .. })));
-}
-
-#[test]
-fn validate_bad_enum_discriminant() {
-  let region: Region<Func> = Region::new(Func::make(
-    Symbol(1),
-    near(Block::make(Symbol(0), empty(), empty(), Term::make_ret(list([Value::Const(42)])))),
-  ));
-  let mut bytes = region.as_bytes().to_vec();
-  // Find the Term's address: it's at the entry block's term field offset.
-  // We need to follow the Near pointer first.
-  let near_offset = core::mem::offset_of!(Func, entry);
-  let near_off = i32::from_ne_bytes(bytes[near_offset..near_offset + 4].try_into().unwrap());
-  let block_addr = near_offset.cast_signed().wrapping_add(near_off as isize).cast_unsigned();
-  let term_offset = core::mem::offset_of!(Block, term);
-  let disc_addr = block_addr + term_offset;
-  // Set discriminant to 255 (only 2 valid variants: 0 and 1).
-  bytes[disc_addr] = 255;
-  let result = Func::validate(0, &bytes);
-  assert!(matches!(result, Err(ValidateError::InvalidDiscriminant { .. })));
-}
-
-#[derive(Flat, Debug)]
-struct BoolStruct {
-  flag: bool,
-  id: u32,
-}
-
-#[test]
-fn validate_bad_bool() {
-  let region: Region<BoolStruct> = Region::new(BoolStruct { flag: true, id: 42 });
-  let mut bytes = region.as_bytes().to_vec();
-  // Set the bool byte to 2 (invalid).
-  let bool_offset = core::mem::offset_of!(BoolStruct, flag);
-  bytes[bool_offset] = 2;
-  let result = BoolStruct::validate(0, &bytes);
-  assert!(matches!(result, Err(ValidateError::InvalidBool { value: 2, .. })));
-}
-
-// ===========================================================================
-// Roundtrip tests (as_bytes / from_bytes)
-// ===========================================================================
-
-#[test]
-fn region_as_bytes_from_bytes_roundtrip() {
-  let region = build_simple_func(42);
-  let bytes = region.as_bytes();
-  let restored: Region<Func> = Region::from_bytes(bytes).unwrap();
-
-  assert_eq!(restored.name, Symbol(42));
-  let block = restored.entry.get();
-  assert_eq!(block.insts.len(), 1);
-  assert_eq!(block.insts[0].args[0], Value::Const(42));
-}
-
-#[test]
-fn region_from_bytes_unchecked_roundtrip() {
-  let region = build_simple_func(7);
-  let bytes = region.as_bytes();
-  // SAFETY: `bytes` came from `region.as_bytes()` on a valid `Region<Func>`.
-  let restored: Region<Func> = unsafe { Region::from_bytes_unchecked(bytes) };
-
-  assert_eq!(restored.name, Symbol(7));
-  let block = restored.entry.get();
-  assert_eq!(block.insts[0].op, 1);
-}
-
-#[test]
-fn region_from_bytes_complex() {
-  let region: Region<Func> = Region::new(Func::make(
-    Symbol(100),
-    near(Block::make(
-      Symbol(0),
-      list([(Symbol(1), Type(0)), (Symbol(2), Type(1))]),
-      list([
-        Inst::make(1, Type(0), list([Value::Const(10), Value::Const(11)])),
-        Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)])),
-      ]),
-      Term::make_jmp(Jmp::make(
-        list([Value::Const(1)]),
-        near(Block::make(Symbol(1), empty(), empty(), Term::make_ret(list([Value::Const(42)])))),
-      )),
-    )),
-  ));
-
-  let bytes = region.as_bytes();
-  let restored: Region<Func> = Region::from_bytes(bytes).unwrap();
-
-  assert_eq!(restored.name, Symbol(100));
-  let block = restored.entry.get();
-  assert_eq!(block.params.len(), 2);
-  assert_eq!(block.insts.len(), 2);
-  assert_eq!(block.insts[0].args[0], Value::Const(10));
-  match &block.term {
-    Term::Jmp(jmp) => {
-      assert_eq!(jmp.target.get().name, Symbol(1));
-    }
-    Term::Ret { .. } => panic!("expected Jmp"),
-  }
-}
-
-#[test]
-fn region_from_bytes_clone_equivalence() {
-  let region = build_simple_func(5);
-  let cloned = region.clone();
-  let from_bytes: Region<Func> = Region::from_bytes(region.as_bytes()).unwrap();
-
-  // Both should produce equivalent regions.
-  assert_eq!(cloned.name, from_bytes.name);
-  assert_eq!(cloned.entry.get().name, from_bytes.entry.get().name);
-  assert_eq!(cloned.entry.get().insts.len(), from_bytes.entry.get().insts.len());
-}
-
-#[test]
-fn region_from_bytes_fixed_buf() {
-  use nearest::FixedBuf;
-
-  let region: Region<u32, FixedBuf<64>> = Region::new_in(42u32);
-  let bytes = region.as_bytes();
-  let restored: Region<u32, FixedBuf<64>> = Region::from_bytes(bytes).unwrap();
-  assert_eq!(*restored, 42);
-}
-
-// ===========================================================================
-// from_bytes_unchecked / from_buf_unchecked tests
-// ===========================================================================
-
-#[test]
-fn from_bytes_unchecked_matches_checked_simple() {
-  let region: Region<Func> = build_simple_func(99);
-  let bytes = region.as_bytes();
-
-  let checked: Region<Func> = Region::from_bytes(bytes).unwrap();
-  // SAFETY: `bytes` came from `as_bytes()` on a valid `Region<Func>`.
-  let unchecked: Region<Func> = unsafe { Region::from_bytes_unchecked(bytes) };
-
-  assert_eq!(checked.name, unchecked.name);
-  assert_eq!(checked.entry.get().name, unchecked.entry.get().name);
-  assert_eq!(checked.entry.get().insts.len(), unchecked.entry.get().insts.len());
-  assert_eq!(checked.entry.get().insts[0].op, unchecked.entry.get().insts[0].op);
-  // Note: raw byte comparison is omitted for Func because Value enums have
-  // uninitialized padding bytes, which would trip Miri.
-  assert_eq!(checked.byte_len(), unchecked.byte_len());
-}
-
-#[test]
-fn from_bytes_unchecked_matches_checked_complex() {
-  let region: Region<Func> = Region::new(Func::make(
-    Symbol(200),
-    near(Block::make(
-      Symbol(0),
-      list([(Symbol(1), Type(0)), (Symbol(2), Type(1))]),
-      list([
-        Inst::make(1, Type(0), list([Value::Const(10), Value::Const(11)])),
-        Inst::make(2, Type(1), list([Value::Const(20), Value::Const(21)])),
-      ]),
-      Term::make_jmp(Jmp::make(
-        list([Value::Const(1)]),
-        near(Block::make(Symbol(1), empty(), empty(), Term::make_ret(list([Value::Const(42)])))),
-      )),
-    )),
-  ));
-
-  let bytes = region.as_bytes();
-  let checked: Region<Func> = Region::from_bytes(bytes).unwrap();
-  // SAFETY: `bytes` came from `as_bytes()` on a valid `Region<Func>`.
-  let unchecked: Region<Func> = unsafe { Region::from_bytes_unchecked(bytes) };
-
-  assert_eq!(checked.name, unchecked.name);
-  let cb = checked.entry.get();
-  let ub = unchecked.entry.get();
-  assert_eq!(cb.params.len(), ub.params.len());
-  assert_eq!(cb.insts.len(), ub.insts.len());
-  for i in 0..cb.insts.len() {
-    assert_eq!(cb.insts[i].op, ub.insts[i].op);
-    assert_eq!(cb.insts[i].typ, ub.insts[i].typ);
-    assert_eq!(cb.insts[i].args.len(), ub.insts[i].args.len());
-  }
-  assert_eq!(checked.byte_len(), unchecked.byte_len());
-}
-
-#[test]
-fn from_bytes_unchecked_primitive() {
-  let region: Region<u32> = Region::new(42u32);
-  let bytes = region.as_bytes();
-
-  let checked: Region<u32> = Region::from_bytes(bytes).unwrap();
-  // SAFETY: `bytes` came from `as_bytes()` on a valid `Region<u32>`.
-  let unchecked: Region<u32> = unsafe { Region::from_bytes_unchecked(bytes) };
-
-  assert_eq!(*checked, *unchecked);
-  assert_eq!(checked.as_bytes(), unchecked.as_bytes());
-}
-
-#[test]
-fn from_bytes_unchecked_generic_type() {
-  let region: Region<Signature<u32>> = Region::new(Signature::<u32>::make(
-    list([Type(0), Type(1)]),
-    list([Type(2)]),
-    list([10u32, 20, 30]),
-  ));
-  let bytes = region.as_bytes();
-
-  let checked: Region<Signature<u32>> = Region::from_bytes(bytes).unwrap();
-  // SAFETY: `bytes` came from `as_bytes()` on a valid `Region<Signature<u32>>`.
-  let unchecked: Region<Signature<u32>> = unsafe { Region::from_bytes_unchecked(bytes) };
-
-  assert_eq!(checked.params.len(), unchecked.params.len());
-  assert_eq!(checked.returns.len(), unchecked.returns.len());
-  assert_eq!(checked.custom.len(), unchecked.custom.len());
-  for i in 0..checked.custom.len() {
-    assert_eq!(checked.custom[i], unchecked.custom[i]);
-  }
-  assert_eq!(checked.as_bytes(), unchecked.as_bytes());
-}
-
-#[test]
-fn from_buf_unchecked_fixed_buf() {
-  use nearest::{Buf, FixedBuf};
-
-  let region: Region<u32, FixedBuf<64>> = Region::new_in(42u32);
-  let bytes = region.as_bytes();
-
-  let mut buf = FixedBuf::<64>::new();
-  buf.extend_from_slice(bytes);
-
-  // SAFETY: `buf` contains bytes from a valid `Region<u32>`.
-  let restored: Region<u32, FixedBuf<64>> = unsafe { Region::from_buf_unchecked(buf) };
-  assert_eq!(*restored, 42);
-}
-
-#[test]
-fn from_buf_unchecked_matches_checked() {
-  use nearest::Buf;
-
-  let region: Region<Func> = build_simple_func(77);
-  let bytes = region.as_bytes();
-
-  let checked: Region<Func> = Region::from_bytes(bytes).unwrap();
-
-  let mut buf = nearest::AlignedBuf::<Func>::with_capacity(bytes.len() as u32);
-  buf.extend_from_slice(bytes);
-  // SAFETY: `buf` contains bytes from a valid `Region<Func>`.
-  let unchecked: Region<Func> = unsafe { Region::from_buf_unchecked(buf) };
-
-  assert_eq!(checked.name, unchecked.name);
-  assert_eq!(checked.entry.get().name, unchecked.entry.get().name);
-  assert_eq!(checked.byte_len(), unchecked.byte_len());
-}
-
-#[test]
-fn from_bytes_unchecked_after_mutation_and_trim() {
-  let mut region: Region<Func> = build_simple_func(50);
-
-  region.session(|s| {
-    let root = s.root();
-    let name = s.nav(root, |f| &f.name);
-    s.set(name, Symbol(999));
-  });
-  region.trim();
-
-  let bytes = region.as_bytes();
-  let checked: Region<Func> = Region::from_bytes(bytes).unwrap();
-  // SAFETY: `bytes` came from `as_bytes()` on a valid (trimmed) `Region<Func>`.
-  let unchecked: Region<Func> = unsafe { Region::from_bytes_unchecked(bytes) };
-
-  assert_eq!(checked.name, Symbol(999));
-  assert_eq!(unchecked.name, Symbol(999));
-  assert_eq!(checked.byte_len(), unchecked.byte_len());
-}
-
-// ===========================================================================
-// serde roundtrip tests
-// ===========================================================================
-
-#[cfg(feature = "serde")]
-mod serde_tests {
-  use nearest::{Flat, Near, NearList, Region, list, near};
-
-  // Serde test types — use only 4-byte-aligned fields so there is no internal
-  // padding. Types with enum padding (e.g. `Value`) cause uninitialized bytes
-  // in the buffer due to a pre-existing issue in `gen_emit_self` (whole-value
-  // `write_flat` copies uninit padding from the stack). Avoiding padding here
-  // keeps serde tests Miri-clean.
-
-  #[derive(Flat, Debug)]
-  struct SNode {
-    id: u32,
-    items: NearList<u32>,
-  }
-
-  #[derive(Flat, Debug)]
-  struct SFunc {
-    name: u32,
-    entry: Near<SNode>,
-  }
-
-  #[test]
-  fn serde_json_roundtrip_simple() {
-    let region: Region<SNode> = Region::new(SNode::make(42, list([1u32, 2, 3])));
-    let json = serde_json::to_string(&region).unwrap();
-    let restored: Region<SNode> = serde_json::from_str(&json).unwrap();
-    assert_eq!(restored.id, 42);
-    assert_eq!(restored.items.len(), 3);
-    assert_eq!(restored.items[0], 1);
-    assert_eq!(restored.items[1], 2);
-    assert_eq!(restored.items[2], 3);
-  }
-
-  #[test]
-  fn serde_json_roundtrip_nested() {
-    let region: Region<SFunc> =
-      Region::new(SFunc::make(100, near(SNode::make(7, list([10u32, 20, 30])))));
-    let json = serde_json::to_string(&region).unwrap();
-    let restored: Region<SFunc> = serde_json::from_str(&json).unwrap();
-    assert_eq!(restored.name, 100);
-    assert_eq!(restored.entry.get().id, 7);
-    assert_eq!(restored.entry.get().items.len(), 3);
-    assert_eq!(restored.entry.get().items[0], 10);
-    assert_eq!(restored.entry.get().items[1], 20);
-    assert_eq!(restored.entry.get().items[2], 30);
-  }
-
-  #[test]
-  fn serde_json_roundtrip_fixed_buf() {
-    use nearest::FixedBuf;
-
-    let region: Region<SNode, FixedBuf<256>> = Region::new_in(SNode::make(7, list([10u32, 20])));
-    let json = serde_json::to_string(&region).unwrap();
-    let restored: Region<SNode, FixedBuf<256>> = serde_json::from_str(&json).unwrap();
-    assert_eq!(restored.id, 7);
-    assert_eq!(restored.items.len(), 2);
-    assert_eq!(restored.items[0], 10);
-    assert_eq!(restored.items[1], 20);
-  }
-
-  #[test]
-  fn serde_json_invalid_bytes_rejected() {
-    let bad_json = serde_json::to_string(&[0u8; 2]).unwrap();
-    let result: Result<Region<SNode>, _> = serde_json::from_str(&bad_json);
-    assert!(result.is_err());
-  }
-
-  #[test]
-  fn serde_roundtrip_preserves_byte_equality() {
-    let region: Region<SNode> = Region::new(SNode::make(99, list([5u32, 6, 7, 8])));
-    let original_bytes = region.as_bytes().to_vec();
-    let json = serde_json::to_string(&region).unwrap();
-    let restored: Region<SNode> = serde_json::from_str(&json).unwrap();
-    assert_eq!(restored.as_bytes(), &original_bytes[..]);
-  }
-}
-
-// ===========================================================================
-// PartialEq / Eq tests
-// ===========================================================================
-
-#[derive(Flat, Debug, PartialEq, Eq)]
-struct EqNode {
-  id: u32,
-  items: NearList<u32>,
-}
-
-#[derive(Flat, Debug, PartialEq, Eq)]
-struct EqNested {
-  label: u32,
-  child: Near<EqNode>,
-}
-
-#[test]
-fn region_eq_identical_builds() {
-  let a = Region::new(EqNode::make(1, list([10u32, 20, 30])));
-  let b = Region::new(EqNode::make(1, list([10u32, 20, 30])));
-  assert_eq!(a, b);
-}
-
-#[test]
-fn region_eq_clone() {
-  let a = Region::new(EqNode::make(42, list([1u32, 2, 3])));
-  let b = a.clone();
-  assert_eq!(a, b);
-}
-
-#[test]
-fn region_ne_different_scalar() {
-  let a = Region::new(EqNode::make(1, list([10u32, 20])));
-  let b = Region::new(EqNode::make(2, list([10u32, 20])));
-  assert_ne!(a, b);
-}
-
-#[test]
-fn region_ne_different_list_len() {
-  let a = Region::new(EqNode::make(1, list([10u32, 20])));
-  let b = Region::new(EqNode::make(1, list([10u32, 20, 30])));
-  assert_ne!(a, b);
-}
-
-#[test]
-fn region_ne_different_list_values() {
-  let a = Region::new(EqNode::make(1, list([10u32, 20, 30])));
-  let b = Region::new(EqNode::make(1, list([10u32, 20, 99])));
-  assert_ne!(a, b);
-}
-
-#[test]
-fn region_eq_empty_lists() {
-  let a: Region<EqNode> = Region::new(EqNode::make(5, empty()));
-  let b: Region<EqNode> = Region::new(EqNode::make(5, empty()));
-  assert_eq!(a, b);
-}
-
-#[test]
-fn region_eq_after_trim_same_logical_content() {
-  let a = Region::new(EqNode::make(1, list([100u32])));
-
-  let mut b = Region::new(EqNode::make(1, list([10u32, 20, 30])));
-  b.session(|s| {
-    let items = s.nav(s.root(), |n| &n.items);
-    s.splice_list(items, [100u32]);
-  });
-  assert!(b.byte_len() > a.byte_len());
-  b.trim();
-  assert_eq!(a, b);
-}
-
-#[test]
-fn region_eq_nested_near() {
-  let a = Region::new(EqNested::make(1, near(EqNode::make(2, list([3u32, 4])))));
-  let b = Region::new(EqNested::make(1, near(EqNode::make(2, list([3u32, 4])))));
-  assert_eq!(a, b);
-}
-
-#[test]
-fn region_ne_nested_near_different_child() {
-  let a = Region::new(EqNested::make(1, near(EqNode::make(2, list([3u32, 4])))));
-  let b = Region::new(EqNested::make(1, near(EqNode::make(9, list([3u32, 4])))));
-  assert_ne!(a, b);
-}
-
-#[test]
-fn region_eq_different_buffer_layouts() {
-  let mut a = Region::new(EqNode::make(7, list([1u32, 2])));
-  a.session(|s| {
-    let items = s.nav(s.root(), |n| &n.items);
-    s.push_front(items, 0u32);
-  });
-
-  let b = Region::new(EqNode::make(7, list([0u32, 1, 2])));
-
-  assert_ne!(a.byte_len(), b.byte_len());
-  assert_eq!(a, b);
-}
-
-// ===========================================================================
-// Display tests
-// ===========================================================================
-
-#[derive(Flat, Debug)]
-struct DisplayNode {
-  value: u32,
-  child: Near<u32>,
-}
-
-#[derive(Flat, Debug)]
-struct DisplayList {
-  items: NearList<u32>,
-}
-
-#[test]
-fn display_near_delegates_to_target() {
-  let region = Region::new(DisplayNode::make(1, near(42u32)));
-  let output = format!("{}", region.child);
-  assert_eq!(output, "42");
-}
-
-#[test]
-fn display_near_with_format_spec() {
-  let region = Region::new(DisplayNode::make(1, near(42u32)));
-  let output = format!("{:>5}", region.child);
-  assert_eq!(output, "   42");
-}
-
-#[test]
-fn display_nearlist_empty() {
-  let region = Region::new(DisplayList::make(empty()));
-  let output = format!("{}", region.items);
-  assert_eq!(output, "[]");
-}
-
-#[test]
-fn display_nearlist_single() {
-  let region = Region::new(DisplayList::make(list([7u32])));
-  let output = format!("{}", region.items);
-  assert_eq!(output, "[7]");
-}
-
-#[test]
-fn display_nearlist_multiple() {
-  let region = Region::new(DisplayList::make(list([1u32, 2, 3])));
-  let output = format!("{}", region.items);
-  assert_eq!(output, "[1, 2, 3]");
-}
-
-#[test]
-fn display_region_delegates_to_root() {
-  let region: Region<u32> = Region::new(42u32);
-  let output = format!("{region}");
-  assert_eq!(output, "42");
-}
-
-// ===========================================================================
-// Derive attribute tests — #[flat(into)] and #[flat(rename = "...")]
-// ===========================================================================
-
-/// A struct using `#[flat(into)]` on primitive fields.
-#[derive(Flat, Debug)]
-struct IntoInst {
-  #[flat(into)]
-  op: u16,
-  typ: Type,
-  args: NearList<Value>,
-}
-
-/// A struct using `#[flat(into)]` on an `Other`-classified field (user type).
-#[derive(Flat, Debug)]
-struct IntoOther {
-  #[flat(into)]
-  sym: Symbol,
-  val: u32,
-}
-
-/// An enum using `#[flat(rename = "...")]` on variants.
-#[derive(Flat, Debug)]
-#[repr(C, u8)]
-#[expect(dead_code, reason = "variants constructed via renamed emitters")]
-enum RenamedTerm {
-  #[flat(rename = "ret")]
-  Return { values: NearList<Value> },
-  #[flat(rename = "br")]
-  Jump(Jmp),
-}
-
-/// An enum with a renamed unit variant — only useful when it has pointer fields.
-#[derive(Flat, Debug)]
-#[repr(C, u8)]
-#[expect(dead_code, reason = "variants constructed via renamed emitters")]
-enum Signal {
-  #[flat(rename = "on")]
-  Enabled,
-  #[flat(rename = "off")]
-  Disabled,
-  #[flat(rename = "val")]
-  WithPayload { data: Near<Type> },
-}
-
-#[test]
-fn flat_into_primitive_field() {
-  // `op` accepts `impl Into<u16>` — pass a u8 which converts to u16.
-  let region: Region<IntoInst> =
-    Region::new(IntoInst::make(42u8, Type(1), list([Value::Const(10)])));
-  let inst: &IntoInst = &region;
-  assert_eq!(inst.op, 42);
-  assert_eq!(inst.typ, Type(1));
-  assert_eq!(inst.args.len(), 1);
-  assert_eq!(inst.args[0], Value::Const(10));
-}
-
-#[test]
-fn flat_into_primitive_exact_type() {
-  // `#[flat(into)]` still accepts the exact type as well.
-  let region: Region<IntoInst> = Region::new(IntoInst::make(1000u16, Type(0), empty()));
-  let inst: &IntoInst = &region;
-  assert_eq!(inst.op, 1000);
-}
-
-#[test]
-fn flat_into_other_field() {
-  // `sym` is `Symbol(u32)` with `#[flat(into)]`, so it accepts `impl Into<Symbol>`.
-  // Since Symbol is a newtype, we just pass it directly (Into<Symbol> for Symbol).
-  let region: Region<IntoOther> = Region::new(IntoOther::make(Symbol(42), 7));
-  let other: &IntoOther = &region;
-  assert_eq!(other.sym, Symbol(42));
-  assert_eq!(other.val, 7);
-}
-
-#[test]
-fn flat_rename_enum_variant_named() {
-  // `#[flat(rename = "ret")]` changes `make_return` to `ret`.
-  let region: Region<RenamedTerm> = Region::new(RenamedTerm::ret(list([Value::Const(42)])));
-  let term: &RenamedTerm = &region;
-  match term {
-    RenamedTerm::Return { values } => {
-      assert_eq!(values.len(), 1);
-      assert_eq!(values[0], Value::Const(42));
-    }
-    RenamedTerm::Jump(_) => panic!("expected Return"),
-  }
-}
-
-#[test]
-fn flat_rename_enum_variant_unnamed() {
-  // `#[flat(rename = "br")]` changes `make_jump` to `br`.
-  let region: Region<RenamedTerm> = Region::new(RenamedTerm::br(Jmp::make(
-    list([Value::Const(1)]),
-    near(Block::make(Symbol(0), empty(), empty(), Term::make_ret(list([Value::Const(99)])))),
-  )));
-  let term: &RenamedTerm = &region;
-  match term {
-    RenamedTerm::Jump(jmp) => {
-      assert_eq!(jmp.args.len(), 1);
-      assert_eq!(jmp.args[0], Value::Const(1));
-    }
-    RenamedTerm::Return { .. } => panic!("expected Jump"),
-  }
-}
-
-#[test]
-fn flat_rename_enum_unit_variant() {
-  // `#[flat(rename = "on")]` changes `make_enabled` to `on`.
-  let region: Region<Signal> = Region::new(Signal::on());
-  let sig: &Signal = &region;
-  assert!(matches!(sig, Signal::Enabled));
-}
-
-#[test]
-fn flat_rename_enum_all_variants() {
-  // Test all renamed variants of Signal.
-  let r1: Region<Signal> = Region::new(Signal::on());
-  assert!(matches!(&*r1, Signal::Enabled));
-
-  let r2: Region<Signal> = Region::new(Signal::off());
-  assert!(matches!(&*r2, Signal::Disabled));
-
-  let r3: Region<Signal> = Region::new(Signal::val(near(Type(7))));
-  match &*r3 {
-    Signal::WithPayload { data } => assert_eq!(*data.get(), Type(7)),
-    _ => panic!("expected WithPayload"),
-  }
-}
-
-#[test]
-fn flat_into_clone_preserves() {
-  let region: Region<IntoInst> =
-    Region::new(IntoInst::make(100u8, Type(2), list([Value::Const(5)])));
-  let cloned = region.clone();
-  let i1: &IntoInst = &region;
-  let i2: &IntoInst = &cloned;
-  assert_eq!(i1.op, i2.op);
-  assert_eq!(i1.typ, i2.typ);
-  assert_eq!(i1.args[0], i2.args[0]);
-}
-
-#[test]
-fn flat_into_trim_preserves() {
-  let mut region: Region<IntoInst> =
-    Region::new(IntoInst::make(200u8, Type(3), list([Value::Const(7), Value::Const(8)])));
-  region.trim();
-  let inst: &IntoInst = &region;
-  assert_eq!(inst.op, 200);
-  assert_eq!(inst.args.len(), 2);
-  assert_eq!(inst.args[0], Value::Const(7));
-  assert_eq!(inst.args[1], Value::Const(8));
-}
-
-// ===========================================================================
-// Consuming conversions: into_buf, into_vec, AsRef<[u8]>, From
-// ===========================================================================
-
-#[test]
-fn into_buf_roundtrip() {
-  use nearest::{AlignedBuf, Buf};
-
-  let region = build_simple_func(7);
-  let byte_len = region.byte_len();
-  let buf: AlignedBuf<Func> = region.into_buf();
-  // The buffer preserves the exact byte length.
-  assert_eq!(buf.len() as usize, byte_len);
-  // The buffer can be used to restore a region via from_bytes.
-  let restored: Region<Func> = Region::from_bytes(buf.as_bytes()).unwrap();
-  assert_eq!(restored.name, Symbol(7));
-  assert_eq!(restored.entry.insts.len(), 1);
-}
-
-#[test]
-fn into_vec_returns_correct_length() {
-  let region = build_simple_func(42);
-  let expected_len = region.byte_len();
-  let vec = region.into_vec();
-  assert_eq!(vec.len(), expected_len);
-}
-
-#[test]
-fn into_vec_roundtrip() {
-  let region: Region<Func> = Region::new(Func::make(
-    Symbol(100),
-    near(Block::make(
-      Symbol(0),
-      list([(Symbol(1), Type(2))]),
-      list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
-      Term::make_ret(list([Value::Const(99)])),
-    )),
-  ));
-  let vec = region.into_vec();
-  let restored: Region<Func> = Region::from_bytes(&vec).unwrap();
-  assert_eq!(restored.name, Symbol(100));
-  assert_eq!(restored.entry.params.len(), 1);
-  assert_eq!(restored.entry.insts[0].args[0], Value::Const(42));
-}
-
-#[test]
-fn into_vec_primitive_region() {
-  let region: Region<u32> = Region::new(42u32);
-  let vec = region.into_vec();
-  let restored: Region<u32> = Region::from_bytes(&vec).unwrap();
-  assert_eq!(*restored, 42);
-  // u32 has no padding, so we can safely compare raw bytes.
-  assert_eq!(vec, 42u32.to_ne_bytes());
-}
-
-#[test]
-fn as_ref_u8_slice() {
-  let region = build_simple_func(5);
-  let as_ref: &[u8] = region.as_ref();
-  // Both as_ref and as_bytes return the same buffer slice.
-  assert!(core::ptr::eq(as_ref, region.as_bytes()));
-  assert_eq!(as_ref.len(), region.byte_len());
-}
-
-#[test]
-fn as_ref_works_with_generic_api() {
-  fn byte_len(data: &impl AsRef<[u8]>) -> usize {
-    data.as_ref().len()
-  }
-
-  let region = build_simple_func(1);
-  let len = byte_len(&region);
-  assert_eq!(len, region.byte_len());
-}
-
-#[test]
-fn from_region_for_vec() {
-  let region = build_simple_func(3);
-  let expected_len = region.byte_len();
-  let vec: Vec<u8> = region.into();
-  assert_eq!(vec.len(), expected_len);
-  // Verify by restoring a region from the vec.
-  let restored: Region<Func> = Region::from_bytes(&vec).unwrap();
-  assert_eq!(restored.name, Symbol(3));
-}
-
-#[test]
-fn into_vec_after_mutation_and_trim() {
-  let mut region = build_simple_func(1);
-  region.session(|s| {
-    let name = s.nav(s.root(), |f| &f.name);
-    s.set(name, Symbol(99));
-  });
-  region.trim();
-
-  let vec = region.into_vec();
-  let restored: Region<Func> = Region::from_bytes(&vec).unwrap();
-  assert_eq!(restored.name, Symbol(99));
-}
-
-#[test]
-fn into_buf_fixed_buf() {
-  use nearest::{Buf, FixedBuf};
-
-  let region: Region<u32, FixedBuf<64>> = Region::new_in(42u32);
-  let byte_len = region.byte_len();
-  let buf: FixedBuf<64> = region.into_buf();
-  assert_eq!(buf.len() as usize, byte_len);
-  // u32 has no padding, raw bytes are safe to compare.
-  assert_eq!(buf.as_bytes(), &42u32.to_ne_bytes());
-}
-
-// TODO
-// // ===========================================================================
-// // Option<NearList<T>> tests
-// // ===========================================================================
-//
-// /// A struct with an `Option<NearList<T>>` field for testing.
-// #[derive(Flat, Debug)]
-// struct OptListBlock {
-//   name: Symbol,
-//   items: Option<NearList<u32>>,
-// }
-//
-// #[test]
-// fn option_near_list_some_roundtrip() {
-//   let region: Region<OptListBlock> =
-//     Region::new(OptListBlock::make(Symbol(1), Some([10u32, 20, 30])));
-//
-//   let ob: &OptListBlock = &region;
-//   assert_eq!(ob.name, Symbol(1));
-//   let list = ob.items.as_ref().expect("should be Some");
-//   assert_eq!(list.len(), 3);
-//   assert_eq!(list[0], 10);
-//   assert_eq!(list[1], 20);
-//   assert_eq!(list[2], 30);
-// }
-//
-// #[test]
-// fn option_near_list_none_roundtrip() {
-//   let region: Region<OptListBlock> = Region::new(OptListBlock::make(Symbol(1), None::<[u32; 0]>));
-//
-//   let ob: &OptListBlock = &region;
-//   assert_eq!(ob.name, Symbol(1));
-//   assert!(ob.items.is_none());
-// }
-//
-// #[test]
-// fn option_near_list_some_empty_roundtrip() {
-//   let region: Region<OptListBlock> = Region::new(OptListBlock::make(Symbol(1), Some(empty())));
-//
-//   let ob: &OptListBlock = &region;
-//   assert_eq!(ob.name, Symbol(1));
-//   let list = ob.items.as_ref().expect("should be Some (empty)");
-//   assert_eq!(list.len(), 0);
-// }
-//
-// #[test]
-// fn option_near_list_trim() {
-//   let mut region: Region<OptListBlock> =
-//     Region::new(OptListBlock::make(Symbol(1), Some([10u32, 20, 30])));
-//
-//   let before = region.byte_len();
-//   region.trim();
-//   assert_eq!(region.byte_len(), before);
-//
-//   let ob: &OptListBlock = &region;
-//   let list = ob.items.as_ref().expect("should be Some");
-//   assert_eq!(list.len(), 3);
-//   assert_eq!(list[0], 10);
-//   assert_eq!(list[1], 20);
-//   assert_eq!(list[2], 30);
-// }
-//
-// #[test]
-// fn option_near_list_validate_some() {
-//   let region: Region<OptListBlock> =
-//     Region::new(OptListBlock::make(Symbol(1), Some([10u32, 20, 30])));
-//   let bytes = region.as_bytes();
-//   OptListBlock::validate(0, bytes).unwrap();
-// }
-//
-// #[test]
-// fn option_near_list_validate_none() {
-//   let region: Region<OptListBlock> = Region::new(OptListBlock::make(Symbol(1), None::<[u32; 0]>));
-//   let bytes = region.as_bytes();
-//   OptListBlock::validate(0, bytes).unwrap();
-// }
-//
-// // ===========================================================================
-// // from_bytes roundtrip for Option<Near<T>>
-// // ===========================================================================
-//
-// #[test]
-// fn from_bytes_option_near_some() {
-//   let region: Region<OptBlock> = Region::new(OptBlock::make(
-//     Symbol(1),
-//     Some(Block::make(Symbol(2), empty(), empty(), Term::make_ret([Value::Const(42)]))),
-//   ));
-//   let bytes = region.as_bytes().to_vec();
-//   let restored: Region<OptBlock> = Region::from_bytes(&bytes).unwrap();
-//   let ob: &OptBlock = &restored;
-//   assert_eq!(ob.name, Symbol(1));
-//   let next = ob.next.as_ref().expect("should be Some");
-//   assert_eq!(next.get().name, Symbol(2));
-// }
-//
-// #[test]
-// fn from_bytes_option_near_none() {
-//   let region: Region<OptBlock> =
-//     Region::new(OptBlock::make(Symbol(1), None::<std::convert::Infallible>));
-//   let bytes = region.as_bytes().to_vec();
-//   let restored: Region<OptBlock> = Region::from_bytes(&bytes).unwrap();
-//   let ob: &OptBlock = &restored;
-//   assert_eq!(ob.name, Symbol(1));
-//   assert!(ob.next.is_none());
-// }
-//
-// #[test]
-// fn from_bytes_option_near_list_some() {
-//   let region: Region<OptListBlock> =
-//     Region::new(OptListBlock::make(Symbol(1), Some([10u32, 20, 30])));
-//   let bytes = region.as_bytes().to_vec();
-//   let restored: Region<OptListBlock> = Region::from_bytes(&bytes).unwrap();
-//   let ob: &OptListBlock = &restored;
-//   assert_eq!(ob.name, Symbol(1));
-//   let list = ob.items.as_ref().expect("should be Some");
-//   assert_eq!(list.len(), 3);
-//   assert_eq!(list[0], 10);
-// }
-//
-// #[test]
-// fn from_bytes_option_near_list_none() {
-//   let region: Region<OptListBlock> = Region::new(OptListBlock::make(Symbol(1), None::<[u32; 0]>));
-//   let bytes = region.as_bytes().to_vec();
-//   let restored: Region<OptListBlock> = Region::from_bytes(&bytes).unwrap();
-//   let ob: &OptListBlock = &restored;
-//   assert_eq!(ob.name, Symbol(1));
-//   assert!(ob.items.is_none());
-// }
-
-// ===========================================================================
-// array() emitter tests
-// ===========================================================================
-
-#[test]
-fn array_primitive_field() {
-  let region: Region<PrimArray> = Region::new(PrimArray::make(42, [10u32, 20, 30]));
-  assert_eq!(region.tag, 42);
-  assert_eq!(region.values, [10, 20, 30]);
-}
-
-#[test]
-fn array_primitive_field_zeros() {
-  let region: Region<PrimArray> = Region::new(PrimArray::make(0, [0u32, 0, 0]));
-  assert_eq!(region.tag, 0);
-  assert_eq!(region.values, [0, 0, 0]);
-}
-
-#[test]
-fn array_near_field() {
-  let region: Region<Brif> = Region::new(Brif::make(
-    1,
-    array([
-      near(Block::make(Symbol(10), empty(), empty(), Term::make_ret(empty()))),
-      near(Block::make(Symbol(20), empty(), empty(), Term::make_ret(empty()))),
-    ]),
-  ));
-  assert_eq!(region.cond, 1);
-  assert_eq!(region.targets[0].name, Symbol(10));
-  assert_eq!(region.targets[1].name, Symbol(20));
-}
-
-#[test]
-fn array_near_field_with_contents() {
-  let region: Region<Brif> = Region::new(Brif::make(
-    7,
-    array([
-      near(Block::make(
-        Symbol(1),
-        empty(),
-        list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
-        Term::make_ret(list([Value::Const(100)])),
-      )),
-      near(Block::make(
-        Symbol(2),
-        empty(),
-        list([Inst::make(2, Type(1), list([Value::Const(99)]))]),
-        Term::make_ret(list([Value::Const(200)])),
-      )),
-    ]),
-  ));
-  assert_eq!(region.cond, 7);
-
-  let b0 = &*region.targets[0];
-  assert_eq!(b0.name, Symbol(1));
-  assert_eq!(b0.insts.len(), 1);
-  match &b0.term {
-    Term::Ret { values } => assert_eq!(values[0], Value::Const(100)),
-    Term::Jmp(_) => panic!("expected Ret"),
-  }
-
-  let b1 = &*region.targets[1];
-  assert_eq!(b1.name, Symbol(2));
-  assert_eq!(b1.insts.len(), 1);
-  match &b1.term {
-    Term::Ret { values } => assert_eq!(values[0], Value::Const(200)),
-    Term::Jmp(_) => panic!("expected Ret"),
-  }
-}
-
-#[test]
-fn array_clone_region() {
-  let region: Region<Brif> = Region::new(Brif::make(
-    3,
-    array([
-      near(Block::make(Symbol(10), empty(), empty(), Term::make_ret(empty()))),
-      near(Block::make(Symbol(20), empty(), empty(), Term::make_ret(empty()))),
-    ]),
-  ));
-  let cloned = region.clone();
-  assert_eq!(region.cond, cloned.cond);
-  assert_eq!(cloned.targets[0].name, Symbol(10));
-  assert_eq!(cloned.targets[1].name, Symbol(20));
+  let compact = Region::new(&*r);
+  check(&compact, &model);
+  assert!(compact.byte_len() <= r.byte_len());
 }

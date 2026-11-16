@@ -1,0 +1,13 @@
+error[E0080]: evaluation panicked: `#[flat]` types cannot have drop glue
+ --> tests/compile-fail/flat_drop.rs:6:1
+  |
+6 | #[flat]
+  | ^^^^^^^ evaluation of `_::<impl nearest::Flat for D>::store::{constant#0}` failed here
+
+note: erroneous constant encountered
+ --> tests/compile-fail/flat_drop.rs:6:1
+  |
+6 | #[flat]
+  | ^^^^^^^
+  |
+  = note: this note originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)

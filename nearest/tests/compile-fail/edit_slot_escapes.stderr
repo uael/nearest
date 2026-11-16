@@ -1,0 +1,22 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile-fail/edit_slot_escapes.rs:20:20
+   |
+19 |   let mut keep = None;
+   |       -------- `keep` declared here, outside of the closure body
+20 |   f.edit(|_, slot| keep = Some(slot));
+   |                    ^^^^^^^^^^^^^^^^^ a temporary borrow escapes the closure body here
+   |
+   = help: `keep` is declared outside the closure, so any data borrowed inside the closure cannot be stored into it
+   = note: requirement occurs because of a mutable reference to `Slot<'_, Func>`
+   = note: mutable references are invariant over their type parameter
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile-fail/edit_slot_escapes.rs:20:20
+   |
+19 |   let mut keep = None;
+   |       -------- `keep` declared here, outside of the closure body
+20 |   f.edit(|_, slot| keep = Some(slot));
+   |              ----  ^^^^^^^^^^^^^^^^^ `slot` escapes the closure body here
+   |              |
+   |              `slot` is a reference that is only valid in the closure body

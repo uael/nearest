@@ -1,0 +1,9 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile-fail/edit_pin_escapes.rs:20:20
+   |
+19 |   let mut keep = None;
+   |       -------- `keep` declared here, outside of the closure body
+20 |   f.edit(|root, _| keep = Some(root));
+   |           ----     ^^^^^^^^^^^^^^^^^ `root` escapes the closure body here
+   |           |
+   |           `root` is a reference that is only valid in the closure body

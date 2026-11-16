@@ -1,0 +1,30 @@
+error[E0597]: `insts` does not live long enough
+  --> tests/compile-fail/edit_reborrowed_place.rs:23:13
+   |
+19 |   f.edit(|root, slot| {
+   |           ---- has type `Pin<&'1 mut Func>`
+...
+22 |     let mut insts = insts;
+   |         --------- binding `insts` declared here
+23 |     slot.at(insts.as_mut(), |_, new| new.put(()));
+   |     --------^^^^^--------------------------------
+   |     |       |
+   |     |       borrowed value does not live long enough
+   |     argument requires that `insts` is borrowed for `'1`
+24 |     let _ = insts.len();
+25 |   });
+   |   - `insts` dropped here while still borrowed
+
+error[E0502]: cannot borrow `insts` as immutable because it is also borrowed as mutable
+  --> tests/compile-fail/edit_reborrowed_place.rs:24:13
+   |
+19 |   f.edit(|root, slot| {
+   |           ---- has type `Pin<&'1 mut Func>`
+...
+23 |     slot.at(insts.as_mut(), |_, new| new.put(()));
+   |     ---------------------------------------------
+   |     |       |
+   |     |       mutable borrow occurs here
+   |     argument requires that `insts` is borrowed for `'1`
+24 |     let _ = insts.len();
+   |             ^^^^^ immutable borrow occurs here

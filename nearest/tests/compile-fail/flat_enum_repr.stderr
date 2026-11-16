@@ -1,0 +1,11 @@
+error: `#[flat]` enums are `#[repr(u8)]`, the default
+ --> tests/compile-fail/flat_enum_repr.rs:7:1
+  |
+7 | #[repr(u16)]
+  | ^^^^^^^^^^^^
+
+error: `#[flat]` enums are `#[repr(u8)]`, the default
+  --> tests/compile-fail/flat_enum_repr.rs:11:1
+   |
+11 | #[repr(C, u8)]
+   | ^^^^^^^^^^^^^^

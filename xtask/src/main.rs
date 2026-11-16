@@ -49,16 +49,13 @@ fn main() -> Result<()> {
 fn fmt(sh: &Shell, check: bool) -> Result<()> {
   let args =
     std::iter::once("--all").chain(check.then_some(["--", "--check"]).into_iter().flatten());
-  cmd!(sh, "cargo +nightly fmt {args...}").run_echo()?;
+  cmd!(sh, "cargo fmt {args...}").run_echo()?;
   Ok(())
 }
 
 fn lint(sh: &Shell, fix: bool) -> Result<()> {
   let args =
     if fix { ["--fix", "--allow-dirty", "--allow-staged"] } else { ["--", "-D", "warnings"] };
-  cmd!(sh, "cargo clippy --tests --examples --all-features {args...}").run_echo()?;
-  cmd!(sh, "cargo clippy -p nearest --no-default-features {args...}").run_echo()?;
-  cmd!(sh, "cargo clippy -p nearest --no-default-features --features alloc {args...}")
-    .run_echo()?;
+  cmd!(sh, "cargo clippy --workspace --tests --examples --benches {args...}").run_echo()?;
   fmt(sh, !fix)
 }

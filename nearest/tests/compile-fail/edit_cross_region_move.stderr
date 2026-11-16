@@ -1,0 +1,14 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile-fail/edit_cross_region_move.rs:23:28
+   |
+20 |     b.edit(|rb, _| {
+   |             --
+   |             |
+   |             `rb` is a reference that is only valid in the closure body
+   |             has type `Pin<&'1 mut Func>`
+...
+23 |       sa.at(mine, |_, new| new.put(entry));
+   |                            ^^^^^^^^^^^^^^
+   |                            |
+   |                            `rb` escapes the closure body here
+   |                            argument requires that `'1` must outlive `'static`

@@ -1,0 +1,53 @@
+error[E0277]: `PhantomPinned` cannot be unpinned
+  --> tests/compile-fail/edit_swap_pinned.rs:24:23
+   |
+24 |     core::mem::swap(x.get_mut(), y.get_mut());
+   |                       ^^^^^^^ within `Inst`, the trait `Unpin` is not implemented for `PhantomPinned`
+   |
+   = note: consider using the `pin!` macro
+           consider using `Box::pin` if you need to access the pinned value outside of the current scope
+note: required because it appears within the type `Near<[u32]>`
+  --> src/near.rs
+   |
+   | pub struct Near<T: ?Sized> {
+   |            ^^^^
+note: required because it appears within the type `Inst`
+  --> tests/compile-fail/edit_swap_pinned.rs:11:8
+   |
+11 | struct Inst { op: u8, args: Near<[u32]> }
+   |        ^^^^
+note: required by a bound in `Pin::<&'a mut T>::get_mut`
+  --> $RUST/core/src/pin.rs
+   |
+   |     pub const fn get_mut(self) -> &'a mut T
+   |                  ------- required by a bound in this associated function
+   |     where
+   |         T: Unpin,
+   |            ^^^^^ required by this bound in `Pin::<&mut T>::get_mut`
+
+error[E0277]: `PhantomPinned` cannot be unpinned
+  --> tests/compile-fail/edit_swap_pinned.rs:24:36
+   |
+24 |     core::mem::swap(x.get_mut(), y.get_mut());
+   |                                    ^^^^^^^ within `Inst`, the trait `Unpin` is not implemented for `PhantomPinned`
+   |
+   = note: consider using the `pin!` macro
+           consider using `Box::pin` if you need to access the pinned value outside of the current scope
+note: required because it appears within the type `Near<[u32]>`
+  --> src/near.rs
+   |
+   | pub struct Near<T: ?Sized> {
+   |            ^^^^
+note: required because it appears within the type `Inst`
+  --> tests/compile-fail/edit_swap_pinned.rs:11:8
+   |
+11 | struct Inst { op: u8, args: Near<[u32]> }
+   |        ^^^^
+note: required by a bound in `Pin::<&'a mut T>::get_mut`
+  --> $RUST/core/src/pin.rs
+   |
+   |     pub const fn get_mut(self) -> &'a mut T
+   |                  ------- required by a bound in this associated function
+   |     where
+   |         T: Unpin,
+   |            ^^^^^ required by this bound in `Pin::<&mut T>::get_mut`

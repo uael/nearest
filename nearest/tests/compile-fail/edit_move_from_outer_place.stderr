@@ -1,0 +1,14 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile-fail/edit_move_from_outer_place.rs:22:28
+   |
+19 |   f.edit(|root, slot| {
+   |           ----
+   |           |
+   |           `root` is a reference that is only valid in the closure body
+   |           has type `Pin<&'1 mut Func>`
+...
+22 |     slot.at(next, |_, new| new.put(Near::new(Block::new(1, insts, None))));
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                            |
+   |                            `root` escapes the closure body here
+   |                            argument requires that `'1` must outlive `'static`

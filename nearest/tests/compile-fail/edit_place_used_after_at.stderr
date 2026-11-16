@@ -1,0 +1,13 @@
+error[E0502]: cannot borrow `insts` as immutable because it is also borrowed as mutable
+  --> tests/compile-fail/edit_place_used_after_at.rs:23:13
+   |
+19 |   f.edit(|root, slot| {
+   |           ---- has type `Pin<&'1 mut Func>`
+...
+22 |     slot.at(insts, |_, new| new.put(()));
+   |     ------------------------------------
+   |     |       |
+   |     |       mutable borrow occurs here
+   |     argument requires that `*insts.pointer` is borrowed for `'1`
+23 |     let _ = insts.len();
+   |             ^^^^^ immutable borrow occurs here

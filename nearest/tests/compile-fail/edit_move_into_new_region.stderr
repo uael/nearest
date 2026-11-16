@@ -1,0 +1,13 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/compile-fail/edit_move_into_new_region.rs:16:33
+   |
+15 |   e.edit(|old, _| {
+   |           ---
+   |           |
+   |           `old` is a reference that is only valid in the closure body
+   |           has type `Pin<&'1 mut Expr>`
+16 |     let _stolen: Region<Expr> = Region::new(old);
+   |                                 ^^^^^^^^^^^^^^^^
+   |                                 |
+   |                                 `old` escapes the closure body here
+   |                                 argument requires that `'1` must outlive `'static`

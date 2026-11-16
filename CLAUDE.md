@@ -6,67 +6,85 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```sh
 cargo build                          # Build all crates
-cargo test                           # Run all tests (unit + integration + compile-fail)
+cargo test --all                     # All tests: unit, integration, compile-fail, doc tests
 cargo test --test integration        # Run only integration tests
 cargo test --test integration TESTNAME  # Run a single integration test
-cargo test --test compile_fail       # Run compile-fail tests (trybuild)
-cargo bench --bench region           # Run benchmarks (criterion)
-MIRIFLAGS="-Zmiri-permissive-provenance" cargo +nightly miri test -p nearest --lib --test integration  # Run tests under Miri
-cargo xtask fmt                      # Format code
+cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
+cargo run --example expr             # Examples (also: ir); they assert their results
+cargo bench --bench region           # Benchmarks (criterion)
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo miri test -p nearest --lib --test integration  # Miri
+cargo xtask fmt                      # Format code (cargo fmt on the pinned toolchain)
 cargo xtask fmt --check              # Check formatting
-cargo xtask lint                     # Clippy + format check (-D warnings)
+cargo xtask lint                     # Clippy (workspace, tests, examples, benches, -D warnings) + format check
 cargo xtask lint --fix               # Auto-fix clippy + formatting
-cargo doc --no-deps --all --all-features  # Build documentation (-D warnings in CI)
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all  # Build documentation
 cargo deny check                     # License/advisory/ban auditing
 ```
 
-Requires **nightly** Rust (`nightly-2026-02-10` pinned in `rust-toolchain`) for `#![feature(offset_of_enum)]`.
+Requires **nightly** Rust (`nightly-2026-02-10`, pinned in `rust-toolchain`; do not change it).
+The library uses `ptr_metadata`; code that uses `#[flat]` needs `#![feature(pin_ergonomics)]`.
 
 ## Architecture
 
-**nearest** is a self-relative pointer library for region-based allocation. The entire data graph lives in a single contiguous byte buffer; all internal pointers are stored as `i32` offsets relative to their own address, making `Clone` a plain `memcpy` with no pointer fixup.
+**nearest** keeps a value and everything it points to in one buffer. Every pointer is a 4-byte
+offset relative to its own address, so `Clone` is a `memcpy` and reading is plain `&T`. Edits
+are checked by the borrow checker; there are no runtime checks besides the 2 GiB size limit.
+`DESIGN.md` is the specification.
 
 ### Workspace Crates
 
-- **`nearest/`** — Main library: `Near<T>`, `NearList<T>`, `Region<T>`, `Session`, traits (`Flat`, `Emit`, `Patch`)
-- **`nearest-derive/`** — Proc-macro crate: `#[derive(Flat)]` and `#[derive(Emit)]`
-- **`xtask/`** — Dev automation (fmt, lint)
+- **`nearest/`** — the library (`#![no_std]` + `alloc`, no features)
+- **`nearest-derive/`** — the `#[flat]` attribute, re-exported as `nearest::flat`
+- **`xtask/`** — dev automation (fmt, lint)
 
-### Core Types (nearest/src/)
+### Public surface
 
-| Type | File | Role |
-|------|------|------|
-| `Flat` (unsafe trait) | `flat.rs` | Marker for types storable in a region — no `Drop`, no heap pointers, correct `deep_copy` |
-| `Emit<T>` (unsafe trait) | `emit.rs` | Builder pattern for constructing values in regions; derive generates `T::make(...)` factories |
-| `Patch` (trait) | `patch.rs` | Unifies `Emitter` (construction) and `Region` (mutation) for position-based writes |
-| `Near<T>` | `near.rs` | Self-relative pointer: 4-byte `NonZero<i32>` offset, `Deref<Target=T>` |
-| `NearList<T>` | `list.rs` | Segmented linked list: `i32` head offset + `u32` length, iteration + indexing |
-| `Region<T>` | `region.rs` | Owning contiguous byte buffer with root `T` at byte 0 |
-| `Session` | `session.rs` | Ghost-cell branded mutable session API (`Ref<'id, T>`, `Cursor`, `Brand`) |
-| `AlignedBuf<T>` | `buf.rs` | Low-level growable byte buffer with alignment guarantees |
-| `Emitter<T>` | `emitter.rs` | Internal builder that writes values into an `AlignedBuf` during construction |
+`#[flat]`, `trait Flat`, `trait Emit<'o, T>`, `Near<T>` (`new`, `from_iter`, `as_pin_mut`),
+`Region<T>` (`new`, `edit`, `to_bytes`, `from_bytes`, `byte_len`), `Slot<'o, T>` (`put`, `at`,
+`push`), plus trait impls. Hidden plumbing for the macro: `nearest::__private::{Sink, make}` and
+the hidden items of the two traits. Do not add public items.
 
-### Data Flow
+### Files (nearest/src/)
 
-1. **Construction**: `Region::new(T::make(...))` → derive-generated `Emit` writes values and patches self-relative offsets
-2. **Reading**: `Region<T>: Deref<Target=T>`, `Near<T>: Deref<Target=T>` (computes `self_addr + offset`)
-3. **Mutation**: `region.session(|s| { ... })` opens a branded session; mutations are append-only (old data becomes dead bytes)
-4. **Compaction**: `region.trim()` deep-copies only reachable data into a fresh buffer
+| File | Contents |
+|------|----------|
+| `lib.rs` | crate docs, exports, `__private`, the size-limit unit test |
+| `flat.rs` | `Buf` (8-aligned, zero-filled growth), `Sink`, `Flat` + impls, `Emit` + impls, the list builder `List`, `make` |
+| `near.rs` | `Near<T>`: resolution via `ptr_metadata`, `as_pin_mut`, builders, trait impls |
+| `region.rs` | `Region<T>` (`edit` with the graft-on-drop guard) and `Slot` (deferred commit) |
 
-### Derive Macro (nearest-derive/src/)
+`nearest-derive/src/lib.rs` generates, inside `const _: () = { .. }`: the `Flat` impl (`PLAIN`
+and `store`, with a `needs_drop` assertion), constructors (`new`, or one snake-case function per
+non-unit variant), and for enums hidden `#[repr(C)]` mirror structs `(u8, fields..)` that give
+variant field offsets without `offset_of_enum`.
 
-- `flat.rs` — Generates `Flat` impls: enum repr validation, `deep_copy` body for structs/enums
-- `emit.rs` — Generates `Emit` impls: `make()` factories, `__Builder` structs, `NearList` codegen
-- `emit_proxy.rs` — `Emit` for proxy enums dispatching to inner builders
-- `util.rs` — `FieldKind` classification (Primitive/Near/NearList/OptionNear/Other)
+### Mechanics
+
+- `Flat::store(&self, sink, at, shift)` writes a value field by field: `shift == None` deep-copies
+  targets; `Some(d)` keeps targets and re-aims offsets for a move of `d` bytes. `PLAIN` types are
+  copied as bytes.
+- `Near<[T]>`/`Near<str>` point at a `u32` length header followed by the elements.
+- `Region::edit` builds new data in a scratch `Sink` whose positions map to `base + pos` in the
+  region; each `Slot` commits its staged value into its place when its closure returns, and the
+  scratch is appended when `edit` returns or unwinds.
 
 ### Safety Model
 
-- **Provenance**: Uses `expose_provenance`/`with_exposed_provenance` for self-relative pointer resolution
-- **Branding**: Ghost-cell pattern with `for<'id>` lifetime prevents `Ref` escape from session and cross-session use (enforced at compile time)
-- **No-Drop**: Derive macro emits `const { assert!(!needs_drop::<T>()) }` to reject types with `Drop`
-- **Alignment**: Buffer aligned to `max(align_of::<Root>(), 8)`
-- **`pub(crate)` never relaxes safety invariants**: If a function has unsafe preconditions, it must be `unsafe fn` regardless of visibility. `pub(crate)` restricts who can _call_ it, not whether callers must uphold safety invariants.
+- `Near` has no constructor, is not `Clone`, and is `!Unpin`; `#[flat]` adds `#[pin_v2]` so
+  patterns project `Pin<&mut T>`.
+- A region is a tree; `Slot<'o, T>`/`Emit<'o, T>` carry an invariant brand so a slot only accepts
+  moves (`Pin<&'o mut T>`) from the value it replaces; `Slot::at` takes the place for the full
+  `'o`, so it cannot be observed after being replaced.
+- Self-relative pointers are resolved from `&self` (Tree Borrows; Stacked Borrows is not
+  supported). No integer-to-pointer casts. Miri runs with `-Zmiri-tree-borrows
+  -Zmiri-strict-provenance`.
+- Commit writes into a place go through the pointer the closure's pin was derived from, after the
+  closure returned, never through the buffer base while user pins are live.
+- `Buf` invariants hold also while unwinding: `len <= capacity`, and `capacity + base <= MAX`, so
+  every position fits an `i32` and anything past the limit panics in `grow` before changing state.
+- Compile-time checks: alignment at most 8 and non-zero size (`fits`), no drop glue (in `store`).
+- **`pub(crate)` never relaxes safety invariants**: if a function has unsafe preconditions, it must
+  be `unsafe fn` regardless of visibility.
 
 ## Releasing
 

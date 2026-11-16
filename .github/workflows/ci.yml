@@ -20,21 +20,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all
       - run: cargo run --example expr
-      - run: cargo run --example json
-      - run: cargo run --example ecs
-      - run: cargo run --example fs
-      - run: cargo run --example fsm
-
-  test-no-std:
-    name: Test (no_std)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-02-10
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p nearest --no-default-features
+      - run: cargo run --example ir
+      - run: cargo bench --bench region -- --test
 
   clippy:
     name: Clippy
@@ -46,9 +33,7 @@ jobs:
           toolchain: nightly-2026-02-10
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --tests --all-features -- -D warnings
-      - run: cargo clippy -p nearest --no-default-features -- -D warnings
-      - run: cargo clippy -p nearest --no-default-features --features alloc -- -D warnings
+      - run: cargo clippy --workspace --tests --examples --benches -- -D warnings
 
   fmt:
     name: Format
@@ -70,7 +55,7 @@ jobs:
         with:
           toolchain: nightly-2026-02-10
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --no-deps --all --all-features
+      - run: cargo doc --no-deps --all
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -86,7 +71,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo miri test -p nearest --lib --test integration
         env:
-          MIRIFLAGS: -Zmiri-permissive-provenance
+          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
 
   deny:
     name: Cargo Deny

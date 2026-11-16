@@ -1,0 +1,5 @@
+error: `#[flat]` does not support unions
+ --> tests/compile-fail/flat_union.rs:7:1
+  |
+7 | union U { a: u32, b: f32 }
+  | ^^^^^
