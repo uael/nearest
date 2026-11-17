@@ -1,0 +1,15 @@
+error[E0277]: `PhantomPinned` cannot be unpinned
+  --> tests/compile-fail/pin_no_assign_through_pointers.rs:10:37
+   |
+10 |     std::mem::swap(&mut *a, &mut *b.get_mut());
+   |                                     ^^^^^^^ within `Near<Expr>`, the trait `Unpin` is not implemented for `PhantomPinned`
+   |
+   = note: consider using the `pin!` macro
+           consider using `Box::pin` if you need to access the pinned value outside of the current scope
+note: required because it appears within the type `Near<Expr>`
+  --> src/near.rs
+   |
+   | pub struct Near<T: ?Sized> {
+   |            ^^^^
+note: required by a bound in `Pin::<&'a mut T>::get_mut`
+  --> $RUST/core/src/pin.rs

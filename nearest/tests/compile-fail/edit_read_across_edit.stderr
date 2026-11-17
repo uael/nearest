@@ -1,0 +1,9 @@
+error[E0502]: cannot borrow `r` as mutable because it is also borrowed as immutable
+  --> tests/compile-fail/edit_read_across_edit.rs:12:3
+   |
+11 |   let x: &Expr = &r;
+   |                  -- immutable borrow occurs here
+12 |   r.edit().set(Expr::Lit(1));
+   |   ^^^^^^^^ mutable borrow occurs here
+13 |   let _ = matches!(x, Expr::Lit(_));
+   |                    - immutable borrow later used here

@@ -1,0 +1,7 @@
+error[E0277]: the trait bound `Near<u32>: Clone` is not satisfied
+ --> tests/compile-fail/near_clone.rs:5:13
+  |
+4 | #[derive(Clone)]
+  |          ----- in this derive macro expansion
+5 | struct Wrap(Near<u32>);
+  |             ^^^^^^^^^ the trait `Clone` is not implemented for `Near<u32>`

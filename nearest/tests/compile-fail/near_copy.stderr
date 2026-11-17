@@ -1,0 +1,5 @@
+error[E0507]: cannot move out of `*n` which is behind a shared reference
+ --> tests/compile-fail/near_copy.rs:5:3
+  |
+5 |   *n
+  |   ^^ move occurs because `*n` has type `Near<u32>`, which does not implement the `Copy` trait

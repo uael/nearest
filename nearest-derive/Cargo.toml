@@ -2,11 +2,10 @@
 name = "nearest-derive"
 version = "0.3.5"
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.95"
 license = "Apache-2.0 OR MIT"
-description = "Derive macros for the nearest crate"
+description = "The #[flat] attribute for the nearest crate"
 repository = "https://github.com/uael/nearest"
-homepage = "https://github.com/uael/nearest"
 documentation = "https://docs.rs/nearest-derive"
 readme = "../README.md"
 keywords = ["self-relative", "pointer", "derive", "macro"]
@@ -14,6 +13,10 @@ categories = ["data-structures"]
 
 [lib]
 proc-macro = true
+
+[features]
+# Enabled by `nearest/nightly`: `#[flat]` marks every type `#[pin_v2]`.
+nightly = []
 
 [dependencies]
 syn = { version = "2", features = ["full"] }

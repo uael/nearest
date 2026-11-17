@@ -6,67 +6,157 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```sh
 cargo build                          # Build all crates
-cargo test                           # Run all tests (unit + integration + compile-fail)
+cargo test --all                     # All tests: unit, integration, compile-fail, doc tests
 cargo test --test integration        # Run only integration tests
 cargo test --test integration TESTNAME  # Run a single integration test
-cargo test --test compile_fail       # Run compile-fail tests (trybuild)
-cargo bench --bench region           # Run benchmarks (criterion)
-MIRIFLAGS="-Zmiri-permissive-provenance" cargo +nightly miri test -p nearest --lib --test integration  # Run tests under Miri
-cargo xtask fmt                      # Format code
+cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
+cargo run --example expr             # Examples (also: ir); they assert their results
+cargo bench --bench region           # Benchmarks (criterion)
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --lib --test integration  # Miri
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --features nightly --test pin_v2  # Miri, `nightly` feature
+RUSTFLAGS="-D warnings" cargo +nightly-2026-02-10 test -p nearest --features nightly --lib --test integration --test pin_v2  # The `nightly` feature
+RUSTFLAGS="-D warnings" cargo +nightly-2026-02-10 test -p nearest --features nightly --doc  # Its doc tests
+cargo +nightly-2026-02-10 clippy --workspace --features nearest/nightly --tests --examples --benches -- -D warnings  # Its clippy
+cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
 cargo xtask fmt --check              # Check formatting
-cargo xtask lint                     # Clippy + format check (-D warnings)
+cargo xtask lint                     # Clippy (workspace, tests, examples, benches, -D warnings) + format check
 cargo xtask lint --fix               # Auto-fix clippy + formatting
-cargo doc --no-deps --all --all-features  # Build documentation (-D warnings in CI)
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all  # Build documentation
 cargo deny check                     # License/advisory/ban auditing
 ```
 
-Requires **nightly** Rust (`nightly-2026-02-10` pinned in `rust-toolchain`) for `#![feature(offset_of_enum)]`.
+The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`; `rust-version` is
+1.95). A pinned nightly (`nightly-2026-02-10`) is used by `cargo xtask fmt` (`rustfmt.toml`
+uses unstable options), by Miri, and to build and test the `nightly` feature. Generate trybuild
+`.stderr` files with the pinned stable; the trybuild test runs on stable only.
 
 ## Architecture
 
-**nearest** is a self-relative pointer library for region-based allocation. The entire data graph lives in a single contiguous byte buffer; all internal pointers are stored as `i32` offsets relative to their own address, making `Clone` a plain `memcpy` with no pointer fixup.
+**nearest** keeps a value and everything it points to in one buffer. Every pointer is a 4-byte
+offset relative to its own address, so `Clone` is a `memcpy` and reading is plain `&T`. Edits
+go through handles checked by the borrow checker; the only runtime checks are the 2 GiB size
+limit, index bounds and the check of loaded bytes. `DESIGN.md` is the specification.
 
 ### Workspace Crates
 
-- **`nearest/`** — Main library: `Near<T>`, `NearList<T>`, `Region<T>`, `Session`, traits (`Flat`, `Emit`, `Patch`)
-- **`nearest-derive/`** — Proc-macro crate: `#[derive(Flat)]` and `#[derive(Emit)]`
-- **`xtask/`** — Dev automation (fmt, lint)
+- **`nearest/`** — the library (`#![no_std]` + `alloc`; one opt-in feature, `nightly`)
+- **`nearest-derive/`** — the `#[flat]` attribute, re-exported as `nearest::flat`
+- **`xtask/`** — dev automation (fmt, lint)
 
-### Core Types (nearest/src/)
+### Public surface
 
-| Type | File | Role |
-|------|------|------|
-| `Flat` (unsafe trait) | `flat.rs` | Marker for types storable in a region — no `Drop`, no heap pointers, correct `deep_copy` |
-| `Emit<T>` (unsafe trait) | `emit.rs` | Builder pattern for constructing values in regions; derive generates `T::make(...)` factories |
-| `Patch` (trait) | `patch.rs` | Unifies `Emitter` (construction) and `Region` (mutation) for position-based writes |
-| `Near<T>` | `near.rs` | Self-relative pointer: 4-byte `NonZero<i32>` offset, `Deref<Target=T>` |
-| `NearList<T>` | `list.rs` | Segmented linked list: `i32` head offset + `u32` length, iteration + indexing |
-| `Region<T>` | `region.rs` | Owning contiguous byte buffer with root `T` at byte 0 |
-| `Session` | `session.rs` | Ghost-cell branded mutable session API (`Ref<'id, T>`, `Cursor`, `Brand`) |
-| `AlignedBuf<T>` | `buf.rs` | Low-level growable byte buffer with alignment guarantees |
-| `Emitter<T>` | `emitter.rs` | Internal builder that writes values into an `AlignedBuf` during construction |
+`#[flat]`, `trait Flat` (`type Edit<'e>`), `trait Emit<T>`, `type Edit<'e, T>`, `Near<T>` (`new`,
+`from_iter`, `as_pin_mut`, `iter_pin_mut`), `Region<T>` (`new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`, and the
+`unsafe` `from_bytes_unchecked`, `view_unchecked`),
+`ListEdit<'e, T>` (`push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`,
+`set`, `replace`, `update`, `iter_pin_mut`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`,
+`set`, `update`), `StrEdit<'e>` (`set`, `replace`, `update`), `Old<'e, T>` (no methods), `Invalid`, plus the trait impls listed in `DESIGN.md`.
+Hidden plumbing for the macro: `nearest::__private::{Raw, Buf, Sink, Check, fits, make,
+Variant, Pointer}`, and `unpin` with the feature; the hidden items of the two traits (with the
+feature, also `Flat::UNPIN`). Do not add public items.
 
-### Data Flow
+Every handle has `update`, the closure form of `replace`: `Raw::update` (which shares
+`Raw::swap_in` with `replace`), its wrappers on `ListEdit`, `OptionEdit`, `StrEdit`, and the
+generated one. Its `Old<'a, T>` has the lifetime of the handle's borrow, not of the edit.
 
-1. **Construction**: `Region::new(T::make(...))` → derive-generated `Emit` writes values and patches self-relative offsets
-2. **Reading**: `Region<T>: Deref<Target=T>`, `Near<T>: Deref<Target=T>` (computes `self_addr + offset`)
-3. **Mutation**: `region.session(|s| { ... })` opens a branded session; mutations are append-only (old data becomes dead bytes)
-4. **Compaction**: `region.trim()` deep-copies only reachable data into a fresh buffer
+The pinned view: `pin()` on generated handles (`Raw::pin`) gives `Pin<&mut X>`; the macro
+generates `X::project` and `XPin<'a>` (a struct or an enum with the shape of `X`, every field
+`Pin<&'a mut Field>`); `Near::as_pin_mut` and `iter_pin_mut` go down. `Near` holds a
+`PhantomPinned`. A stored type must be `Unpin` exactly when its fields are: the macro emits
+`impl Unpin for X where __NearestFields<'a, ..>: Unpin` (all field types), which makes a
+hand-written impl a conflict. Without the feature it always writes that impl, and rejects a
+`#[pin_v2]` it sees on the input (`#[pin_v2]` needs the feature, which adds it); a `#[pin_v2]`
+added by another macro after `#[flat]` ran meets the impl, so soundness does not depend on the
+macro seeing the attribute.
 
-### Derive Macro (nearest-derive/src/)
+The feature `nightly` (`nearest/nightly` forwards to `nearest-derive/nightly`; nightly compiler
+only) makes `#[flat]` add `#[pin_v2]` to every type, through
+`#[allow_internal_unstable(pin_ergonomics)]` on the macro, so crates using `#[flat]` need no
+gate. The bounded `Unpin` impl cannot stay under it: in a crate with `pin_ergonomics` the
+compiler rejects every `Unpin` impl of a `#[pin_v2]` type, the macro's too, while in a crate
+without it the compiler accepts a hand-written one. So the macro writes none, and the library
+checks instead (`nearest/src/unpin.rs`, built only with the feature, as it uses
+`specialization`): the hidden `Flat::UNPIN` ("every field is `Unpin`": `true` for plain
+types, `false` for pointers without looking at the target, `__private::unpin::<Self>(true &
+F1::UNPIN & ..)` for generated types) asserts that a type is not `Unpin` unless its fields
+are. `Raw::pin`, `Near::as_pin_mut` and `Near::<[T]>::iter_pin_mut` evaluate it
+(`unpin::pinned::<T>()`), so a hand-written impl on a type holding a `Near` fails the build
+where it, or a type holding it by value, is pinned (in a build that generates code, not
+`cargo check`). A `#[pin_v2]` written by hand is kept, not repeated. Without the feature nothing
+changes. `tests/pin_v2.rs` is built only with the feature; the feature's own `compile_fail` doc
+tests are on `nearest/src/unpin.rs`, including the compiler's rule in a crate with
+`pin_ergonomics`. The trybuild test runs on stable only.
+Names the generated code keeps: a field called `set`, `replace`, `pin` or `update` gets a
+trailing underscore, and a variant called `Project` gets the constructor `project_`.
 
-- `flat.rs` — Generates `Flat` impls: enum repr validation, `deep_copy` body for structs/enums
-- `emit.rs` — Generates `Emit` impls: `make()` factories, `__Builder` structs, `NearList` codegen
-- `emit_proxy.rs` — `Emit` for proxy enums dispatching to inner builders
-- `util.rs` — `FieldKind` classification (Primitive/Near/NearList/OptionNear/Other)
+### Files (nearest/src/)
+
+| File | Contents |
+|------|----------|
+| `lib.rs` | crate docs, exports, `Edit<'e, T>`, `__private`, the size-limit unit test |
+| `flat.rs` | `Buf` (8-aligned, zero-filled growth, `me`, compact mark), `Sink`, `Flat` + impls, `Emit` + impls, moves (`relocate`, `detach`, `move_elems`), the list block `List`, `make` |
+| `edit.rs` | `Raw` (the core of every handle, with `set`/`replace`), `Old`, `ListEdit`, `OptionEdit`, `StrEdit` |
+| `bytes.rs` | `Invalid`, the checker `Check` and its steps (`target`, `list`, `text`, `items`), `check` |
+| `near.rs` | `Near<T>`: three `Deref` impls (`T`, `[T]`, `str`), builders, trait impls |
+| `region.rs` | `Region<T>`, including `to_bytes`, `from_bytes`, `view` |
+| `unpin.rs` | `nightly` feature only (`specialization`): `unpin` and `pinned`, the guard against a hand-written `Unpin` |
+
+`nearest-derive/src/lib.rs` generates, inside `const _: () = { .. }`: the `Flat` impl (`Edit<'e>`,
+`PLAIN`, `ANY`, `store`, `edit`, `check`, each checking `fits`), constructors (`new`, or one snake-case
+function per non-unit variant; a parameter for a field written `Near<..>` takes
+`<FieldType as __private::Pointer>::Arg`: a builder of `X` for `Near<X>`), the handle `__NearestEdit<'e, ..>` (`set`, `replace`, a method per struct field, `as_mut`
+for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), hidden `#[repr(C)]` mirror structs
+`(u8, fields..)` for variant field offsets, and for multi-field variants a payload handle (a
+`Raw` of the mirror, so it has no `set`/`replace`) named through `__private::Variant<I>`.
+`XMut<'a, 'e>` is emitted at module level with the visibility of `X`.
+
+### Mechanics
+
+- A handle is `&'a mut` to an unsized `#[repr(transparent)]` wrapper of `Raw<'e, T>`: the address
+  is the region's `Buf`, the slice length is the position. `Flat::edit(buf, at)` builds it; for
+  `Near<T>` it is the target's handle. `'e` is the edit, the borrow taken by `Region::edit`.
+- `Flat::store(&self, sink, at, shift)`: `None` deep-copies targets; `Some(d)` re-aims offsets
+  for a move of `d` bytes and never dereferences a `Near` (moves call it on stack copies).
+  `PLAIN` types are copied as bytes.
+- `Near<str>` points at `[len][bytes]`; `Near<[T]>` points at `len` in a block
+  `[cap][len][elements]`. Deep copies and builders write `cap == len`; a builder whose iterator
+  did not match its size hint writes its real capacity and clears the compact mark.
+- `set` keeps the old bytes on the stack and restores them on unwind. `replace` moves the old
+  value to fresh bytes (`detach`), writes the new one (moving the old one back on unwind) and
+  returns an `Old` (`Raw::swap_in`, shared with `update`); `ListEdit::remove` and `OptionEdit::take` also return one. An `Old` written
+  into its own region (same `me`) is a move, anywhere else a deep copy.
+- Bytes: a region's compact image is what a deep copy writes. `Flat::check` (safe, generated)
+  walks an image in that order without recursion; each pointer must aim exactly where the copy
+  would have put its target. Elements with `Flat::ANY` (no pointers, every bit pattern valid)
+  are not walked. `to_bytes` borrows the buffer when the compact mark is set.
 
 ### Safety Model
 
-- **Provenance**: Uses `expose_provenance`/`with_exposed_provenance` for self-relative pointer resolution
-- **Branding**: Ghost-cell pattern with `for<'id>` lifetime prevents `Ref` escape from session and cross-session use (enforced at compile time)
-- **No-Drop**: Derive macro emits `const { assert!(!needs_drop::<T>()) }` to reject types with `Drop`
-- **Alignment**: Buffer aligned to `max(align_of::<Root>(), 8)`
-- **`pub(crate)` never relaxes safety invariants**: If a function has unsafe preconditions, it must be `unsafe fn` regardless of visibility. `pub(crate)` restricts who can _call_ it, not whether callers must uphold safety invariants.
+- `Near` has no constructor and is not `Clone`/`Copy`. No safe API yields `&mut T` for a `T`
+  containing a `Near` (plain data means `T: Copy`).
+- One handle chain: a handle borrows its parent mutably, so no `&T` into the buffer is live
+  while a handle can allocate. An `Old<'e, T>` keeps the region borrowed for the edit; bytes
+  no longer reachable are never written again (I5), so it stays intact.
+- One provenance per edit (I8): `Region::edit` stores `&raw mut self.buf` in `Buf::me`; a handle
+  reads `me` through its own reference, and every other access of the edit (handles, `Sink`,
+  `Old`) goes through that pointer, each access a reborrow that ends with the statement. Never
+  keep a `&mut Buf`/`&Buf` across a call that touches the buffer. Allocate before taking
+  references into the buffer.
+- An edit stays on one thread (I9): `Raw` holds a `PhantomData<*mut ()>`, so handles are
+  neither `Send` nor `Sync`, and neither is `Old`. An `Old` reads its region without borrowing
+  a handle, so a handle on another thread could grow the buffer under it.
+- Self-relative pointers are resolved from `&self` (Tree Borrows; Stacked Borrows is not
+  supported). No integer-to-pointer casts. Miri runs with `-Zmiri-tree-borrows
+  -Zmiri-strict-provenance`.
+- Panics leave every place unchanged or complete: list lengths are written after the element,
+  `retain` keeps unvisited elements, `set` and `replace` restore the old value.
+- The checker is safe code that never panics (checked arithmetic, `get` instead of indexing);
+  the only unsafe step of `view`/`from_bytes` is the cast of checked bytes to `&T`.
+- `Buf` invariants hold also while unwinding: `len <= capacity <= MAX`; anything past the limit
+  panics in `grow` before changing state. Unit tests use a 64 KiB limit.
+- Compile-time checks (`fits`): alignment at most 8, non-zero size, no drop glue.
+- **`pub(crate)` never relaxes safety invariants**: if a function has unsafe preconditions, it must
+  be `unsafe fn` regardless of visibility.
 
 ## Releasing
 

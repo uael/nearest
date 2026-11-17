@@ -1,0 +1,9 @@
+error[E0499]: cannot borrow `*next` as mutable more than once at a time
+  --> tests/compile-fail/option_target_across_set.rs:15:3
+   |
+14 |   let target = next.insert(Block::new(1, (), None));
+   |                ---- first mutable borrow occurs here
+15 |   next.set(None);
+   |   ^^^^ second mutable borrow occurs here
+16 |   *target.id() = 2;
+   |    ------ first borrow later used here

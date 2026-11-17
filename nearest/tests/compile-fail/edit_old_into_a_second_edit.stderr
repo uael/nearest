@@ -1,0 +1,9 @@
+error[E0499]: cannot borrow `r` as mutable more than once at a time
+  --> tests/compile-fail/edit_old_into_a_second_edit.rs:17:3
+   |
+16 |   let old = r.edit().replace(Expr::Lit(0));
+   |             - first mutable borrow occurs here
+17 |   r.edit().set(Expr::neg(old));
+   |   ^                      --- first borrow later used here
+   |   |
+   |   second mutable borrow occurs here

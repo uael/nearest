@@ -1,0 +1,9 @@
+error[E0502]: cannot borrow `*insts` as mutable because it is also borrowed as immutable
+  --> tests/compile-fail/list_push_own_element.rs:14:3
+   |
+14 |   insts.push(&insts[0]);
+   |   ^^^^^^----^^-----^^^^
+   |   |     |     |
+   |   |     |     immutable borrow occurs here
+   |   |     immutable borrow later used by call
+   |   mutable borrow occurs here

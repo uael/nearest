@@ -1,245 +1,203 @@
-#![feature(offset_of_enum)]
+#![expect(missing_docs, reason = "criterion generates undocumented items")]
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nearest::{Flat, Near, NearList, Region, empty, list, near};
+use std::hint::black_box;
 
-#[derive(Flat, Copy, Clone, Debug, PartialEq, Eq)]
-struct Type(u8);
+use criterion::{Criterion, criterion_group, criterion_main};
+use nearest::{Near, Region, flat};
 
-#[derive(Flat, Copy, Clone, Debug, PartialEq, Eq)]
-struct Symbol(u32);
-
-#[derive(Flat, Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(C, u8)]
-#[expect(dead_code, reason = "variants constructed via emitters")]
-enum Value {
-  Const(u32),
-  Type(Type),
-}
-
-#[derive(Flat, Debug)]
-struct Inst {
-  op: u16,
-  typ: Type,
-  args: NearList<Value>,
-}
-
-#[derive(Flat, Debug)]
-struct Jmp {
-  args: NearList<Value>,
-  target: Near<Block>,
-}
-
-#[derive(Flat, Debug)]
-#[repr(C, u8)]
-#[expect(dead_code, reason = "variants constructed via emitters")]
-enum Term {
-  Ret { values: NearList<Value> },
-  Jmp(Jmp),
-}
-
-#[derive(Flat, Debug)]
-struct Block {
-  name: Symbol,
-  params: NearList<(Symbol, Type)>,
-  insts: NearList<Inst>,
-  term: Term,
-}
-
-#[derive(Flat, Debug)]
+#[flat]
 struct Func {
-  name: Symbol,
-  entry: Near<Block>,
+  name: Near<str>,
+  blocks: Near<[Block]>,
 }
 
-#[derive(Flat, Debug)]
-struct ListBlock {
-  name: Symbol,
-  items: NearList<Value>,
+#[flat]
+struct Block {
+  id: u32,
+  insts: Near<[Inst]>,
 }
 
-fn build_func() -> Region<Func> {
-  Region::new(Func::make(
-    Symbol(1),
-    near(Block::make(
-      Symbol(0),
-      empty(),
-      list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
-      Term::make_jmp(Jmp::make(
-        list([Value::Const(1)]),
-        near(Block::make(
-          Symbol(0),
-          empty(),
-          list([Inst::make(1, Type(0), list([Value::Const(42)]))]),
-          Term::make_ret(list([Value::Const(42)])),
-        )),
-      )),
-    )),
+#[flat]
+struct Inst {
+  op: u8,
+  args: Near<[u32]>,
+}
+
+#[flat]
+enum Expr {
+  Lit(i64),
+  Add(Near<Expr>, Near<Expr>),
+}
+
+/// `blocks` blocks of `insts` instructions with 3 arguments each.
+fn func(blocks: u32, insts: u32) -> Region<Func> {
+  Region::new(Func::new(
+    "bench",
+    Near::from_iter((0..blocks).map(|b| {
+      Block::new(b, Near::from_iter((0..insts).map(|i| Inst::new(i as u8, [i, i + 1, i + 2]))))
+    })),
   ))
 }
 
-fn bench_build(c: &mut Criterion) {
-  c.bench_function("region_build", |b| {
-    b.iter(|| black_box(build_func()));
-  });
+/// A left-leaning sum of `depth` additions, built by wrapping the root.
+fn expr(depth: u32) -> Region<Expr> {
+  let mut r = Region::new(Expr::Lit(1));
+  for i in 0..depth {
+    let e = r.edit();
+    let old = e.replace(Expr::Lit(0));
+    e.set(Expr::add(old, Expr::Lit(i64::from(i))));
+  }
+  Region::new(&*r)
 }
 
-fn bench_clone(c: &mut Criterion) {
-  let region = build_func();
-  c.bench_function("region_clone", |b| {
-    b.iter(|| black_box(region.clone()));
+fn build(c: &mut Criterion) {
+  let mut g = c.benchmark_group("build");
+  g.bench_function("list 100k u32", |b| {
+    b.iter(|| Region::new(Inst::new(0, Near::from_iter(0..black_box(100_000u32)))));
   });
-}
-
-fn bench_trim(c: &mut Criterion) {
-  c.bench_function("region_trim_noop", |b| {
-    b.iter_batched(build_func, |mut r| r.trim(), criterion::BatchSize::SmallInput);
-  });
-}
-
-fn bench_push_front(c: &mut Criterion) {
-  c.bench_function("push_front_100", |b| {
-    b.iter_batched(
-      || Region::new(ListBlock::make(Symbol(1), empty())),
-      |mut region| {
-        for i in 0..100u32 {
-          region.session(|s| {
-            let items = s.nav(s.root(), |b| &b.items);
-            s.push_front(items, Value::Const(i));
-          });
-        }
-        region
-      },
-      criterion::BatchSize::SmallInput,
-    );
-  });
-}
-
-fn bench_extend_list(c: &mut Criterion) {
-  c.bench_function("extend_list_100", |b| {
-    b.iter_batched(
-      || Region::new(ListBlock::make(Symbol(1), empty())),
-      |mut region| {
-        region.session(|s| {
-          let items = s.nav(s.root(), |b| &b.items);
-          s.extend_list(items, (0..100u32).map(Value::Const));
-        });
-        region
-      },
-      criterion::BatchSize::SmallInput,
-    );
-  });
-}
-
-fn bench_iterate(c: &mut Criterion) {
-  let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-  region.session(|s| {
-    let items = s.nav(s.root(), |b| &b.items);
-    s.extend_list(items, (0..1000u32).map(Value::Const));
-  });
-
-  c.bench_function("iterate_1000", |b| {
+  g.bench_function("func 100 blocks x 100 insts", |b| b.iter(|| func(black_box(100), 100)));
+  g.bench_function("10k small blocks", |b| {
     b.iter(|| {
-      let block: &ListBlock = &region;
-      let mut sum = 0u32;
-      for v in &block.items {
-        if let Value::Const(n) = v {
-          sum += n;
+      Region::new(Func::new(
+        "",
+        Near::from_iter((0..black_box(10_000u32)).map(|i| Block::new(i, ()))),
+      ))
+    });
+  });
+  g.finish();
+}
+
+fn read(c: &mut Criterion) {
+  let f = func(100, 100);
+  let e = expr(1000);
+  let mut g = c.benchmark_group("read");
+  g.bench_function("sum all args", |b| {
+    b.iter(|| {
+      black_box(&f)
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .map(|i| i.args.iter().map(|&a| u64::from(a)).sum::<u64>())
+        .sum::<u64>()
+    });
+  });
+  g.bench_function("eval expr depth 1000", |b| {
+    fn eval(e: &Expr) -> i64 {
+      match e {
+        Expr::Lit(n) => *n,
+        Expr::Add(a, b) => eval(a) + eval(b),
+      }
+    }
+    b.iter(|| eval(black_box(&e)));
+  });
+  g.finish();
+}
+
+fn clone_and_compact(c: &mut Criterion) {
+  let mut f = func(100, 100);
+  let mut g = c.benchmark_group("copy");
+  g.bench_function("clone", |b| b.iter(|| black_box(&f).clone()));
+  g.bench_function("compact", |b| b.iter(|| Region::new(&**black_box(&f))));
+  reverse(&mut f);
+  g.bench_function("compact after edit", |b| b.iter(|| Region::new(&**black_box(&f))));
+  g.bench_function("to_bytes (edited: compacts)", |b| b.iter(|| black_box(&f).to_bytes()));
+  g.finish();
+}
+
+/// Reverses the blocks, moving each one.
+fn reverse(f: &mut Region<Func>) {
+  let blocks = f.edit().blocks();
+  let n = blocks.len();
+  for i in 0..n / 2 {
+    blocks.swap(i, n - 1 - i);
+  }
+}
+
+fn edit(c: &mut Criterion) {
+  let mut g = c.benchmark_group("edit");
+  let mut f = func(100, 100);
+  g.bench_function("in place: bump every op", |b| {
+    b.iter(|| {
+      let blocks = f.edit().blocks();
+      for i in 0..blocks.len() {
+        let insts = blocks.at(i).insts();
+        for j in 0..insts.len() {
+          let op = insts.at(j).op();
+          *op = op.wrapping_add(1);
         }
       }
-      black_box(sum)
     });
   });
-}
-
-fn bench_graft(c: &mut Criterion) {
-  let callee: Region<Block> = Region::new(Block::make(
-    Symbol(99),
-    empty(),
-    empty(),
-    Term::make_ret(list([Value::Const(77)])),
-  ));
-
-  c.bench_function("graft", |b| {
-    b.iter_batched(
-      build_func,
-      |mut caller| {
-        caller.session(|s| {
-          black_box(s.graft(&callee));
-        });
-        caller
+  g.bench_function("structural: reverse blocks (moves)", |b| {
+    b.iter_batched_ref(|| func(100, 100), reverse, criterion::BatchSize::LargeInput);
+  });
+  g.bench_function("structural: retain insts in every block", |b| {
+    b.iter_batched_ref(
+      || func(100, 100),
+      |f| {
+        let blocks = f.edit().blocks();
+        for i in 0..blocks.len() {
+          blocks.at(i).insts().retain(|inst| inst.op % 2 == 0);
+        }
+      },
+      criterion::BatchSize::LargeInput,
+    );
+  });
+  g.bench_function("structural: move 100 elements between two lists", |b| {
+    b.iter_batched_ref(
+      || func(2, 100),
+      |f| {
+        let blocks = f.edit().blocks();
+        for _ in 0..100 {
+          let inst = blocks.at(0).insts().remove(0);
+          blocks.at(1).insts().push(inst);
+        }
       },
       criterion::BatchSize::SmallInput,
     );
   });
-}
-
-fn bench_re_splice_list(c: &mut Criterion) {
-  c.bench_function("re_splice_list_100", |b| {
-    b.iter_batched(
-      || {
-        let mut region: Region<ListBlock> = Region::new(ListBlock::make(Symbol(1), empty()));
-        region.session(|s| {
-          let items = s.nav(s.root(), |b| &b.items);
-          s.extend_list(items, (0..100u32).map(Value::Const));
-        });
-        region
-      },
-      |mut region| {
-        region.session(|s| {
-          let items = s.nav(s.root(), |b| &b.items);
-          let refs = s.list_refs(items);
-          s.re_splice_list(items, &refs);
-        });
-        region
+  g.bench_function("structural: 100 pushes", |b| {
+    b.iter_batched_ref(
+      || Region::new(Inst::new(0, ())),
+      |r| {
+        for i in 0..100u32 {
+          r.edit().args().push(i);
+        }
       },
       criterion::BatchSize::SmallInput,
     );
   });
-}
-
-fn bench_validate(c: &mut Criterion) {
-  let region = build_func();
-  let bytes = region.as_bytes().to_vec();
-  c.bench_function("validate", |b| {
-    b.iter(|| {
-      black_box(Func::validate(0, black_box(&bytes)).unwrap());
-    });
+  g.bench_function("structural: wrap the root 100 times", |b| {
+    b.iter_batched_ref(
+      || Region::new(Expr::Lit(0)),
+      |r| {
+        let e = r.edit();
+        for i in 0..100 {
+          let old = e.replace(Expr::Lit(0));
+          e.set(Expr::add(old, Expr::Lit(i)));
+        }
+      },
+      criterion::BatchSize::SmallInput,
+    );
   });
+  g.finish();
 }
 
-fn bench_from_bytes(c: &mut Criterion) {
-  let region = build_func();
-  let bytes = region.as_bytes().to_vec();
-  c.bench_function("from_bytes", |b| {
-    b.iter(|| {
-      black_box(Region::<Func>::from_bytes(black_box(&bytes)).unwrap());
-    });
+fn bytes(c: &mut Criterion) {
+  let f = func(100, 100);
+  let image = f.to_bytes().into_owned();
+  let mut g = c.benchmark_group("bytes");
+  g.bench_function("to_bytes (compact: borrowed)", |b| b.iter(|| black_box(&f).to_bytes().len()));
+  g.bench_function("from_bytes 100 blocks x 100 insts", |b| {
+    b.iter(|| Region::<Func>::from_bytes(black_box(&image)).unwrap());
   });
-}
-
-fn bench_as_bytes_roundtrip(c: &mut Criterion) {
-  let region = build_func();
-  c.bench_function("as_bytes_roundtrip", |b| {
-    b.iter(|| {
-      let bytes = black_box(&region).as_bytes();
-      black_box(Region::<Func>::from_bytes(bytes).unwrap());
-    });
+  // The region's own buffer is 8-aligned.
+  let aligned = f.to_bytes();
+  g.bench_function("view 100 blocks x 100 insts", |b| {
+    b.iter(|| Region::<Func>::view(black_box(&aligned)).unwrap().blocks.len());
   });
+  g.finish();
 }
 
-criterion_group!(
-  benches,
-  bench_build,
-  bench_clone,
-  bench_trim,
-  bench_push_front,
-  bench_extend_list,
-  bench_iterate,
-  bench_graft,
-  bench_re_splice_list,
-  bench_validate,
-  bench_from_bytes,
-  bench_as_bytes_roundtrip,
-);
+criterion_group!(benches, build, read, clone_and_compact, edit, bytes);
 criterion_main!(benches);

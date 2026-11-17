@@ -1,0 +1,10 @@
+error[E0499]: cannot borrow `*e` as mutable more than once at a time
+  --> tests/compile-fail/update_old_kept.rs:16:3
+   |
+12 |   e.update(|old| {
+   |   - first mutable borrow occurs here
+...
+16 |   e.set(Expr::Lit(3));
+   |   ^ second mutable borrow occurs here
+17 |   drop(stash);
+   |        ----- first borrow later used here

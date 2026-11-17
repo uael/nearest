@@ -1,0 +1,9 @@
+error[E0502]: cannot borrow `*e` as mutable because it is also borrowed as immutable
+  --> tests/compile-fail/edit_reference_across_replace.rs:18:14
+   |
+17 |   let seen: &Expr = &**e;
+   |                       -- immutable borrow occurs here
+18 |   let _old = e.replace(Expr::Lit(0));
+   |              ^^^^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+19 |   let _ = matches!(seen, Expr::Lit(_));
+   |                    ---- immutable borrow later used here

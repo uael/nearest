@@ -2,38 +2,30 @@
 name = "nearest"
 version = "0.4.5"
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.95"
 license = "Apache-2.0 OR MIT"
 description = "Self-relative pointer library for region-based allocation"
 repository = "https://github.com/uael/nearest"
-homepage = "https://github.com/uael/nearest"
 documentation = "https://docs.rs/nearest"
 readme = "../README.md"
 keywords = ["self-relative", "pointer", "region", "allocation", "arena"]
 categories = ["data-structures", "memory-management"]
 
 [features]
-default = ["alloc"]
-alloc = []
-std = ["alloc"]
-serde = ["dep:serde"]
+# Nightly Rust only: `#[flat]` marks every type `#[pin_v2]`, so that patterns on a pinned value
+# bind its fields pinned. Crates that use `#[flat]` need no `#![feature]` for it.
+nightly = ["nearest-derive/nightly"]
 
 [dependencies]
 nearest-derive = { version = "=0.3.5", path = "../nearest-derive" }
-serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-serde_json = "1"
 trybuild = "1"
 
 [[bench]]
 name = "region"
 harness = false
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true

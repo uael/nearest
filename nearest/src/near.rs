@@ -1,149 +1,264 @@
-use core::{fmt, marker::PhantomData, num::NonZero, ops::Deref};
+use core::{
+  cmp::Ordering,
+  fmt,
+  hash::{Hash, Hasher},
+  marker::{PhantomData, PhantomPinned},
+  num::NonZero,
+  ops::Deref,
+  pin::Pin,
+  ptr, slice, str,
+};
 
-use crate::{Flat, Patch, emitter::Pos};
+use crate::{
+  Emit, Flat,
+  flat::{New, Seq},
+};
 
-/// A self-relative pointer stored as a 4-byte `NonZero<i32>` offset.
+/// A 4-byte pointer to a `T` in the same [`Region`](crate::Region), stored as the distance
+/// from its own address. It dereferences like a `Box`.
 ///
-/// # Layout
+/// A `Near` has no constructor and is neither `Clone`, `Copy` nor `Unpin`: it exists only
+/// inside a region, as a field of a value there, and a pinned value keeps its pointers.
+/// `Near<[T]>` and `Near<str>` point at a `u32` length followed by the elements.
+/// `Option<Near<T>>` is also 4 bytes.
 ///
-/// `#[repr(C)]` — 4 bytes, `align_of::<i32>()` alignment:
+/// ```
+/// use nearest::{Near, Region, flat};
 ///
-/// | Offset | Field | Type           |
-/// |--------|-------|----------------|
-/// | 0      | `off` | `NonZero<i32>` |
+/// #[flat]
+/// struct Pair { name: Near<str>, values: Near<[u32]>, next: Option<Near<Pair>> }
 ///
-/// The offset is relative to the address of `off` itself (not the start of
-/// the region). Non-zero guarantee ensures `Near<T>` never points to itself.
-///
-/// `Near<T>` is **not** `Copy` or `Clone` — moving it would invalidate the
-/// self-relative offset. Use it only inside [`Region`](crate::Region) buffers
-/// built by the emitter.
-///
-/// # Soundness
-///
-/// **Provenance recovery**: [`get`](Self::get) computes the target address by
-/// adding the stored `i32` offset to the address of the offset field itself.
-/// Because `&self.off` has provenance over only 4 bytes (insufficient for the
-/// target `T`), the method uses `with_exposed_provenance` to recover the
-/// full allocation's provenance — previously exposed by `AlignedBuf::grow`.
-/// Miri validates this pattern with no UB detected.
-///
-/// **Non-zero invariant**: The offset is `NonZero<i32>`, so a `Near<T>` can
-/// never point to itself (offset 0). This is enforced by the emitter's
-/// `patch_near` method which panics on `target == at`.
-pub struct Near<T> {
-  off: NonZero<i32>,
-  _type: PhantomData<T>,
+/// let r = Region::new(Pair::new("a", [1, 2, 3], Near::new(Pair::new("b", (), None))));
+/// assert_eq!(&*r.name, "a");
+/// assert_eq!(r.values.iter().sum::<u32>(), 6);
+/// assert_eq!(&*r.next.as_ref().unwrap().name, "b");
+/// assert_eq!(size_of::<Option<Near<Pair>>>(), 4);
+/// ```
+#[repr(transparent)]
+pub struct Near<T: ?Sized> {
+  pub(crate) off: NonZero<i32>,
+  _t: PhantomData<T>,
+  _pin: PhantomPinned,
 }
 
-// SAFETY: Near<T> contains only a NonZero<i32> and PhantomData — no Drop, no heap.
-// T: Flat bound enables self-sufficient deep_copy/validate that follow the offset
-// to the target. Coinductive trait resolution handles recursive types (e.g.
-// Block → Near<Inst> → Inst → Near<Block>).
-//
-// validate_option exploits the NonZero<i32> niche (0 = None) for Option<Near<T>>.
-unsafe impl<T: Flat> Flat for Near<T> {
-  unsafe fn deep_copy(&self, p: &mut impl Patch, at: Pos) {
-    // SAFETY: Caller guarantees `at` was allocated for `Near<T>`.
-    // Alloc space for the target T, deep-copy it, then patch the offset.
-    let target = p.alloc::<T>();
-    // SAFETY: `target` was just allocated for T, and `at` was allocated for
-    // `Near<T>` by the caller. `get()` is valid because `self` is in a live
-    // region buffer.
+impl<T: ?Sized> Near<T> {
+  /// The address of the target, derived from `self` so that it keeps the provenance of the
+  /// region.
+  const fn target(&self) -> *const u8 {
+    ptr::from_ref(self).cast::<u8>().wrapping_offset(self.off.get() as isize)
+  }
+
+  /// The same, for writing.
+  const fn target_mut(&mut self) -> *mut u8 {
+    ptr::from_mut(self).cast::<u8>().wrapping_offset(self.off.get() as isize)
+  }
+
+  /// A list's length and elements.
+  ///
+  /// # Safety
+  /// `self` is a `Near<[_]>` or a `Near<str>` in a region.
+  const unsafe fn list<E>(&self) -> &[E] {
+    let p = self.target();
+    // SAFETY: the target is a `u32` length followed by the elements.
     unsafe {
-      self.get().deep_copy(p, target);
-      p.patch_near::<T>(at, target);
+      slice::from_raw_parts(p.add(4).cast::<E>(), p.cast::<u32>().read_unaligned() as usize)
     }
   }
 
-  fn validate(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
-    crate::ValidateError::check::<Self>(addr, buf)?;
-    let off = i32::from_ne_bytes(buf[addr..addr + 4].try_into().unwrap());
-    if off == 0 {
-      return Err(crate::ValidateError::NullNear { addr });
+  /// The same, for writing.
+  ///
+  /// # Safety
+  /// As for [`list`](Self::list); the elements are reached only through the result.
+  const unsafe fn list_mut<E>(&mut self) -> &mut [E] {
+    let p = self.target_mut();
+    // SAFETY: as for `list`.
+    unsafe {
+      slice::from_raw_parts_mut(p.add(4).cast::<E>(), p.cast::<u32>().read_unaligned() as usize)
     }
-    let target = addr.cast_signed().wrapping_add(off as isize).cast_unsigned();
-    crate::ValidateError::check::<T>(target, buf)?;
-    T::validate(target, buf)
-  }
-
-  fn validate_option(addr: usize, buf: &[u8]) -> Result<(), crate::ValidateError> {
-    // Option<Near<T>> has niche layout: NonZero<i32> means 0 represents None.
-    // Size is 4 bytes (same as Near<T>), no separate discriminant.
-    crate::ValidateError::check::<i32>(addr, buf)?;
-    let off = i32::from_ne_bytes(buf[addr..addr + 4].try_into().unwrap());
-    if off == 0 {
-      return Ok(()); // None (niche: 0 = None)
-    }
-    let target = addr.cast_signed().wrapping_add(off as isize).cast_unsigned();
-    crate::ValidateError::check::<T>(target, buf)?;
-    T::validate(target, buf)
   }
 }
 
 impl<T: Flat> Near<T> {
-  /// Resolve the self-relative offset to a reference.
+  /// Builder of a pointer to a new `T` written from `value`; also accepted where an
+  /// `Option<Near<T>>` is expected.
   ///
-  /// # Examples
+  /// Constructor parameters for fields written `Near<X>` already take a builder of `X`; this
+  /// is for the other places: optional pointers, lists of pointers, and helper functions.
   ///
   /// ```
-  /// use nearest::{Flat, Near, Region, near};
+  /// use nearest::{Near, Region, flat};
   ///
-  /// #[derive(Flat, Debug)]
-  /// struct Wrapper { inner: Near<u32> }
+  /// #[flat]
+  /// struct Boxed { inner: Near<u64>, maybe: Option<Near<u64>>, many: Near<[Near<u64>]> }
   ///
-  /// let region = Region::new(Wrapper::make(near(42u32)));
-  /// assert_eq!(*region.inner.get(), 42);
+  /// let r = Region::new(Boxed::new(7, Near::new(8), [Near::new(9)]));
+  /// assert_eq!((*r.inner, r.maybe.as_deref(), *r.many[0]), (7, Some(&8), 9));
+  /// ```
+  pub fn new(value: impl Emit<T>) -> impl Emit<Self> + Emit<Option<Self>> {
+    New(value)
+  }
+
+  /// The target, pinned: the way down in a pinned view (see `pin` on handles).
   ///
-  /// // Deref also works (Near<T> implements Deref<Target = T>).
-  /// assert_eq!(*region.inner, 42);
+  /// ```
+  /// use core::pin::Pin;
+  ///
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Pair { left: Near<u32>, right: Near<u32> }
+  ///
+  /// let mut r = Region::new(Pair::new(1, 2));
+  /// // Both fields at once.
+  /// let PairPin { left, right } = r.edit().pin().project();
+  /// let mut left: Pin<&mut u32> = left.as_pin_mut();
+  /// let right: Pin<&mut u32> = right.as_pin_mut();
+  /// *left += *right;
+  /// assert_eq!(*r.left, 3);
   /// ```
   #[must_use]
-  pub fn get(&self) -> &T {
-    // SAFETY: The offset was written by `Emitter::patch_near` which guarantees
-    // the target lies within the same `Region` buffer. The region keeps the
-    // buffer alive and properly aligned for `T`.
-    //
-    // Strict provenance is not possible here: `&self.off` has provenance over
-    // only 4 bytes, but `T` may live anywhere in the buffer. A derived pointer
-    // (e.g. `wrapping_byte_offset`) would fail Stacked Borrows retagging when
-    // the target `&T` is larger than 4 bytes.
-    //
-    // Instead, `with_exposed_provenance` recovers the full allocation's
-    // provenance (exposed by `AlignedBuf::grow`). This triggers Miri
-    // int-to-ptr cast warnings but is not UB.
+  pub fn as_pin_mut(self: Pin<&mut Self>) -> Pin<&mut T> {
+    #[cfg(feature = "nightly")]
+    crate::unpin::pinned::<T>();
+    // SAFETY: the target is not moved while the pointer is pinned: a pinned view borrows the
+    // handle it comes from, so nothing can grow the buffer; and a `Near` owns its target alone.
+    unsafe { Pin::new_unchecked(&mut *Pin::get_unchecked_mut(self).target_mut().cast::<T>()) }
+  }
+}
+
+impl<T: Flat> Near<[T]> {
+  /// Builder of a list of the items of an iterator.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Squares { values: Near<[u32]> }
+  ///
+  /// let r = Region::new(Squares::new(Near::from_iter((1..4).map(|i| i * i))));
+  /// assert_eq!(r.values[..], [1, 4, 9]);
+  /// ```
+  #[expect(clippy::should_implement_trait, reason = "a builder, not a `Near<[T]>`")]
+  pub fn from_iter<I: IntoIterator<Item: Emit<T>>>(items: I) -> impl Emit<Self> {
+    Seq(items)
+  }
+
+  /// The elements, pinned, all at once.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Node { id: u32, kids: Near<[Node]> }
+  ///
+  /// let mut r = Region::new(Node::new(0, [Node::new(1, ()), Node::new(2, ())]));
+  /// let NodePin { mut id, kids } = r.edit().pin().project();
+  /// for kid in kids.iter_pin_mut() {
+  ///   *kid.project().id += 10;
+  ///   *id += 1;
+  /// }
+  /// assert_eq!((r.id, r.kids[0].id, r.kids[1].id), (2, 11, 12));
+  /// ```
+  #[must_use = "the iterator does nothing unless it is used"]
+  pub fn iter_pin_mut(self: Pin<&mut Self>) -> impl ExactSizeIterator<Item = Pin<&mut T>> {
+    #[cfg(feature = "nightly")]
+    crate::unpin::pinned::<T>();
+    // SAFETY: as for `Near::as_pin_mut`; the elements are disjoint and stay where they are.
     unsafe {
-      let base = core::ptr::from_ref(&self.off).cast::<u8>();
-      let target = base.addr().wrapping_add_signed(self.off.get() as isize);
-      &*core::ptr::with_exposed_provenance::<T>(target)
+      (Pin::get_unchecked_mut(self).list_mut::<T>().iter_mut())
+        .map(|element| Pin::new_unchecked(element))
     }
   }
 }
 
-impl<T: Flat> Deref for Near<T> {
+impl<T> Deref for Near<T> {
   type Target = T;
-
   fn deref(&self) -> &T {
-    self.get()
+    // SAFETY: a `&Near` only exists inside a region, which holds the target at the offset.
+    unsafe { &*self.target().cast::<T>() }
   }
 }
 
-impl<T: Flat + PartialEq> PartialEq for Near<T> {
+impl<T> Deref for Near<[T]> {
+  type Target = [T];
+  fn deref(&self) -> &[T] {
+    // SAFETY: as above; the target is a list.
+    unsafe { self.list() }
+  }
+}
+
+impl Deref for Near<str> {
+  type Target = str;
+  fn deref(&self) -> &str {
+    // SAFETY: as above; the target is a length and UTF-8 bytes.
+    unsafe { str::from_utf8_unchecked(self.list()) }
+  }
+}
+
+/// The elements.
+///
+/// ```
+/// use nearest::{Near, Region, flat};
+///
+/// #[flat]
+/// struct List { items: Near<[u8]> }
+///
+/// let r = Region::new(List::new(b"abc".as_slice()));
+/// let mut n = 0;
+/// for x in &r.items { n += u32::from(*x) }
+/// assert_eq!(n, 294);
+/// ```
+impl<'a, T> IntoIterator for &'a Near<[T]> {
+  type Item = &'a T;
+  type IntoIter = slice::Iter<'a, T>;
+  fn into_iter(self) -> Self::IntoIter {
+    self.iter()
+  }
+}
+
+impl<T: ?Sized + fmt::Debug> fmt::Debug for Near<T>
+where
+  Self: Deref<Target = T>,
+{
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    (**self).fmt(f)
+  }
+}
+
+impl<T: ?Sized + PartialEq> PartialEq for Near<T>
+where
+  Self: Deref<Target = T>,
+{
   fn eq(&self, other: &Self) -> bool {
-    *self.get() == *other.get()
+    **self == **other
   }
 }
 
-impl<T: Flat + Eq> Eq for Near<T> {}
+impl<T: ?Sized + Eq> Eq for Near<T> where Self: Deref<Target = T> {}
 
-impl<T: Flat + fmt::Debug> fmt::Debug for Near<T> {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    fmt::Debug::fmt(self.get(), f)
+impl<T: ?Sized + PartialOrd> PartialOrd for Near<T>
+where
+  Self: Deref<Target = T>,
+{
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    (**self).partial_cmp(&**other)
   }
 }
 
-impl<T: Flat + fmt::Display> fmt::Display for Near<T> {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    fmt::Display::fmt(self.get(), f)
+impl<T: ?Sized + Ord> Ord for Near<T>
+where
+  Self: Deref<Target = T>,
+{
+  fn cmp(&self, other: &Self) -> Ordering {
+    (**self).cmp(&**other)
+  }
+}
+
+impl<T: ?Sized + Hash> Hash for Near<T>
+where
+  Self: Deref<Target = T>,
+{
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    (**self).hash(state);
   }
 }

@@ -1,0 +1,5 @@
+error[E0614]: type `Old<'_, Expr>` cannot be dereferenced
+  --> tests/compile-fail/edit_old_read.rs:18:20
+   |
+18 |   let _ = matches!(*old, Expr::Lit(_));
+   |                    ^^^^ can't be dereferenced

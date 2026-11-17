@@ -1,0 +1,13 @@
+error[E0106]: missing lifetime specifiers
+  --> tests/compile-fail/edit_helper_needs_named_lifetimes.rs:14:33
+   |
+14 | fn first(e: &mut Edit<Expr>) -> &mut Edit<Expr> {
+   |             ---------------     ^        ^ expected named lifetime parameter
+   |                                 |
+   |                                 expected named lifetime parameter
+   |
+   = help: this function's return type contains a borrowed value, but the signature does not say which one of `e`'s 2 lifetimes it is borrowed from
+help: consider introducing a named lifetime parameter
+   |
+14 | fn first<'a>(e: &'a mut Edit<'a, Expr>) -> &'a mut Edit<'a, Expr> {
+   |         ++++     ++          +++            ++          +++
