@@ -11,6 +11,7 @@ cargo test --test integration        # Run only integration tests (regions on th
 cargo test --test integration TESTNAME  # Run a single integration test
 cargo test --test inline             # The same tests with `Inline` storage, and its own tests
 cargo test --test user_storage       # The same tests with a storage written in the test, and others
+cargo test -p nearest --features serde --test serde  # The `serde` feature
 cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
 cargo run --example expr             # Examples (also: ir); they assert their results
 cargo bench --bench region           # Benchmarks (criterion)

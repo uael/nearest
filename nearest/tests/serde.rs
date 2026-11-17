@@ -1,0 +1,97 @@
+//! The `serde` feature: a region is its bytes, checked when loaded.
+#![cfg(feature = "serde")]
+
+use nearest::{Inline, Near, Region, flat};
+use serde_test::{Token, assert_de_tokens, assert_de_tokens_error, assert_ser_tokens};
+
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Tree {
+  id: u32,
+  name: Near<str>,
+  kids: Near<[Tree]>,
+}
+
+fn tree() -> Region<Tree> {
+  Region::new(Tree::new(
+    1,
+    "root",
+    (Tree::new(2, "a", ()), Tree::new(3, "b", [Tree::new(4, "c", ())])),
+  ))
+}
+
+/// The bytes of a region, leaked so that tokens can borrow them for `'static`.
+fn image(r: &Region<Tree>) -> &'static [u8] {
+  Region::<Tree>::new(&**r).as_bytes().unwrap().to_vec().leak()
+}
+
+#[test]
+fn serializes_as_its_bytes() {
+  let r = tree();
+  assert_ser_tokens(&r, &[Token::Bytes(image(&r))]);
+}
+
+#[test]
+fn an_edited_region_serializes_as_its_compact_copy() {
+  let mut r = tree();
+  r.edit().kids().at(0).name().set("renamed");
+  assert!(r.as_bytes().is_none());
+  assert_ser_tokens(&r, &[Token::Bytes(image(&r))]);
+}
+
+#[test]
+fn deserializes_from_every_form_of_bytes() {
+  let r = tree();
+  let bytes = image(&r);
+  assert_de_tokens(&r, &[Token::Bytes(bytes)]);
+  assert_de_tokens(&r, &[Token::BorrowedBytes(bytes)]);
+  assert_de_tokens(&r, &[Token::ByteBuf(bytes)]);
+  let mut seq = vec![Token::Seq { len: Some(bytes.len()) }];
+  seq.extend(bytes.iter().map(|&b| Token::U8(b)));
+  seq.push(Token::SeqEnd);
+  assert_de_tokens(&r, &seq);
+}
+
+#[test]
+fn invalid_bytes_are_an_error() {
+  let bytes = image(&tree());
+  // The same error as `from_bytes`, as a custom error of the format.
+  let cut = &bytes[..bytes.len() - 1];
+  let err = Region::<Tree>::from_bytes(cut).unwrap_err();
+  assert!(matches!(err, nearest::Error::Invalid(_)));
+  assert_de_tokens_error::<Region<Tree>>(&[Token::Bytes(cut)], &err.to_string());
+  assert_de_tokens_error::<Region<Tree>>(&[Token::Bytes(&[])], "invalid region bytes at offset 0");
+  assert_de_tokens_error::<Region<Tree>>(
+    &[Token::Str("x")],
+    "invalid type: string \"x\", expected the bytes of a region",
+  );
+}
+
+#[test]
+fn any_storage_with_default() {
+  let r = tree();
+  let bytes = image(&r);
+  let inline: Region<Tree, Inline<256>> =
+    serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+  assert_eq!(*inline, *r);
+  assert_eq!(inline.as_bytes(), Some(bytes));
+  assert_de_tokens_error::<Region<Tree, Inline<16>>>(
+    &[Token::Bytes(bytes)],
+    "region bytes larger than the storage",
+  );
+}
+
+#[test]
+fn json_round_trip() {
+  let r = tree();
+  let json = serde_json::to_string(&r).unwrap();
+  assert!(json.starts_with('['));
+  let back: Region<Tree> = serde_json::from_str(&json).unwrap();
+  assert_eq!(back, r);
+  assert_eq!(back.kids[1].kids[0].name.as_ref() as &str, "c");
+  // Inside other data, as a field.
+  let pair = (7u8, r);
+  let back: (u8, Region<Tree>) =
+    serde_json::from_str(&serde_json::to_string(&pair).unwrap()).unwrap();
+  assert_eq!(back, pair);
+}

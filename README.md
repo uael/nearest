@@ -218,6 +218,9 @@ code that writes a pattern on a pinned value needs `pin_ergonomics`. Under it, a
 impl written by hand for a type that holds a `Near` fails the build where the type is pinned
 (a build that generates code: `cargo check` does not report it).
 
+The opt-in feature `serde` (with `alloc`) makes a `Region` `Serialize` and `Deserialize` as its
+bytes, checked when loaded, like `as_bytes` and `from_bytes`.
+
 Examples: [`expr.rs`](nearest/examples/expr.rs) simplifies an expression tree by rewriting it
 in place; [`ir.rs`](nearest/examples/ir.rs) runs constant folding and dead-code elimination on
 a small IR.

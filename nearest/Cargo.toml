@@ -23,17 +23,25 @@ alloc = []
 # Nightly Rust only: `#[flat]` marks every type `#[pin_v2]`, so that patterns on a pinned value
 # bind its fields pinned. Crates that use `#[flat]` need no `#![feature]` for it.
 nightly = ["nearest-derive/nightly"]
+# `Serialize` and `Deserialize` for `Region`: its bytes, checked when loaded.
+serde = ["alloc", "dep:serde"]
 
 [dependencies]
 nearest-derive = { version = "=0.6.0", path = "../nearest-derive" }
+serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
+serde_json = "1"
+serde_test = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 trybuild = "1"
 
 [[bench]]
 name = "region"
 harness = false
+
+[package.metadata.docs.rs]
+features = ["serde"]
 
 [lints]
 workspace = true
