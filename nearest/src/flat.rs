@@ -250,23 +250,17 @@ pub unsafe trait Flat: Sized + 'static {
 /// # Safety
 /// As for [`Flat::store`] with `None`.
 pub unsafe fn write_copy<T: Flat>(src: &T, sink: &mut Sink, at: usize) {
-  // SAFETY: plain data is its bytes, and the destination is sized for it.
-  unsafe {
-    if T::PLAIN {
-      let dst = (*sink.buf).ptr().add(at);
-      ptr::copy_nonoverlapping(ptr::from_ref(src).cast::<u8>(), dst, size_of::<T>());
-    } else {
-      src.store(sink, at, None);
-    }
-  }
+  // SAFETY: forwarded, for one element.
+  unsafe { write_slice(slice::from_ref(src), sink, at) }
 }
 
 /// A deep copy of the elements of `src` at `at`.
 ///
 /// # Safety
-/// As for [`write_copy`], with room for `src.len()` elements.
+/// As for [`Flat::store`] with `None`, with room for `src.len()` elements.
 unsafe fn write_slice<T: Flat>(src: &[T], sink: &mut Sink, at: usize) {
-  // SAFETY: as for `write_copy`, element by element.
+  // SAFETY: plain data is its bytes, and the destination is sized for it; other elements are
+  // stored one by one.
   unsafe {
     if T::PLAIN {
       let dst = (*sink.buf).ptr().add(at);
@@ -573,6 +567,13 @@ pub unsafe trait Emit<T: Flat> {
   /// `at` is allocated in the sink, aligned and sized for `T`.
   #[doc(hidden)]
   unsafe fn emit(self, sink: &mut Sink, at: usize);
+
+  /// `self` as a `T` that is its own bytes (`PLAIN`), if it is one; `emit` then only copies
+  /// those bytes. Lets a list of numbers be filled without going through the sink.
+  #[doc(hidden)]
+  fn plain(&self) -> Option<&T> {
+    None
+  }
 }
 
 // SAFETY: a value is stored as itself; it is not in any region.
@@ -580,6 +581,9 @@ unsafe impl<T: Flat> Emit<T> for T {
   unsafe fn emit(self, sink: &mut Sink, at: usize) {
     // SAFETY: forwarded.
     unsafe { write_copy(&self, sink, at) }
+  }
+  fn plain(&self) -> Option<&T> {
+    T::PLAIN.then_some(self)
   }
 }
 
@@ -589,6 +593,9 @@ unsafe impl<T: Flat> Emit<T> for &T {
   unsafe fn emit(self, sink: &mut Sink, at: usize) {
     // SAFETY: forwarded.
     unsafe { write_copy(self, sink, at) }
+  }
+  fn plain(&self) -> Option<&T> {
+    T::PLAIN.then_some(*self)
   }
 }
 
@@ -761,12 +768,23 @@ impl List {
   /// As for [`reserve`](Self::reserve).
   unsafe fn extend<T: Flat>(&mut self, sink: &mut Sink, mut items: impl Iterator<Item: Emit<T>>) {
     loop {
-      // Fast path: fill the room in one internal iteration, with no growth check.
+      // Fast path: fill the room in one internal iteration, with no growth check. Plain values
+      // are written straight through `base`, which is read again after anything else, since
+      // that may have grown the buffer; the iterator itself cannot reach the buffer.
       let mut at = self.elem::<T>(self.len);
       let mut n = 0;
+      // SAFETY: the sink's buffer is live.
+      let mut base = unsafe { (*sink.buf).ptr() };
       items.by_ref().take(self.cap - self.len).for_each(|item| {
-        // SAFETY: `at` is an element of the room.
-        unsafe { item.emit(sink, at) };
+        // SAFETY: `at` is an element of the room, sized for a `T`.
+        unsafe {
+          if let Some(v) = item.plain() {
+            ptr::copy_nonoverlapping(ptr::from_ref(v).cast::<u8>(), base.add(at), size_of::<T>());
+          } else {
+            item.emit(sink, at);
+            base = (*sink.buf).ptr();
+          }
+        }
         at += size_of::<T>();
         n += 1;
       });
