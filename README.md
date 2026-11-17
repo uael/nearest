@@ -86,8 +86,8 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | Item | |
 |---|---|
 | `#[flat]` | makes a struct or enum storable; generates constructors and the handle |
-| `Region<T, S = Heap>` | the buffer, in a storage: `new`, `with_capacity`, `new_in`, `edit`, `as_bytes`, `to_bytes`, `from_bytes`, `from_bytes_with`, `view`, `view_with`, `byte_len`; `unsafe` `from_bytes_unchecked`, `view_unchecked` |
-| `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap, `N` bytes inside the region |
+| `Region<T, S = Heap>` | the buffer, in a storage: `new`, `new_in`, `edit`, `as_bytes`, `to_bytes`, `from_bytes`, `from_bytes_with`, `view`, `view_with`, `byte_len`; `unsafe` `from_bytes_unchecked`, `view_unchecked` |
+| `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap (`Heap::with_capacity`), `N` bytes inside the region |
 | `Near<T>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
 | `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
@@ -168,8 +168,8 @@ A region keeps its buffer in a storage. `Region<T>` is on the `Heap`, where it g
 needed; `Inline<N>` keeps it in `N` bytes inside the `Region` value, with no heap, and growing
 past them panics (`from_bytes` returns an error). Other memory, an arena or a memory-mapped
 file, is a storage of your own: the `unsafe` trait `Storage` asks for two accessors to its
-memory, and `grow` if it grows. A region in any storage is built with `new_in`, or with
-`from_bytes`; everything else is the same.
+memory, the second of which grows it when asked for more, if it can. A region in any storage
+is built with `new_in`, or with `from_bytes`; everything else is the same.
 
 ```rust
 let mut r = Region::new_in(Inline::<256>::default(), Block::new(0, (), None));
