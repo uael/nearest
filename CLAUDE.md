@@ -197,7 +197,6 @@ Releases are automated with [release-plz](https://release-plz.dev/). On every pu
 - Only `nearest` and `nearest-derive` are published; `xtask` is excluded
 - `nearest` owns the changelog and git tags (`v{{ version }}`); `nearest-derive` has no changelog or tags of its own
 - Both crates are released under the same version (`version_group` in `release-plz.toml`): the higher of their next versions
-- In 0.x a `feat` bumps the minor version (`features_always_increment_minor`), so every feature release is `0.(x+1).0`; a breaking change does too (a 1.0 is set by hand in the release PR)
 
 ### Commit Message Format
 

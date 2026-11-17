@@ -1,8 +1,6 @@
 [workspace]
 git_tag_enable = true
 git_release_enable = true
-# In 0.x, a `feat` bumps the minor version, as a breaking change does (not the patch).
-features_always_increment_minor = true
 
 # The two crates are released under one version: the higher of their next versions.
 [[package]]
