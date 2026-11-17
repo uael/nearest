@@ -125,7 +125,8 @@ Trait impls: `Region`: `Deref`, `Clone`, `Debug`, `PartialEq`, `Eq`. `Near`: `De
 
 `Flat` requires `'static`: a stored type has no lifetime. Every stored type has alignment at
 most 8, non-zero size and no drop glue. These are checked at
-compile time (in a `const` block that every use instantiates).
+compile time (in a `const` block that every use instantiates: building, editing and checking
+bytes).
 
 Plain data means `T: Copy`. A `Copy` type cannot contain a `Near`, so it is safe to hand out as
 `&mut T`.
@@ -138,7 +139,8 @@ Plain data means `T: Copy`. A `Copy` type cannot contain a `Near`, so it is safe
 - `Near<[T]>` points at a `u32` length; the elements follow at `+4`, and a `u32` capacity sits
   at `-4`. A list block is `[cap][len][elements]`, aligned to `max(4, align_of::<T>())`; for
   8-aligned elements the block starts at a multiple of 8, so the elements do too.
-- `#[flat]` adds `#[repr(C)]` to structs without a `repr` and `#[repr(u8)]` to enums. Variant
+- `#[flat]` adds `#[repr(C)]` to structs (unless they are already `C` or `transparent`) and
+  `#[repr(u8)]` to enums, so the layout does not depend on the compiler's field ordering. Variant
   field offsets come from hidden `#[repr(C)]` mirror structs `(u8, fields..)`.
 - A region holds at most `i32::MAX & !7` bytes. Growing past that panics before anything
   changes. This and slice indexing are the only runtime checks.
@@ -230,7 +232,8 @@ with only unit variants get no `as_mut`. Generated handle types have the visibil
 
 ## Moving values
 
-Every handle of a place holding a `T` has the two forms of assignment that Rust has:
+A handle of a place holding a `T` has the two forms of assignment that Rust has (an optional
+pointer has `take` in place of `replace`):
 
 ```rust
 pub fn set(&mut self, value: impl Emit<T>)                    // `*place = value`
@@ -283,7 +286,7 @@ its closure panics.
 
 | Target | Builders |
 |---|---|
-| any `T` | `T` by value, `&T` (deep copy), `Old<'_, T>` (move; the `T` of a list, string or optional pointer place is `Near<[U]>`, `Near<str>`, `Option<Near<U>>`) |
+| any `T` | `T` by value, `&T` (deep copy), `Old<'_, T>` (move; for a list or string place, `T` is `Near<[U]>` or `Near<str>`) |
 | `Near<T>`, `Option<Near<T>>` | `Near::new(e)` |
 | `Near<[T]>` | `[E; N]`, tuples up to 12 and `()`, `&[T]`, `Near::from_iter(iter)` |
 | `Near<str>` | `&str` |
@@ -296,7 +299,8 @@ Pointers are transparent where that is unambiguous. A constructor parameter for 
 written `Near<X>` (with `X` not a slice or `str`) takes a builder of `X` and allocates the
 target, so trees read as `Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2)))`. The macro decides
 this from the field's type as written; a field whose type is an alias of `Near<X>` takes a
-builder of the pointer, `Near::new(x)`. In the same way the handle of a `Near<X>` place is the
+builder of the pointer, `Near::new(x)`, and list and string pointers must be written
+`Near<[T]>` and `Near<str>`, not through an alias of the slice or of `str`. In the same way the handle of a `Near<X>` place is the
 handle of the `X`, so `set` on it takes a builder of `X`, and `OptionEdit::insert` takes a
 builder of `X`. An `Option<Near<X>>` parameter takes `None` or `Near::new(x)`.
 
@@ -317,8 +321,8 @@ pub fn view(bytes: &[u8]) -> Result<&T, Invalid>
   A region is compact when it comes from `Region::new` or `from_bytes`; `edit` clears the mark,
   and so does a list built from an iterator that turned out longer or shorter than its size
   hint said.
-- `from_bytes` copies the bytes into a new region, at any alignment of the input, and checks
-  them.
+- `from_bytes` checks the bytes, at any alignment of the input, and copies them into a new
+  region.
 - `view` checks the bytes and reads them in place, for example a memory-mapped file. The slice
   must be 8-aligned. A `&T` needs nothing else: `Near` resolves relative to itself.
 

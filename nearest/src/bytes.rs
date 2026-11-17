@@ -1,7 +1,10 @@
 use alloc::vec::Vec;
 use core::{error::Error, fmt, str};
 
-use crate::{Flat, flat::MAX};
+use crate::{
+  Flat,
+  flat::{MAX, fits},
+};
 
 /// The bytes given to [`Region::from_bytes`](crate::Region::from_bytes) or
 /// [`Region::view`](crate::Region::view) are not the compact image of a valid value.
@@ -93,12 +96,14 @@ impl Check<'_> {
 
 /// The target of the `Near<T>` at `ptr`.
 pub fn target<T: Flat>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Invalid> {
+  fits::<T>();
   let at = ck.claim(ptr, 0, align_of::<T>(), size_of::<T>())?;
   T::check(ck, at)
 }
 
 /// The list block of the `Near<[T]>` at `ptr`: `[len][len]`, then the elements.
 pub fn list<T: Flat>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Invalid> {
+  fits::<T>();
   let at = ck.claim(ptr, 4, align_of::<T>().max(4), 8)?;
   let (cap, len) = (ck.u32(at)?, ck.u32(at + 4)?);
   ck.extend(at, len.checked_mul(size_of::<T>()).filter(|_| cap == len))?;
@@ -136,8 +141,10 @@ fn items<T: Flat>(ck: &mut Check<'_>, first: usize, count: usize) -> Result<(), 
   Ok(())
 }
 
-/// Checks that `bytes` are the compact image of a `T`, without recursion or panics.
+/// Checks that `bytes` are the compact image of a `T`, without recursion or panics. Like every
+/// way into a region, it rejects at compile time the types a region cannot hold.
 pub fn check<T: Flat>(bytes: &[u8]) -> Result<(), Invalid> {
+  fits::<T>();
   if bytes.len() < size_of::<T>() || bytes.len() > MAX {
     return Err(Invalid(0));
   }

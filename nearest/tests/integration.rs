@@ -409,6 +409,15 @@ fn enums_generics_and_nesting() {
   assert_eq!(shapes.items[2], Shape::Rect { w: 1, h: 2 });
 }
 
+#[flat]
+#[repr(align(8))]
+struct Padded {
+  a: u8,
+  b: u32,
+  c: u8,
+  d: u16,
+}
+
 #[test]
 fn layout() {
   let r = Region::new(Aligned::new([1u8], [2u64, 3], "abc", [4u16]));
@@ -421,6 +430,19 @@ fn layout() {
   assert!(r2.small.is_empty() && r2.big.is_empty() && r2.text.is_empty());
   assert_eq!(size_of::<Near<[u64]>>(), 4);
   assert_eq!(size_of::<Option<Near<Expr>>>(), 4);
+  // Fields keep their declaration order also next to another `repr`: the image must not depend
+  // on how the compiler orders fields.
+  let offsets = [
+    std::mem::offset_of!(Padded, a),
+    std::mem::offset_of!(Padded, b),
+    std::mem::offset_of!(Padded, c),
+    std::mem::offset_of!(Padded, d),
+  ];
+  assert_eq!((offsets, size_of::<Padded>(), align_of::<Padded>()), ([0, 4, 8, 10], 16, 8));
+  assert_eq!(
+    Region::new(Padded::new(1, 2, 3, 4)).to_bytes()[..12],
+    [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 4, 0]
+  );
   // `[cap][len][elements]` after the pointer; strings are `[len][bytes]`.
   let l = Region::new(Near::from_iter([7u32, 8]));
   let words =

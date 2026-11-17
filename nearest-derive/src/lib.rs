@@ -23,15 +23,21 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     return Err(Error::new_spanned(attr, "`#[flat]` takes no arguments"));
   }
   let is_enum = matches!(input.data, Data::Enum(_));
+  // Whether the layout is already fixed: `u8` for an enum, `C` or `transparent` for a struct.
   let mut has_repr = false;
   for a in input.attrs.iter().filter(|a| a.path().is_ident("repr")) {
-    has_repr = true;
     let tokens = a.meta.require_list()?.tokens.clone();
     if is_enum && tokens.to_string() != "u8" {
       return Err(Error::new_spanned(a, "`#[flat]` enums are `#[repr(u8)]`, the default"));
     }
-    if tokens.into_iter().any(|t| matches!(&t, TokenTree::Ident(i) if i == "packed")) {
-      return Err(Error::new_spanned(a, "`#[flat]` types cannot be packed"));
+    for t in tokens {
+      match &t {
+        TokenTree::Ident(i) if i == "packed" => {
+          return Err(Error::new_spanned(a, "`#[flat]` types cannot be packed"));
+        }
+        TokenTree::Ident(i) if is_enum || i == "C" || i == "transparent" => has_repr = true,
+        _ => {}
+      }
     }
   }
 
@@ -152,7 +158,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       }
       let mut_name = format_ident!("{name}Mut");
       let (mut arms, mut built, mut views, mut view_arms) = (vec![], vec![], vec![], vec![]);
-      let mut check_arms = vec![];
+      let (mut check_arms, mut ctor_names) = (vec![], vec![]);
       let last = data.variants.len() - 1;
       for (i, v) in data.variants.iter().enumerate() {
         if let Some((eq, expr)) = &v.discriminant {
@@ -200,7 +206,13 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         check_arms.push(quote!(#tag_pat => { #checks }));
         let doc = format!("Builds `{name}::{vname}` from its fields, in declaration order.");
         let tag_emit = quote!(::nearest::Emit::<u8>::emit(#tag, #sink, #at););
-        ctors.push(ctor(snake(vname), doc, &v.fields, tag_emit, offs.clone()));
+        let cname = snake(vname);
+        if ctor_names.contains(&cname) {
+          let msg = format!("another variant already has the constructor `{cname}`: rename one");
+          return Err(Error::new_spanned(vname, msg));
+        }
+        ctor_names.push(cname.clone());
+        ctors.push(ctor(cname, doc, &v.fields, tag_emit, offs.clone()));
         let stores = binds.iter().zip(&offs).map(|(b, off)| store(quote!(#b), off));
         arms.push(quote!(Self::#vname #pat => { #tag_store #(#stores)* }));
         // Tells the dead-code lint that the variant is built, by the constructor.
@@ -297,16 +309,19 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           #np::fits::<Self>();
           unsafe { #body }
         }
-        unsafe fn edit<#lt, #e: #lt>(#buf: *mut #np::Buf, #at: usize) -> &#lt mut Self::Edit<#e> {
+        unsafe fn edit<#lt, #e: #lt>(
+          #buf: *mut #np::Buf,
+          #at: usize,
+        ) -> &#lt mut Self::Edit<#e> {
           #np::fits::<Self>();
-          unsafe {
-            &mut *(::core::ptr::from_mut(#np::Raw::<#e, Self>::new(#buf, #at)) as *mut #handle #h_ty)
-          }
+          let raw = unsafe { #np::Raw::<#e, Self>::new(#buf, #at) };
+          unsafe { &mut *(::core::ptr::from_mut(raw) as *mut #handle #h_ty) }
         }
         fn check(
           #ck: &mut #np::Check<'_>,
           #at: usize,
         ) -> ::core::result::Result<(), ::nearest::Invalid> {
+          #np::fits::<Self>();
           #checks
           ::core::result::Result::Ok(())
         }

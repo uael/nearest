@@ -407,10 +407,22 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
     unsafe { plain_edit(buf, at) }
   }
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
+    fits::<Self>();
     if T::ANY {
       return Ok(());
     }
     (0..N).try_for_each(|i| T::check(ck, at + i * size_of::<T>()))
+  }
+}
+
+impl<T: ?Sized> Near<T> {
+  /// Writes this pointer at `at` for a value that moved by `d` bytes: it keeps its target.
+  ///
+  /// # Safety
+  /// `at` is allocated in the sink for a `Near`.
+  const unsafe fn moved(&self, sink: &mut Sink, at: usize, d: i32) {
+    // SAFETY: per the caller.
+    unsafe { sink.write(at, self.off.get().wrapping_add(d)) }
   }
 }
 
@@ -422,7 +434,7 @@ unsafe impl<T: Flat> Flat for Near<T> {
     // source is read.
     unsafe {
       if let Some(d) = shift {
-        sink.write(at, self.off.get().wrapping_add(d));
+        self.moved(sink, at, d);
       } else {
         fits::<T>();
         let t = sink.alloc(size_of::<T>(), align_of::<T>());
@@ -446,17 +458,11 @@ unsafe impl<T: Flat> Flat for Near<T> {
 unsafe impl<T: Flat> Flat for Near<[T]> {
   type Edit<'e> = ListEdit<'e, T>;
   unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<i32>) {
-    // SAFETY: the caller allocated `at` for a `Near`; the list is allocated with room for the
-    // elements before they are written.
+    // SAFETY: the caller allocated `at` for a `Near`.
     unsafe {
-      if let Some(d) = shift {
-        sink.write(at, self.off.get().wrapping_add(d));
-      } else {
-        let src: &[T] = self;
-        let mut list = List::new::<T>(sink, src.len());
-        write_slice(src, sink, list.elem::<T>(0));
-        list.len = src.len();
-        list.finish(sink, at);
+      match shift {
+        Some(d) => self.moved(sink, at, d),
+        None => Emit::<Self>::emit(&**self, sink, at),
       }
     }
   }
@@ -477,10 +483,9 @@ unsafe impl Flat for Near<str> {
   unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<i32>) {
     // SAFETY: the caller allocated `at` for a `Near`.
     unsafe {
-      if let Some(d) = shift {
-        sink.write(at, self.off.get().wrapping_add(d));
-      } else {
-        copy_str(sink, at, self);
+      match shift {
+        Some(d) => self.moved(sink, at, d),
+        None => copy_str(sink, at, self),
       }
     }
   }
@@ -715,13 +720,17 @@ impl List {
     self.head + 4 + i * size_of::<T>()
   }
 
-  /// Moves the elements to a new block with room for `cap`, whose header gets the length; the
-  /// old block becomes garbage.
+  /// Makes room for one more element. A full list moves to a new block of twice the capacity
+  /// (at least 4), whose header gets the length; the old block becomes garbage. Returns whether
+  /// the list moved.
   ///
   /// # Safety
-  /// `self` is a block of `T`s in the sink's buffer whose first `len` elements are valid, and
-  /// `cap >= len`.
-  pub unsafe fn grow<T: Flat>(&mut self, sink: &mut Sink, cap: usize) {
+  /// `self` is a block of `T`s in the sink's buffer whose first `len` elements are valid.
+  pub unsafe fn reserve<T: Flat>(&mut self, sink: &mut Sink) -> bool {
+    if self.len < self.cap {
+      return false;
+    }
+    let cap = (self.cap * 2).max(4);
     let new = Self::new::<T>(sink, cap);
     sink.loose();
     // SAFETY: per the caller, and the new block has room for the elements.
@@ -730,18 +739,17 @@ impl List {
       sink.write(new.head, self.len as u32);
     }
     (self.head, self.cap) = (new.head, cap);
+    true
   }
 
   /// Appends `item`, growing the block if it is full.
   ///
   /// # Safety
-  /// As for [`grow`](Self::grow).
+  /// As for [`reserve`](Self::reserve).
   unsafe fn push<T: Flat>(&mut self, sink: &mut Sink, item: impl Emit<T>) {
     // SAFETY: per the caller; element `len` is within the room.
     unsafe {
-      if self.len == self.cap {
-        self.grow::<T>(sink, (self.cap * 2).max(4));
-      }
+      self.reserve::<T>(sink);
       item.emit(sink, self.elem::<T>(self.len));
     }
     self.len += 1;
@@ -750,7 +758,7 @@ impl List {
   /// Appends the items.
   ///
   /// # Safety
-  /// As for [`grow`](Self::grow).
+  /// As for [`reserve`](Self::reserve).
   unsafe fn extend<T: Flat>(&mut self, sink: &mut Sink, mut items: impl Iterator<Item: Emit<T>>) {
     loop {
       // Fast path: fill the room in one internal iteration, with no growth check.

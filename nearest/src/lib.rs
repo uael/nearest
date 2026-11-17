@@ -128,8 +128,8 @@
 //! # Bytes
 //!
 //! [`Region::to_bytes`] returns the compact image: the bytes a deep copy writes, borrowed from the
-//! region when it has not been edited since it was built. [`Region::from_bytes`] copies and
-//! checks bytes; [`Region::view`] checks an 8-aligned slice and reads it in place. Checking
+//! region when it has not been edited since it was built. [`Region::from_bytes`] checks and
+//! copies bytes; [`Region::view`] checks an 8-aligned slice and reads it in place. Checking
 //! accepts exactly the compact images of valid values, in one pass, without recursion or
 //! panics. The bytes hold native-endian integers and the layout of the target.
 //!
@@ -167,13 +167,14 @@ pub use flat::{Emit, Flat};
 pub use near::Near;
 /// Makes a struct or enum storable in a region.
 ///
-/// It implements [`Flat`] and adds `#[repr(C)]` to structs without a `repr` and `#[repr(u8)]`
-/// to enums. It generates:
+/// It implements [`Flat`] and adds `#[repr(C)]` to structs (unless they are already `C` or
+/// `transparent`) and `#[repr(u8)]` to enums. It generates:
 ///
 /// - constructors whose parameters take anything that can be written as the field's type
 ///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
 ///   named after it in snake case. A parameter for a field written `Near<X>` (with `X` not a
-///   slice or `str`) takes a builder of `X` and allocates the target;
+///   slice or `str`) takes a builder of `X` and allocates the target. Write list and string
+///   pointers as `Near<[T]>` and `Near<str>`, not through an alias of the slice or of `str`;
 /// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign) and `replace` (assign and return
 ///   the old value as an [`Old`]), and for structs one method per field (`_0`, `_1`, .. for
 ///   tuple fields; `set_` and `replace_` for fields named `set` and `replace`) returning the
@@ -184,8 +185,8 @@ pub use near::Near;
 ///   field (and no `set` or `replace`, so the variant cannot change under it).
 ///
 /// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
-/// `repr`s other than `u8`, explicit discriminants, empty enums and enums of more than 256
-/// variants are rejected.
+/// `repr`s other than `u8`, explicit discriminants, empty enums, enums of more than 256
+/// variants and variants whose constructors would have the same name are rejected.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};

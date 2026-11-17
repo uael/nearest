@@ -104,17 +104,17 @@ where one is expected (optional pointers, lists of pointers).
 
 Handles reach every place in a region. Plain data (`T: Copy`) is a real `&mut T` or `&mut [T]`.
 A handle borrows its parent handle, so one handle is usable at a time, and no reference into
-the buffer outlives a change that may grow it. Every handle has `set` (assign) and `replace`
-(assign and return the old value); `ListEdit::remove` and `OptionEdit::take` also return the
-value that left. Such an `Old` keeps the region borrowed for the whole edit and can be written
+the buffer outlives a change that may grow it. Every handle has `set` (assign); `replace`
+(assign and return the old value), `ListEdit::remove` and `OptionEdit::take` return the value
+that left. Such an `Old` keeps the region borrowed for the whole edit and can be written
 into any place of it in O(1): wrapping, hoisting, swapping and moving elements between lists
 are ordinary statements.
 
 ## Bytes
 
 `to_bytes` returns the compact image of a region, the bytes a deep copy writes; it borrows the
-buffer when the region has not been edited since it was built or loaded. `from_bytes` copies
-bytes into a new region and checks them; `view` checks an 8-aligned slice, such as a
+buffer when the region has not been edited since it was built or loaded. `from_bytes` checks
+bytes and copies them into a new region; `view` checks an 8-aligned slice, such as a
 memory-mapped file, and reads it in place. Checking accepts exactly the compact images of valid
 values, in one pass, in safe code, without recursion or panics. The bytes hold native-endian
 integers and the layout of the target.

@@ -214,11 +214,10 @@ impl<'e, T: Flat> ListEdit<'e, T> {
     let (buf, mut list) = self.list();
     // SAFETY: `buf` is the edit's `me`.
     let mut sink = unsafe { Sink::new(buf) };
-    if list.len == list.cap {
-      // SAFETY: `list` is the list the handle points to; then the handle's pointer is aimed at
-      // the new block, which has all the elements.
-      unsafe {
-        list.grow::<T>(&mut sink, (list.cap * 2).max(4));
+    // SAFETY: `list` is the list the handle points to; if it moved, the handle's pointer is
+    // aimed at the new block, which has all the elements.
+    unsafe {
+      if list.reserve::<T>(&mut sink) {
         sink.link(self.0.at(), list.head);
       }
     }

@@ -4,7 +4,7 @@ use core::{fmt, marker::PhantomData, ops::Deref, ptr};
 use crate::{
   Edit, Emit, Flat, Invalid,
   bytes::check,
-  flat::{Buf, MAX, Sink, fits},
+  flat::{Buf, Sink, fits},
 };
 
 /// One buffer holding a `T` at byte 0 and everything it points to.
@@ -117,8 +117,8 @@ impl<T: Flat> Region<T> {
     }
   }
 
-  /// The region whose image is `bytes`, which may have any alignment. The bytes are copied,
-  /// then checked: they must be exactly what [`to_bytes`](Self::to_bytes) writes for a `T`.
+  /// The region whose image is `bytes`, which may have any alignment. The bytes are checked,
+  /// then copied: they must be exactly what [`to_bytes`](Self::to_bytes) writes for a `T`.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -136,15 +136,12 @@ impl<T: Flat> Region<T> {
   /// # Errors
   /// [`Invalid`] if the bytes are not the compact image of a valid `T`.
   pub fn from_bytes(bytes: &[u8]) -> Result<Self, Invalid> {
-    if bytes.len() > MAX {
-      return Err(Invalid(0));
-    }
+    // The checker reads bytes at any alignment, so nothing is copied for a bad image.
+    check::<T>(bytes)?;
     let mut buf = Buf::new();
     let at = buf.alloc(bytes.len(), 8);
     // SAFETY: `bytes.len()` bytes were allocated at `at`.
     unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buf.ptr().add(at), bytes.len()) };
-    // SAFETY: every byte was just written.
-    check::<T>(unsafe { buf.bytes() })?;
     Ok(Self { buf, _t: PhantomData })
   }
 
