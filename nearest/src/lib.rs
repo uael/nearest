@@ -39,12 +39,12 @@
 //! assert_eq!((r.id, r.insts.len(), &r.insts[0].args[..]), (7, 1, &[1, 2, 3][..]));
 //! assert!(r.next.is_none());
 //!
-//! // Save and load. Loading checks the bytes.
-//! let bytes = r.to_bytes();
-//! let copy = Region::<Block>::from_bytes(&bytes)?;
+//! // Save and load. A compact region is its own image; loading checks the bytes.
+//! let bytes = r.as_bytes().unwrap();
+//! let copy = Region::<Block>::from_bytes(bytes)?;
 //! assert_eq!(copy.insts[0].op, 9);
 //! // A memory-mapped file, or any 8-aligned slice, is read in place.
-//! let block: &Block = Region::view(&bytes)?;
+//! let block: &Block = Region::view(bytes)?;
 //! assert_eq!(block.id, 7);
 //! # Ok::<(), nearest::Error>(())
 //! ```
@@ -180,18 +180,17 @@
 //!
 //! # Bytes
 //!
-//! [`Region::to_bytes`] returns the compact image: the bytes a deep copy writes, borrowed from the
-//! region when it has not been edited since it was built; [`Region::as_bytes`] returns it only
-//! then, and never allocates. [`Region::from_bytes`] checks and
-//! copies bytes; [`Region::view`] checks an 8-aligned slice and reads it in place. Checking
-//! accepts exactly the compact images of valid values, in one pass, without recursion or
-//! panics; an [`Error`] says where the bytes went wrong, or that a valid image does not fit the
-//! storage. Checking keeps the pointers still to visit in memory that grows with the nesting
-//! of the data: [`Region::view_with`] and [`Region::from_bytes_with`] take it from the caller,
-//! as a slice of [`Pending`] (`bytes.len() / 4` entries are always enough), and say if it runs
-//! out. For bytes that are trusted, [`Region::from_bytes_unchecked`]
-//! and [`Region::view_unchecked`] skip the check and are `unsafe`. The bytes hold
-//! native-endian integers and the layout of the target.
+//! [`Region::as_bytes`] returns the compact image, borrowed: the bytes a deep copy writes, which
+//! a region is until it is edited. Save an edited region by copying it first:
+//! `Region::new(&*r).as_bytes()`. [`Region::from_bytes`] checks and copies bytes;
+//! [`Region::view`] checks an 8-aligned slice and reads it in place. Checking accepts exactly
+//! the compact images of valid values, in one pass, without recursion or panics; an [`Error`]
+//! says where the bytes went wrong, or that a valid image does not fit the storage. Checking
+//! keeps the pointers still to visit in memory that grows with the nesting of the data:
+//! [`Region::view_with`] and [`Region::from_bytes_with`] take it from the caller, as a slice of
+//! [`Pending`] (`bytes.len() / 4` entries are always enough), and say if it runs out. For bytes
+//! that are trusted, [`Region::from_bytes_unchecked`] and [`Region::view_unchecked`] skip the
+//! check and are `unsafe`. The bytes hold native-endian integers and the layout of the target.
 //!
 //! # Storage
 //!
@@ -219,7 +218,7 @@
 //! ```
 //!
 //! The default feature `alloc` makes the heap a storage. Without it the crate needs no
-//! allocator: a `Region<T>` cannot be built, and `to_bytes`, `from_bytes` and `view` are not
+//! allocator: a `Region<T>` cannot be built, and `from_bytes` and `view` are not
 //! available, while [`Region::as_bytes`], [`Region::from_bytes_with`] and
 //! [`Region::view_with`], which take the memory for checking from the caller, are.
 //!

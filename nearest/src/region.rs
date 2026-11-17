@@ -1,5 +1,5 @@
 #[cfg(feature = "alloc")]
-use alloc::{borrow::Cow, vec::Vec};
+use alloc::vec::Vec;
 use core::{fmt, marker::PhantomData, ops::Deref, slice};
 
 #[cfg(feature = "alloc")]
@@ -13,8 +13,8 @@ use crate::{
 /// One buffer holding a `T` at byte 0 and everything it points to.
 ///
 /// Reading is plain `&T` through [`Deref`]; [`Clone`] is one `memcpy`; [`edit`](Self::edit)
-/// changes it in place; [`to_bytes`](Self::to_bytes), [`as_bytes`](Self::as_bytes) and
-/// [`from_bytes`](Self::from_bytes) save and load it.
+/// changes it in place; [`as_bytes`](Self::as_bytes) and [`from_bytes`](Self::from_bytes) save
+/// and load it.
 ///
 /// `S` is the [`Storage`] of the buffer: by default the [`Heap`](crate::Heap), which grows as
 /// needed up to 2 GiB; [`Inline<N>`](crate::Inline) keeps it in `N` bytes inside the `Region`
@@ -156,9 +156,10 @@ impl<T: Flat, S: Storage> Region<T, S> {
     unsafe { T::edit(self.buf.me, 0) }
   }
 
-  /// The compact image of the region, borrowed, if the region is compact: built by `new`,
-  /// `new_in` or `from_bytes`, or cloned from a compact region, and not edited since. `None`
-  /// otherwise; a copy, `Region::new_in(storage, &*region)`, is compact. It allocates nothing.
+  /// The compact image of the region, borrowed: the bytes a deep copy writes, which the loaders
+  /// take back. `None` if the region is not compact: it was edited, or a list in it was built
+  /// from an iterator whose size hint was wrong. A copy is always compact, so any region is
+  /// saved with `Region::new(&*r)` first (or `new_in`, in any storage). It allocates nothing.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -171,6 +172,10 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// assert_eq!(&*Region::<Msg>::view(image)?.body, "hi"); // the buffer is 8-aligned
   /// r.edit().body().set("hello");
   /// assert!(r.as_bytes().is_none());
+  /// let copy = Region::new(&*r);
+  /// let image = copy.as_bytes().unwrap();
+  /// assert!(image.len() < r.byte_len());
+  /// assert_eq!(&*Region::<Msg>::from_bytes(image)?.body, "hello");
   /// # Ok::<(), nearest::Error>(())
   /// ```
   #[must_use]
@@ -179,38 +184,9 @@ impl<T: Flat, S: Storage> Region<T, S> {
     self.buf.compact.then(|| unsafe { slice::from_raw_parts(self.base(), self.buf.len()) })
   }
 
-  /// The compact image of the region: borrowed if the region is compact (see
-  /// [`as_bytes`](Self::as_bytes)), otherwise a compact copy.
-  ///
-  /// ```
-  /// use std::borrow::Cow;
-  ///
-  /// use nearest::{Near, Region, flat};
-  ///
-  /// #[flat]
-  /// struct Msg { id: u8, body: Near<str> }
-  ///
-  /// let mut r = Region::new(Msg::new(1, "hi"));
-  /// assert!(matches!(r.to_bytes(), Cow::Borrowed(_)));
-  /// r.edit().body().set("hello");
-  /// let bytes = r.to_bytes();
-  /// assert!(matches!(bytes, Cow::Owned(_)) && bytes.len() < r.byte_len());
-  /// assert_eq!(&*Region::<Msg>::from_bytes(&bytes)?.body, "hello");
-  /// # Ok::<(), nearest::Error>(())
-  /// ```
-  #[cfg(feature = "alloc")]
-  #[must_use]
-  pub fn to_bytes(&self) -> Cow<'_, [u8]> {
-    self.as_bytes().map_or_else(
-      // A copy is compact.
-      || Cow::Owned(Region::<T>::new(&**self).as_bytes().map(<[u8]>::to_vec).unwrap_or_default()),
-      Cow::Borrowed,
-    )
-  }
-
   /// The region whose image is `bytes`, which may have any alignment, in a new storage. The
-  /// bytes are checked, then copied: they must be exactly what [`to_bytes`](Self::to_bytes)
-  /// writes for a `T`. For a storage that has no `Default`, copy from a view instead:
+  /// bytes are checked, then copied: they must be exactly what [`as_bytes`](Self::as_bytes)
+  /// returns for a `T`. For a storage that has no `Default`, copy from a view instead:
   /// `Region::new_in(storage, Region::<T>::view(bytes)?)`. It needs `alloc`: checking takes
   /// memory that grows with the nesting of the data, which
   /// [`from_bytes_with`](Self::from_bytes_with) takes from the caller.
@@ -221,8 +197,9 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// #[flat]
   /// struct Msg { id: u8, body: Near<str> }
   ///
-  /// let bytes = Region::new(Msg::new(1, "hi")).to_bytes().into_owned();
-  /// let back = Region::<Msg>::from_bytes(&bytes)?;
+  /// let r = Region::new(Msg::new(1, "hi"));
+  /// let bytes = r.as_bytes().unwrap();
+  /// let back = Region::<Msg>::from_bytes(bytes)?;
   /// assert_eq!((back.id, &*back.body), (1, "hi"));
   /// assert!(Region::<Msg>::from_bytes(&bytes[1..]).is_err());
   /// # Ok::<(), nearest::Error>(())
@@ -288,15 +265,15 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// #[flat]
   /// struct Msg { id: u8, body: Near<str> }
   ///
-  /// let bytes = Region::new(Msg::new(1, "hi")).to_bytes().into_owned();
-  /// // SAFETY: the bytes come from `to_bytes` for the same type, in this build.
-  /// let back = unsafe { Region::<Msg>::from_bytes_unchecked(&bytes) };
+  /// let r = Region::new(Msg::new(1, "hi"));
+  /// // SAFETY: the bytes come from `as_bytes` for the same type, in this build.
+  /// let back = unsafe { Region::<Msg>::from_bytes_unchecked(r.as_bytes().unwrap()) };
   /// assert_eq!((back.id, &*back.body), (1, "hi"));
   /// ```
   ///
   /// # Safety
-  /// `bytes` are what [`to_bytes`](Self::to_bytes) returned for a `Region<T>`, in a build with
-  /// the same layout of `T`.
+  /// `bytes` are what [`as_bytes`](Self::as_bytes) returned for a region of `T`, in a build
+  /// with the same layout of `T`.
   ///
   /// # Panics
   /// If the storage cannot hold them (or they exceed 2 GiB).
@@ -338,8 +315,8 @@ impl<T: Flat> Region<T> {
   /// struct Msg { id: u8, body: Near<str> }
   ///
   /// let r = Region::new(Msg::new(1, "hi"));
-  /// let bytes = r.to_bytes(); // the region's own buffer, which is 8-aligned
-  /// let msg: &Msg = Region::view(&bytes)?;
+  /// let bytes = r.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
+  /// let msg: &Msg = Region::view(bytes)?;
   /// assert_eq!(&*msg.body, "hi");
   /// # Ok::<(), nearest::Error>(())
   /// ```
@@ -400,15 +377,15 @@ impl<T: Flat> Region<T> {
   /// struct Msg { id: u8, body: Near<str> }
   ///
   /// let r = Region::new(Msg::new(1, "hi"));
-  /// let bytes = r.to_bytes(); // the region's own buffer, which is 8-aligned
-  /// // SAFETY: the bytes come from `to_bytes` for the same type, in this build.
-  /// let msg: &Msg = unsafe { Region::view_unchecked(&bytes) };
+  /// let bytes = r.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
+  /// // SAFETY: the bytes come from `as_bytes` for the same type, in this build.
+  /// let msg: &Msg = unsafe { Region::view_unchecked(bytes) };
   /// assert_eq!(&*msg.body, "hi");
   /// ```
   ///
   /// # Safety
-  /// `bytes` is 8-aligned and holds what [`to_bytes`](Self::to_bytes) returned for a
-  /// `Region<T>`, in a build with the same layout of `T`.
+  /// `bytes` is 8-aligned and holds what [`as_bytes`](Self::as_bytes) returned for a region
+  /// of `T`, in a build with the same layout of `T`.
   #[must_use]
   pub const unsafe fn view_unchecked(bytes: &[u8]) -> &T {
     fits::<T>();

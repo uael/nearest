@@ -42,9 +42,9 @@ drop(tail);
 // Compact. A copy into a new region keeps only what is reachable.
 r = Region::new(&*r);
 
-// Save and load. Loading checks the bytes.
-let bytes = r.to_bytes();
-let copy = Region::<Block>::from_bytes(&bytes)?;
+// Save and load. A compact region is its own image; loading checks the bytes.
+let bytes = r.as_bytes().unwrap();
+let copy = Region::<Block>::from_bytes(bytes)?;
 // A memory-mapped file, or any 8-aligned slice, is read in place.
 let block: &Block = Region::view(map)?;
 ```
@@ -86,7 +86,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | Item | |
 |---|---|
 | `#[flat]` | makes a struct or enum storable; generates constructors and the handle |
-| `Region<T, S = Heap>` | the buffer, in a storage: `new`, `new_in`, `edit`, `as_bytes`, `to_bytes`, `from_bytes`, `from_bytes_with`, `view`, `view_with`, `byte_len`; `unsafe` `from_bytes_unchecked`, `view_unchecked` |
+| `Region<T, S = Heap>` | the buffer, in a storage: `new`, `new_in`, `edit`, `as_bytes`, `from_bytes`, `from_bytes_with`, `view`, `view_with`, `byte_len`; `unsafe` `from_bytes_unchecked`, `view_unchecked` |
 | `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap (`Heap::with_capacity`), `N` bytes inside the region |
 | `Near<T>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
@@ -149,18 +149,18 @@ rejects a `#[pin_v2]` written on the type.
 
 ## Bytes
 
-`to_bytes` returns the compact image of a region, the bytes a deep copy writes; it borrows the
-buffer when the region has not been edited since it was built or loaded, and `as_bytes` returns
-the image only then, without allocating. `from_bytes` checks
-bytes and copies them into a new region; `view` checks an 8-aligned slice, such as a
+`as_bytes` returns the compact image of a region, the bytes a deep copy writes, borrowed: a
+region is compact until it is edited, and a copy, `Region::new(&*r)`, always is. `from_bytes`
+checks bytes and copies them into a new region; `view` checks an 8-aligned slice, such as a
 memory-mapped file, and reads it in place. Checking accepts exactly the compact images of valid
 values, in one pass, in safe code, without recursion or panics. Every loader returns
 `Result<_, Error>`: `Error::Invalid(offset)` says where the bytes went wrong, and
 `Error::StorageFull` that a valid image is larger than the storage of `from_bytes`. Checking
 keeps the pointers still to visit in memory that grows with the nesting of the data;
 `from_bytes_with` and `view_with` take it from the caller, as `&mut [Pending]`, and return
-`Error::ScratchFull` if it runs out: `bytes.len() / 4` entries are always enough. For bytes you trust, `from_bytes_unchecked` and `view_unchecked` skip the check and are
-`unsafe`. The bytes hold native-endian integers and the layout of the target.
+`Error::ScratchFull` if it runs out: `bytes.len() / 4` entries are always enough. For bytes you
+trust, `from_bytes_unchecked` and `view_unchecked` skip the check and are `unsafe`. The bytes
+hold native-endian integers and the layout of the target.
 
 ## Storage
 
@@ -205,8 +205,8 @@ cargo add nearest
 ```
 
 The default feature `alloc` provides the heap. Without it (`default-features = false`) the
-crate needs no allocator: regions live in other storage, and `Region<T>`, `to_bytes`,
-`from_bytes` and `view` are not available. `as_bytes` is, and so are `from_bytes_with` and
+crate needs no allocator: regions live in other storage, and `Region<T>`, `from_bytes`
+and `view` are not available. `as_bytes` is, and so are `from_bytes_with` and
 `view_with`, which check loaded bytes with memory from the caller: a slice of `Pending`, of
 which `bytes.len() / 4` entries are always enough.
 

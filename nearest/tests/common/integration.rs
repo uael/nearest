@@ -1,5 +1,4 @@
 use std::{
-  borrow::Cow,
   collections::hash_map::DefaultHasher,
   hash::{Hash, Hasher},
   num::NonZero,
@@ -499,21 +498,22 @@ fn layout() {
   ];
   assert_eq!((offsets, size_of::<Padded>(), align_of::<Padded>()), ([0, 4, 8, 10], 16, 8));
   assert_eq!(
-    Region::new_in(Store::default(), Padded::new(1, 2, 3, 4)).to_bytes()[..12],
+    Region::new_in(Store::default(), Padded::new(1, 2, 3, 4)).as_bytes().unwrap()[..12],
     [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 4, 0]
   );
   // `[cap][len][elements]` after the pointer; strings are `[len][bytes]`.
   let l = Region::new_in(Store::default(), Near::from_iter([7u32, 8]));
   let words =
     |b: &[u8]| b.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect::<Vec<_>>();
-  assert_eq!(words(&l.to_bytes()), [8, 2, 2, 7, 8]);
+  assert_eq!(words(l.as_bytes().unwrap()), [8, 2, 2, 7, 8]);
   let s = Region::new_in(Store::default(), Lst::<Near<str>>::new(["ab"]));
-  assert_eq!(s.to_bytes()[..16], [8, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0]);
+  assert_eq!(s.as_bytes().unwrap()[..16], [8, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0]);
   // A pushed list has spare capacity; a copy is compact again.
   let mut l = l;
   l.edit().push(9);
   assert_eq!(l.byte_len(), 20 + 8 + 4 * 4);
-  assert_eq!(words(&l.to_bytes()), [8, 3, 3, 7, 8, 9]);
+  assert!(l.as_bytes().is_none());
+  assert_eq!(words(&compact_bytes(&l)), [8, 3, 3, 7, 8, 9]);
 }
 
 #[test]
@@ -1063,6 +1063,11 @@ fn aligned(bytes: &[u8]) -> Vec<u64> {
   words
 }
 
+/// The compact image of any region: a copy is compact.
+fn compact_bytes<T: Flat>(r: &Region<T>) -> Vec<u8> {
+  Region::new_in(Store::default(), &**r).as_bytes().unwrap().to_vec()
+}
+
 /// `nearest::Region::view` of `bytes`, copied to an 8-aligned address.
 fn view<T: Flat, R>(bytes: &[u8], f: impl FnOnce(&T) -> R) -> Result<R, nearest::Error> {
   let words = aligned(bytes);
@@ -1113,64 +1118,62 @@ fn rec() -> Region<Rec> {
 #[test]
 fn bytes_round_trip() {
   let mut r = rec();
-  let image = r.to_bytes().into_owned();
-  assert!(matches!(r.to_bytes(), Cow::Borrowed(_)));
+  let image = r.as_bytes().unwrap().to_vec();
   assert_eq!(image.len(), r.byte_len());
   assert_eq!(view::<Rec, _>(&image, |v| format!("{v:?}")), Ok(format!("{:?}", *r)));
   // In place, from the region's own (8-aligned) buffer.
-  assert_eq!(nearest::Region::<Rec>::view(&r.to_bytes()).map(|v| v.letter), Ok('é'));
+  assert_eq!(nearest::Region::<Rec>::view(r.as_bytes().unwrap()).map(|v| v.letter), Ok('é'));
   // Any alignment of the input.
   let mut shifted = vec![0u8];
   shifted.extend_from_slice(&image);
   let back = Region::<Rec>::from_bytes(&shifted[1..]).unwrap();
   assert_eq!(*back, *r);
-  assert!(matches!(back.to_bytes(), Cow::Borrowed(b) if *b == *image));
+  assert_eq!(back.as_bytes(), Some(&*image));
   // Trusted bytes can skip the check.
-  // SAFETY: `image` comes from `to_bytes` for the same type.
+  // SAFETY: `image` comes from `as_bytes` for the same type.
   let trusted = unsafe { Region::<Rec>::from_bytes_unchecked(&image) };
   assert_eq!((&*trusted, trusted.byte_len()), (&*r, image.len()));
-  let own = trusted.to_bytes();
+  let own = trusted.as_bytes().unwrap();
   // SAFETY: as above, and a region's own buffer is 8-aligned.
-  assert_eq!(unsafe { nearest::Region::<Rec>::view_unchecked(&own) }, &*r);
+  assert_eq!(unsafe { nearest::Region::<Rec>::view_unchecked(own) }, &*r);
   // `view` needs an 8-aligned slice.
   let words = aligned(&shifted);
   // SAFETY: `words` holds `shifted.len()` initialized bytes.
   let misaligned =
     unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), shifted.len()) };
   assert!(nearest::Region::<Rec>::view(&misaligned[1..]).is_err());
-  // An edited region is compacted on the way out.
+  // An edited region has no image of its own; a copy has one, and only what is reachable.
   let e = r.edit();
   let kid = e.kids().remove(0);
   e.kids().at(0).kids().push(kid);
   e.wide().push(3);
   e.name().set("edited");
-  let edited = r.to_bytes();
-  assert!(matches!(edited, Cow::Owned(_)) && edited.len() < r.byte_len());
+  assert!(r.as_bytes().is_none());
+  let edited = compact_bytes(&r);
+  assert!(edited.len() < r.byte_len());
   let mut back = Region::<Rec>::from_bytes(&edited).unwrap();
   assert_eq!(*back, *r);
-  assert_eq!(&*back.to_bytes(), &*edited);
+  assert_eq!(back.as_bytes(), Some(&*edited));
   // A loaded region is editable.
   back.edit().kids().at(0).kids().at(1).wide().push(5);
   assert_eq!(back.kids[0].kids[1].wide[..], [5]);
   // Padding is not part of the value.
   let mut p = Region::<[Pad; 2]>::new_in(Store::default(), [Pad { a: 1, b: 2 }, Pad { a: 3, b: 4 }]);
   p.edit()[0] = Pad { a: 9, b: 9 };
-  let bytes = p.to_bytes();
   assert_eq!(
-    *Region::<[Pad; 2]>::from_bytes(&bytes).unwrap(),
+    *Region::<[Pad; 2]>::from_bytes(&compact_bytes(&p)).unwrap(),
     [Pad { a: 9, b: 9 }, Pad { a: 3, b: 4 }]
   );
   let f = func();
-  assert_eq!(*Region::<Func>::from_bytes(&f.to_bytes()).unwrap(), *f);
+  assert_eq!(*Region::<Func>::from_bytes(f.as_bytes().unwrap()).unwrap(), *f);
 }
 
 #[test]
 fn builders_write_the_compact_image() {
   fn same<T: Flat>(r: &Region<T>) {
-    let image = r.to_bytes();
-    assert!(matches!(image, Cow::Borrowed(_)));
-    assert_eq!(*image, *Region::new_in(Store::default(), &**r).to_bytes());
-    assert!(Region::<T>::from_bytes(&image).is_ok());
+    let image = r.as_bytes().unwrap();
+    assert_eq!(Some(image), Region::new_in(Store::default(), &**r).as_bytes());
+    assert!(Region::<T>::from_bytes(image).is_ok());
   }
   same(&func());
   same(&rec());
@@ -1205,8 +1208,8 @@ fn builders_write_the_compact_image() {
   // A list whose iterator lied about its length is not compact; its spare room is used.
   for (n, hint) in [(3, 1000), (40, 3)] {
     let mut r = Region::new_in(Store::default(), Inst::new(0, Near::from_iter(Liar { n, hint })));
-    assert!(matches!(r.to_bytes(), Cow::Owned(_)));
-    assert!(Region::<Inst>::from_bytes(&r.to_bytes()).is_ok());
+    assert!(r.as_bytes().is_none());
+    assert!(Region::<Inst>::from_bytes(&compact_bytes(&r)).is_ok());
     let len = r.byte_len();
     r.edit().args().push(7);
     if hint > n as usize {
@@ -1217,7 +1220,7 @@ fn builders_write_the_compact_image() {
 
 #[test]
 fn small_corruptions_are_rejected_or_harmless() {
-  let image = rec().to_bytes().into_owned();
+  let image = rec().as_bytes().unwrap().to_vec();
   let (mut accepted, mut rejected) = (0, 0);
   let mut try_one =
     |bytes: &[u8]| match view::<Rec, _>(bytes, |v| (format!("{v:?}"), Region::new_in(Store::default(), v))) {
@@ -1251,7 +1254,7 @@ fn malformed_images_are_rejected() {
   let put =
     |bytes: &mut [u8], at: usize, v: i32| bytes[at..at + 4].copy_from_slice(&v.to_ne_bytes());
   let ok = |bytes: &[u8]| view::<Expr, _>(bytes, show);
-  let image = Region::new_in(Store::default(), Expr::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2))).to_bytes().into_owned();
+  let image = Region::new_in(Store::default(), Expr::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2))).as_bytes().unwrap().to_vec();
   assert_eq!(ok(&image), Ok("(-1 + 2)".into()));
   let (l, r) = (4, 8); // the two pointers of the root `Add`
   let mut shared = image.clone();
@@ -1273,7 +1276,7 @@ fn malformed_images_are_rejected() {
 
   // Lists and strings: absurd lengths, `cap != len`, bad UTF-8.
   let r = Region::new_in(Store::default(), Lst::<Near<str>>::new(["ab", "c"]));
-  let image = r.to_bytes().into_owned();
+  let image = r.as_bytes().unwrap().to_vec();
   let len_at = usize::try_from(word(&image, 0)).unwrap(); // the list's `len`
   assert_eq!((word(&image, len_at - 4), word(&image, len_at)), (2, 2));
   let ok = |bytes: &[u8]| view::<Lst<Near<str>>, _>(bytes, |l| l.items.len());
@@ -1309,8 +1312,9 @@ fn malformed_images_are_rejected() {
     NonZero::new(1).unwrap(),
     NonZero::new(2).unwrap(),
   ))
-  .to_bytes()
-  .into_owned();
+  .as_bytes()
+  .unwrap()
+  .to_vec();
   let ok = |bytes: &[u8]| view::<Prims, _>(bytes, |p| p.l);
   assert_eq!(ok(&image), Ok('x'));
   for (field, bytes) in [
@@ -1324,14 +1328,14 @@ fn malformed_images_are_rejected() {
     bad[field..field + bytes.len()].copy_from_slice(&bytes);
     assert!(ok(&bad).is_err(), "field at {field}");
   }
-  let color = Region::new_in(Store::default(), Color::Blue).to_bytes().into_owned();
+  let color = Region::new_in(Store::default(), Color::Blue).as_bytes().unwrap().to_vec();
   assert!(view::<Color, _>(&[3], |_| ()).is_err() && view::<Color, _>(&color, |_| ()).is_ok());
 
   // Elements that can be invalid are checked one by one, inside lists and arrays too; lists
   // of numbers are not walked, and any bytes there are a value.
   let flags = Region::new_in(Store::default(), Lst::<[bool; 2]>::new([[true, false], [false, true]]));
   let numbers = Region::new_in(Store::default(), Lst::<[u16; 2]>::new([[1, 2], [3, 4]]));
-  let (flags, numbers) = (flags.to_bytes().into_owned(), numbers.to_bytes().into_owned());
+  let (flags, numbers) = (flags.as_bytes().unwrap().to_vec(), numbers.as_bytes().unwrap().to_vec());
   for i in 12..flags.len() {
     let (mut f, mut n) = (flags.clone(), numbers.clone());
     (f[i], n[12 + 2 * (i - 12)]) = (2, 0xff);
@@ -1384,7 +1388,7 @@ fn a_very_deep_value_is_checked_without_recursion() {
       for id in 1..N {
         cur = cur.next().insert(Block::new(id, [Inst::new(id as u8, [id])], None));
       }
-      r.to_bytes().into_owned()
+      nearest::Region::new(&*r).as_bytes().unwrap().to_vec()
     })
     .unwrap()
     .join()
@@ -1417,7 +1421,7 @@ fn compaction() {
   assert!(c.byte_len() * 2 < b.byte_len());
   assert_eq!(*c, *b);
   assert_eq!(Region::new_in(Store::default(), &*c).byte_len(), c.byte_len());
-  assert_eq!(c.to_bytes().len(), c.byte_len());
+  assert_eq!(c.as_bytes().map(<[u8]>::len), Some(c.byte_len()));
 }
 
 /// Yields `n` items while claiming `hint` as its lower bound.
@@ -1707,13 +1711,13 @@ fn random_edits_match_a_model() {
           r = match step % 3 {
             0 => Region::new_in(Store::default(), &*r),
             1 => r.clone(),
-            _ => Region::from_bytes(&r.to_bytes()).unwrap(),
+            _ => Region::from_bytes(&compact_bytes(&r)).unwrap(),
           };
         }
       }
       assert_eq!(doc_model(&r), m, "step {step}");
       if step % 5 == 0 {
-        let back = Region::<Doc>::from_bytes(&r.to_bytes()).unwrap();
+        let back = Region::<Doc>::from_bytes(&compact_bytes(&r)).unwrap();
         assert_eq!(doc_model(&back), m, "step {step}");
         let others: Vec<MItem> = other.items.iter().map(item_model).collect();
         assert_eq!(others, om);
@@ -1869,7 +1873,7 @@ fn random_expression_rewrites_match_a_model() {
         if step % 2 == 0 {
           r = Region::new_in(Store::default(), &*r);
         } else {
-          r = Region::from_bytes(&r.to_bytes()).unwrap();
+          r = Region::from_bytes(&compact_bytes(&r)).unwrap();
         }
       }
     }
