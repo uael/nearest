@@ -142,8 +142,19 @@ Plain data means `T: Copy`. A `Copy` type cannot contain a `Near`, so it is safe
 - `#[flat]` adds `#[repr(C)]` to structs (unless they are already `C` or `transparent`) and
   `#[repr(u8)]` to enums, so the layout does not depend on the compiler's field ordering. Variant
   field offsets come from hidden `#[repr(C)]` mirror structs `(u8, fields..)`.
-- A region holds at most `i32::MAX & !7` bytes. Growing past that panics before anything
-  changes. This and slice indexing are the only runtime checks.
+- A region holds at most `i32::MAX & !7` bytes, so that every distance fits the offset.
+
+## Runtime checks
+
+Aliasing, lifetimes, moves and the tree shape are enforced by types; nothing about them is
+checked while a program runs. What is checked at run time is what cannot be known before:
+
+- **Size.** Growing a region past 2 GiB panics, before anything changes. It is the capacity
+  overflow of `Vec`, at the size a 4-byte offset can span, and it is only looked at when the
+  buffer reallocates.
+- **Indices.** `at`, `insert`, `remove` and `swap` panic out of bounds, like slice indexing.
+- **Loaded bytes.** `from_bytes` and `view` check bytes that come from outside and return a
+  `Result`; see Bytes. A region built or edited in the program is never checked.
 
 ## Invariants
 
@@ -296,11 +307,12 @@ Constructors return `impl Emit<Self>` and are lazy: nothing is written until the
 reaches a region. Types without pointers can also be built with a plain literal.
 
 Pointers are transparent where that is unambiguous. A constructor parameter for a field
-written `Near<X>` (with `X` not a slice or `str`) takes a builder of `X` and allocates the
-target, so trees read as `Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2)))`. The macro decides
-this from the field's type as written; a field whose type is an alias of `Near<X>` takes a
-builder of the pointer, `Near::new(x)`, and list and string pointers must be written
-`Near<[T]>` and `Near<str>`, not through an alias of the slice or of `str`. In the same way the handle of a `Near<X>` place is the
+written `Near<X>` takes a builder of `X` and allocates the target, so trees read as
+`Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2)))`; if `X` is a slice or `str` it takes a list
+or string builder. The macro recognizes the field by the name `Near`, and a hidden trait
+(`Pointer`) then decides from the type, so `X` may be an alias; a type parameter as `X` is
+used as written, so that the argument infers it. A field whose whole type is an alias of a
+pointer takes a builder of the pointer, `Near::new(x)`. In the same way the handle of a `Near<X>` place is the
 handle of the `X`, so `set` on it takes a builder of `X`, and `OptionEdit::insert` takes a
 builder of `X`. An `Option<Near<X>>` parameter takes `None` or `Near::new(x)`.
 
