@@ -39,14 +39,14 @@
 //! assert_eq!((r.id, r.insts.len(), &r.insts[0].args[..]), (7, 1, &[1, 2, 3][..]));
 //! assert!(r.next.is_none());
 //!
-//! // Save and load. Loading checks the bytes.
-//! let bytes = r.to_bytes();
-//! let copy = Region::<Block>::from_bytes(&bytes)?;
+//! // Save and load. A compact region is its own image; loading checks the bytes.
+//! let bytes = r.as_bytes().unwrap();
+//! let copy = Region::<Block>::from_bytes(bytes)?;
 //! assert_eq!(copy.insts[0].op, 9);
 //! // A memory-mapped file, or any 8-aligned slice, is read in place.
-//! let block: &Block = Region::view(&bytes)?;
+//! let block: &Block = nearest::view(bytes)?;
 //! assert_eq!(block.id, 7);
-//! # Ok::<(), nearest::Invalid>(())
+//! # Ok::<(), nearest::Error>(())
 //! ```
 //!
 //! Enums get a view of their variant, and `replace` returns the old value, like
@@ -180,18 +180,17 @@
 //!
 //! # Bytes
 //!
-//! [`Region::to_bytes`] returns the compact image: the bytes a deep copy writes, borrowed from the
-//! region when it has not been edited since it was built; [`Region::as_bytes`] returns it only
-//! then, and never allocates. [`Region::from_bytes`] checks and
-//! copies bytes; [`Region::view`] checks an 8-aligned slice and reads it in place. Checking
-//! accepts exactly the compact images of valid values, in one pass, without recursion or
-//! panics; an error, [`Invalid`], says where the bytes went wrong, or that a valid image does
-//! not fit the storage. Checking keeps the pointers still to visit in memory that grows with
-//! the nesting of the data: [`Region::view_with`] and [`Region::from_bytes_with`] take it from
-//! the caller, as a slice of [`Pending`] (`bytes.len() / 4` entries are always enough), and
-//! return `None` if it runs out. For bytes that are trusted, [`Region::from_bytes_unchecked`]
-//! and [`Region::view_unchecked`] skip the check and are `unsafe`. The bytes hold
-//! native-endian integers and the layout of the target.
+//! [`Region::as_bytes`] returns the compact image, borrowed: the bytes a deep copy writes, which
+//! a region is until it is edited. Save an edited region by copying it first:
+//! `Region::new(&*r).as_bytes()`. [`Region::from_bytes`] checks and copies bytes; [`view`]
+//! checks an 8-aligned slice and reads it in place. Checking accepts exactly the compact images
+//! of valid values, in one pass, without recursion or panics; an [`Error`] says where the
+//! bytes went wrong, or that a valid image does not fit the storage. Checking keeps the
+//! pointers still to visit in memory that grows with the nesting of the data: [`view_with`] and
+//! [`Region::from_bytes_with`] take it from the caller, as a slice of [`Pending`]
+//! (`bytes.len() / 4` entries are always enough), and say if it runs out. For bytes that are
+//! trusted, [`Region::from_bytes_unchecked`] and [`view_unchecked`] skip the check and are
+//! `unsafe`. The bytes hold native-endian integers and the layout of the target.
 //!
 //! # Storage
 //!
@@ -218,10 +217,10 @@
 //! assert_eq!(*Region::new(&*moved), *moved); // the same value, on the heap
 //! ```
 //!
-//! The default feature `alloc` makes the heap a storage. Without it the crate needs no
-//! allocator: a `Region<T>` cannot be built, and `to_bytes`, `from_bytes` and `view` are not
-//! available, while [`Region::as_bytes`], [`Region::from_bytes_with`] and
-//! [`Region::view_with`], which take the memory for checking from the caller, are.
+//! The default feature `alloc` provides the [`Heap`]. Without it the crate needs no allocator:
+//! a region names its storage (`Region<T, Inline<N>>`), and `from_bytes` and [`view`] are not
+//! available, while [`Region::as_bytes`], [`Region::from_bytes_with`] and [`view_with`], which
+//! take the memory for checking from the caller, are.
 //!
 //! # Safety model
 //!
@@ -262,7 +261,9 @@ mod storage;
 #[cfg(feature = "nightly")]
 mod unpin;
 
-pub use bytes::{Invalid, Pending};
+#[cfg(feature = "alloc")]
+pub use bytes::view;
+pub use bytes::{Error, Pending, view_unchecked, view_with};
 pub use edit::{ListEdit, Old, OptionEdit, StrEdit};
 pub use flat::{Emit, Flat};
 pub use near::Near;
@@ -346,7 +347,9 @@ pub use near::Near;
 /// ```
 pub use nearest_derive::flat;
 pub use region::Region;
-pub use storage::{Heap, Inline, Storage};
+#[cfg(feature = "alloc")]
+pub use storage::Heap;
+pub use storage::{Inline, Storage};
 
 /// The handle of a place holding a `T`, during the edit `'e`: `&mut Edit<'e, T>` is what
 /// [`Region::edit`], field methods and [`ListEdit::at`] return.

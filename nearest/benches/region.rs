@@ -100,7 +100,6 @@ fn clone_and_compact(c: &mut Criterion) {
   g.bench_function("compact", |b| b.iter(|| Region::new(&**black_box(&f))));
   reverse(&mut f);
   g.bench_function("compact after edit", |b| b.iter(|| Region::new(&**black_box(&f))));
-  g.bench_function("to_bytes (edited: compacts)", |b| b.iter(|| black_box(&f).to_bytes()));
   g.finish();
 }
 
@@ -185,16 +184,15 @@ fn edit(c: &mut Criterion) {
 
 fn bytes(c: &mut Criterion) {
   let f = func(100, 100);
-  let image = f.to_bytes().into_owned();
+  let image = f.as_bytes().unwrap().to_vec();
   let mut g = c.benchmark_group("bytes");
-  g.bench_function("to_bytes (compact: borrowed)", |b| b.iter(|| black_box(&f).to_bytes().len()));
   g.bench_function("from_bytes 100 blocks x 100 insts", |b| {
     b.iter(|| Region::<Func>::from_bytes(black_box(&image)).unwrap());
   });
   // The region's own buffer is 8-aligned.
-  let aligned = f.to_bytes();
+  let aligned = f.as_bytes().unwrap();
   g.bench_function("view 100 blocks x 100 insts", |b| {
-    b.iter(|| Region::<Func>::view(black_box(&aligned)).unwrap().blocks.len());
+    b.iter(|| nearest::view::<Func>(black_box(aligned)).unwrap().blocks.len());
   });
   g.finish();
 }
