@@ -1,0 +1,5 @@
+error[E0599]: no method named `clone` found for struct `Old<'e, T>` in the current scope
+  --> tests/compile-fail/edit_old_cloned.rs:18:18
+   |
+18 |   let _two = old.clone();
+   |                  ^^^^^ method not found in `Old<'_, Expr>`

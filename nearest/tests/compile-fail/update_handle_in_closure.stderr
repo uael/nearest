@@ -1,0 +1,24 @@
+error[E0501]: cannot borrow `*e` as mutable because previous closure requires unique access
+  --> tests/compile-fail/update_handle_in_closure.rs:10:3
+   |
+10 |     e.update(|old| {
+   |     ^ ------ ----- closure construction occurs here
+   |     | |
+   |  ___| first borrow later used by call
+   | |
+11 | |     e.set(Expr::Lit(2));
+   | |     - first borrow occurs due to use of `*e` in closure
+12 | |     Expr::neg(old)
+13 | |   });
+   | |____^ second borrow occurs here
+
+error[E0500]: closure requires unique access to `*e` but it is already borrowed
+  --> tests/compile-fail/update_handle_in_closure.rs:10:12
+   |
+10 |   e.update(|old| {
+   |   - ------ ^^^^^ closure construction occurs here
+   |   | |
+   |   | first borrow later used by call
+   |   borrow occurs here
+11 |     e.set(Expr::Lit(2));
+   |     - second borrow occurs due to use of `*e` in closure

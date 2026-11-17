@@ -1,0 +1,5 @@
+error: another variant already has the constructor `http_server`: rename one
+ --> tests/compile-fail/flat_constructor_collision.rs:5:26
+  |
+5 | enum E { HTTPServer(u8), HttpServer(u16) }
+  |                          ^^^^^^^^^^

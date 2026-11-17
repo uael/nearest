@@ -1,0 +1,18 @@
+error[E0382]: use of moved value: `old`
+  --> tests/compile-fail/edit_old_used_twice.rs:18:24
+   |
+17 |   let old = e.replace(Expr::Lit(0));
+   |       --- move occurs because `old` has type `Old<'_, Expr>`, which does not implement the `Copy` trait
+18 |   e.set(Expr::add(old, old));
+   |                   ---  ^^^ value used here after move
+   |                   |
+   |                   value moved here
+   |
+note: consider changing this parameter type in method `add` to borrow instead if owning the value isn't necessary
+  --> tests/compile-fail/edit_old_used_twice.rs:4:1
+   |
+ 4 | #[flat]
+   | ^^^^^^^ this parameter takes ownership of the value
+ 5 | enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
+   |                                        --- in this method
+   = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)

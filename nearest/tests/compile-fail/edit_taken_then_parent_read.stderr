@@ -1,0 +1,20 @@
+error[E0502]: cannot borrow `b` as immutable because it is also borrowed as mutable
+  --> tests/compile-fail/edit_taken_then_parent_read.rs:17:11
+   |
+16 |   let next = b.edit().next().take().unwrap();
+   |              - mutable borrow occurs here
+17 |   assert!(b.next.is_none());
+   |           ^ immutable borrow occurs here
+18 |   b.edit().next().insert(next);
+   |                          ---- mutable borrow later used here
+
+error[E0499]: cannot borrow `b` as mutable more than once at a time
+  --> tests/compile-fail/edit_taken_then_parent_read.rs:18:3
+   |
+16 |   let next = b.edit().next().take().unwrap();
+   |              - first mutable borrow occurs here
+17 |   assert!(b.next.is_none());
+18 |   b.edit().next().insert(next);
+   |   ^                      ---- first borrow later used here
+   |   |
+   |   second mutable borrow occurs here

@@ -1,0 +1,12 @@
+error[E0597]: `r` does not live long enough
+  --> tests/compile-fail/edit_old_outlives_region.rs:18:11
+   |
+17 |     let mut r = tree();
+   |         ----- binding `r` declared here
+18 |     old = r.edit().replace(Expr::Lit(0));
+   |           ^ borrowed value does not live long enough
+19 |   }
+   |   - `r` dropped here while still borrowed
+20 |   let mut s = tree();
+21 |   s.edit().set(old);
+   |                --- borrow later used here

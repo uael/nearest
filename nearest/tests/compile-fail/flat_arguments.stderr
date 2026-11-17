@@ -1,0 +1,5 @@
+error: `#[flat]` takes no arguments
+ --> tests/compile-fail/flat_arguments.rs:4:8
+  |
+4 | #[flat(copy)]
+  |        ^^^^

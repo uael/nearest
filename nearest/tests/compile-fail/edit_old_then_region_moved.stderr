@@ -1,0 +1,11 @@
+error[E0505]: cannot move out of `r` because it is borrowed
+  --> tests/compile-fail/edit_old_then_region_moved.rs:17:16
+   |
+15 |   let mut r = tree();
+   |       ----- binding `r` declared here
+16 |   let old = r.edit().replace(Expr::Lit(0));
+   |             - borrow of `r` occurs here
+17 |   let mut r2 = r;
+   |                ^ move out of `r` occurs here
+18 |   r2.edit().set(old);
+   |                 --- borrow later used here

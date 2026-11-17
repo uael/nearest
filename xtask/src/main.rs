@@ -46,19 +46,19 @@ fn main() -> Result<()> {
   }
 }
 
+/// The nightly that `rustfmt.toml`'s unstable options need; the crates build on stable.
+const FMT_TOOLCHAIN: &str = "+nightly-2026-02-10";
+
 fn fmt(sh: &Shell, check: bool) -> Result<()> {
   let args =
     std::iter::once("--all").chain(check.then_some(["--", "--check"]).into_iter().flatten());
-  cmd!(sh, "cargo +nightly fmt {args...}").run_echo()?;
+  cmd!(sh, "cargo {FMT_TOOLCHAIN} fmt {args...}").run_echo()?;
   Ok(())
 }
 
 fn lint(sh: &Shell, fix: bool) -> Result<()> {
   let args =
     if fix { ["--fix", "--allow-dirty", "--allow-staged"] } else { ["--", "-D", "warnings"] };
-  cmd!(sh, "cargo clippy --tests --examples --all-features {args...}").run_echo()?;
-  cmd!(sh, "cargo clippy -p nearest --no-default-features {args...}").run_echo()?;
-  cmd!(sh, "cargo clippy -p nearest --no-default-features --features alloc {args...}")
-    .run_echo()?;
+  cmd!(sh, "cargo clippy --workspace --tests --examples --benches {args...}").run_echo()?;
   fmt(sh, !fix)
 }

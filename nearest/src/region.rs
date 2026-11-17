@@ -1,684 +1,278 @@
-use core::{fmt, mem, ops::Deref};
+use alloc::borrow::Cow;
+use core::{fmt, marker::PhantomData, ops::Deref, ptr};
 
 use crate::{
-  Emit, Flat,
-  buf::Buf,
-  emitter::{Emitter, Pos},
-  session::{Brand, Session},
+  Edit, Emit, Flat, Invalid,
+  bytes::check,
+  flat::{Buf, Sink, fits},
 };
 
-/// An owning, contiguous byte buffer whose root value `T` starts at byte 0.
+/// One buffer holding a `T` at byte 0 and everything it points to.
 ///
-/// All [`Near`](crate::Near) and [`NearList`](crate::NearList) pointers
-/// inside the region are self-relative offsets, so `Clone` is a plain memcpy
-/// — no fixup needed.
+/// Reading is plain `&T` through [`Deref`]; [`Clone`] is one `memcpy`; [`edit`](Self::edit)
+/// changes it in place; [`to_bytes`](Self::to_bytes) and [`from_bytes`](Self::from_bytes) save
+/// and load it.
 ///
-/// # Memory layout
-///
-/// ```text
-/// ┌──────────────────────────────────────────────┐
-/// │ Root T (starts at byte 0)                    │
-/// │  ├── scalar fields (inline)                  │
-/// │  ├── Near<U> → i32 offset ───────┐           │
-/// │  └── NearList<V> → i32 + u32 ──┐ │           │
-/// │                                │ │           │
-/// │ [padding]                      │ │           │
-/// │ U value ◄──────────────────────│─┘           │
-/// │ [padding]                      │             │
-/// │ Segment<V> header ◄────────────┘             │
-/// │ V values...                                  │
-/// └──────────────────────────────────────────────┘
 /// ```
+/// use nearest::{Near, Region, flat};
 ///
-/// # Soundness
+/// #[flat]
+/// #[derive(Debug, PartialEq)]
+/// struct Tree { value: u32, children: Near<[Tree]> }
 ///
-/// **Ownership**: A `Region` exclusively owns its buffer. There is no
-/// shared mutable state. `Clone` performs a byte-for-byte copy of the buffer;
-/// all self-relative offsets remain valid because they are position-independent.
-///
-/// **Alignment**: The buffer base is aligned to `max(align_of::<T>(), 8)`.
-/// Every sub-allocation is padded to the target type's alignment. A
-/// compile-time assertion ensures no type exceeds the buffer's base alignment.
-///
-/// **Mutation safety**: All mutations go through [`Session`](crate::Session),
-/// which holds `&mut Region`. The branded `'id` lifetime on [`Ref`](crate::Ref)
-/// prevents refs from escaping or crossing sessions.
-///
-/// **`Send`/`Sync`**: Implemented with `T: Send + Sync` bounds as
-/// defense-in-depth. All `Flat` types are `Send + Sync` by construction
-/// (no heap pointers, no interior mutability), but the bounds let the
-/// compiler verify this.
-#[cfg(feature = "alloc")]
-#[must_use]
-pub struct Region<T: Flat, B: Buf = crate::buf::AlignedBuf<T>> {
-  buf: B,
-  _type: core::marker::PhantomData<T>,
+/// let r = Region::new(Tree::new(1, [Tree::new(2, ()), Tree::new(3, ())]));
+/// let copy = r.clone();
+/// assert_eq!(copy.children.iter().map(|c| c.value).sum::<u32>(), 5);
+/// assert_eq!(copy, r);
+/// ```
+pub struct Region<T> {
+  buf: Buf,
+  _t: PhantomData<T>,
 }
 
-/// See the `#[cfg(feature = "alloc")]` variant above for full documentation.
-#[cfg(not(feature = "alloc"))]
-#[must_use]
-pub struct Region<T: Flat, B: Buf> {
-  buf: B,
-  _type: core::marker::PhantomData<T>,
-}
-
-#[cfg(feature = "alloc")]
 impl<T: Flat> Region<T> {
-  /// Construct a region from a builder using the default [`AlignedBuf`](crate::AlignedBuf).
-  ///
-  /// The builder emits the root `T` (and any nested data) into a fresh
-  /// emitter, producing an immutable `Region`.
-  ///
-  /// # Examples
+  /// A new region holding `value`: a value, a copy (`&T`, from any region), an `Old` or a
+  /// builder.
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty, list};
+  /// use nearest::{Near, Region, flat};
   ///
-  /// #[derive(Flat, Debug)]
-  /// struct Node {
-  ///   id: u32,
-  ///   children: NearList<u32>,
-  /// }
+  /// #[flat]
+  /// enum Expr { Lit(i64), Add(Near<Expr>, Near<Expr>) }
   ///
-  /// // Build with the derive-generated `Node::make(id, children)` builder.
-  /// let region = Region::new(Node::make(1, list([10u32, 20, 30])));
-  /// assert_eq!(region.id, 1);
-  /// assert_eq!(region.children.len(), 3);
-  ///
-  /// // Build with an empty list.
-  /// let region = Region::new(Node::make(2, empty()));
-  /// assert_eq!(region.children.len(), 0);
+  /// let r = Region::new(Expr::add(Expr::Lit(1), Expr::Lit(2)));
+  /// assert!(matches!(&*r, Expr::Add(a, _) if matches!(**a, Expr::Lit(1))));
+  /// // A copy into a new region keeps only what is reachable.
+  /// let compact = Region::new(&*r);
+  /// assert_eq!(compact.byte_len(), r.byte_len());
   /// ```
-  pub fn new(builder: impl Emit<T>) -> Self {
-    Self::new_in(builder)
+  pub fn new(value: impl Emit<T>) -> Self {
+    fits::<T>();
+    let mut buf = Buf::new();
+    // SAFETY: `buf` is live during the call and only reached through the sink.
+    let mut sink = unsafe { Sink::new(&raw mut buf) };
+    let at = sink.alloc(size_of::<T>(), align_of::<T>());
+    // SAFETY: `at` was just allocated for a `T`.
+    unsafe { value.emit(&mut sink, at) };
+    Self { buf, _t: PhantomData }
   }
 
-  /// Construct a region with a pre-allocated buffer of at least `capacity` bytes.
+  /// The handle of the root, for edits in place. `'e`, the borrow of the region, is the edit:
+  /// handles and moved values ([`Old`](crate::Old)) of the edit live at most that long.
   ///
-  /// Avoids repeated reallocations when the final size is approximately known.
-  pub fn with_capacity(capacity: u32, builder: impl Emit<T>) -> Self {
-    Self::with_capacity_in(capacity, builder)
-  }
-}
-
-impl<T: Flat, B: Buf> Region<T, B> {
-  /// Construct a region from a builder using an explicit buffer type `B`.
-  ///
-  /// For the default heap-backed buffer, use [`Region::new`] instead.
-  pub fn new_in(builder: impl Emit<T>) -> Self {
-    let mut em = Emitter::<T, B>::new();
-    builder.emit(&mut em);
-    em.finish()
-  }
-
-  /// Construct a region with a pre-allocated buffer of at least `capacity` bytes.
-  pub fn with_capacity_in(capacity: u32, builder: impl Emit<T>) -> Self {
-    let mut em = Emitter::<T, B>::with_capacity(capacity);
-    builder.emit(&mut em);
-    em.finish()
-  }
-
-  /// Create a region from a buffer.
-  ///
-  /// # Safety
-  ///
-  /// The buffer must contain a valid representation of `T` at byte 0 and
-  /// all transitively reachable data must be valid. Constructing a region
-  /// from an invalid buffer causes UB on `Deref`.
-  pub(crate) unsafe fn from_buf(buf: B) -> Self {
-    debug_assert!(buf.len() as usize >= mem::size_of::<T>(), "buffer too small for root type");
-    Self { buf, _type: core::marker::PhantomData }
-  }
-
-  /// Open a branded session. [`Ref`](crate::Ref)s created inside the closure
-  /// cannot escape or be used with a different session — **compile-time safety,
-  /// zero runtime cost**.
-  ///
-  /// # Examples
+  /// Every field has a method of the same name that returns its handle; plain data is a real
+  /// `&mut`.
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty, list};
+  /// use nearest::{Near, Region, flat};
   ///
-  /// #[derive(Flat, Debug)]
-  /// struct Node {
-  ///   id: u32,
-  ///   children: NearList<u32>,
-  /// }
+  /// #[flat]
+  /// struct Block { id: u32, insts: Near<[u8]>, name: Near<str> }
   ///
-  /// let mut region = Region::new(Node::make(1, list([10u32, 20])));
-  ///
-  /// // Read and mutate inside a session.
-  /// region.session(|s| {
-  ///   let root = s.root();
-  ///   assert_eq!(s.at(root).id, 1);
-  ///
-  ///   let children = s.nav(root, |n| &n.children);
-  ///   s.splice_list(children, [99u32]);
-  /// });
-  ///
-  /// assert_eq!(region.children.len(), 1);
-  /// assert_eq!(region.children[0], 99);
+  /// let mut r = Region::new(Block::new(0, [1, 2, 3], "b0"));
+  /// let b = r.edit();
+  /// *b.id() = 7;
+  /// b.insts().retain(|x| *x != 2);
+  /// b.insts().push(4);
+  /// b.name().set("entry");
+  /// assert_eq!((r.id, &r.insts[..], &*r.name), (7, &[1, 3, 4][..], "entry"));
   /// ```
-  pub fn session<R>(&mut self, f: impl for<'id> FnOnce(&mut Session<'id, '_, T, B>) -> R) -> R {
-    self.buf.expose_provenance();
-    let brand = Brand::new();
-    let mut session = Session::new(self, brand);
-    f(&mut session)
+  pub fn edit(&mut self) -> &mut Edit<'_, T> {
+    fits::<T>();
+    self.buf.compact = false;
+    self.buf.me = &raw mut self.buf;
+    // SAFETY: the root is a `T` at byte 0, the region is borrowed for the edit, and every
+    // access of the edit goes through `me` (I8).
+    unsafe { T::edit(self.buf.me, 0) }
   }
 
-  /// Bulk-copy another region's bytes into this region, returning the position
-  /// of the grafted root.
-  ///
-  /// All self-relative pointers within the grafted data remain valid because
-  /// the entire source is copied as a contiguous block. The graft position is
-  /// aligned to the source region's maximum internal alignment so that all
-  /// transitively referenced data maintains correct alignment.
-  pub(crate) fn graft_internal<U: Flat, B2: Buf>(&mut self, src: &Region<U, B2>) -> Pos {
-    // All types within `src` have alignment ≤ BUF_ALIGN (enforced by
-    // Buf::alloc). Both regions share alignment ≥ 8, so aligning the graft
-    // offset to B2::ALIGN preserves alignment for all data.
-    self.buf.align_to(B2::ALIGN);
-    let pos = Pos(self.buf.len());
-    self.buf.extend_from_slice(src.buf.as_bytes());
-    pos
-  }
-
-  /// Returns the total byte length of the region.
-  ///
-  /// # Examples
+  /// The compact image of the region: borrowed if the region is compact (it was not edited
+  /// since it was built or loaded), otherwise a compact copy.
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, empty};
+  /// use std::borrow::Cow;
   ///
-  /// #[derive(Flat)]
-  /// struct Node { id: u32, items: NearList<u32> }
+  /// use nearest::{Near, Region, flat};
   ///
-  /// let region = Region::new(Node::make(1, empty()));
-  /// assert!(region.byte_len() >= core::mem::size_of::<Node>());
+  /// #[flat]
+  /// struct Msg { id: u8, body: Near<str> }
+  ///
+  /// let mut r = Region::new(Msg::new(1, "hi"));
+  /// assert!(matches!(r.to_bytes(), Cow::Borrowed(_)));
+  /// r.edit().body().set("hello");
+  /// let bytes = r.to_bytes();
+  /// assert!(matches!(bytes, Cow::Owned(_)) && bytes.len() < r.byte_len());
+  /// assert_eq!(&*Region::<Msg>::from_bytes(&bytes)?.body, "hello");
+  /// # Ok::<(), nearest::Invalid>(())
   /// ```
   #[must_use]
-  pub fn byte_len(&self) -> usize {
-    self.buf.len() as usize
+  pub fn to_bytes(&self) -> Cow<'_, [u8]> {
+    if self.buf.compact {
+      // SAFETY: a compact buffer is initialized.
+      Cow::Borrowed(unsafe { self.buf.bytes() })
+    } else {
+      let copy = Self::new(&**self);
+      // SAFETY: as above; a deep copy is compact.
+      Cow::Owned(unsafe { copy.buf.bytes() }.to_vec())
+    }
   }
 
-  /// Raw const pointer to the buffer (for Cursor reads).
-  pub(crate) fn deref_raw(&self) -> *const u8 {
-    self.buf.expose_provenance();
-    self.buf.as_ptr()
-  }
-
-  /// Compact this region by re-emitting only reachable data.
-  ///
-  /// After mutations (e.g. [`splice_list`](Session::splice_list),
-  /// [`push_front`](Session::push_front)), old targets of redirected
-  /// [`Near`](crate::Near)/[`NearList`](crate::NearList) pointers become
-  /// dead bytes. `trim` walks the root `T` and all transitively reachable
-  /// data, emitting a fresh compact buffer via `Emit<T> for &T` deep-copy.
-  ///
-  /// # Examples
+  /// The region whose image is `bytes`, which may have any alignment. The bytes are checked,
+  /// then copied: they must be exactly what [`to_bytes`](Self::to_bytes) writes for a `T`.
   ///
   /// ```
-  /// use nearest::{Flat, NearList, Region, list};
+  /// use nearest::{Near, Region, flat};
   ///
-  /// #[derive(Flat, Debug)]
-  /// struct Node { items: NearList<u32> }
+  /// #[flat]
+  /// struct Msg { id: u8, body: Near<str> }
   ///
-  /// let mut region = Region::new(Node::make(list([1u32, 2, 3])));
-  /// let before = region.byte_len();
-  ///
-  /// // Mutation leaves dead bytes (old list data).
-  /// region.session(|s| {
-  ///   let items = s.nav(s.root(), |n| &n.items);
-  ///   s.splice_list(items, [42u32]);
-  /// });
-  /// assert!(region.byte_len() > before);
-  ///
-  /// // Trim compacts the region.
-  /// region.trim();
-  /// assert!(region.byte_len() <= before);
-  /// assert_eq!(region.items[0], 42);
+  /// let bytes = Region::new(Msg::new(1, "hi")).to_bytes().into_owned();
+  /// let back = Region::<Msg>::from_bytes(&bytes)?;
+  /// assert_eq!((back.id, &*back.body), (1, "hi"));
+  /// assert!(Region::<Msg>::from_bytes(&bytes[1..]).is_err());
+  /// # Ok::<(), nearest::Invalid>(())
   /// ```
-  pub fn trim(&mut self) {
-    let new_buf = {
-      let root: &T = self;
-      let mut em = Emitter::<T, B>::with_capacity(self.buf.len());
-      Emit::<T>::emit(root, &mut em);
-      em.into_buf()
-    };
-    self.buf = new_buf;
-  }
-
-  // --- pub(crate) buffer mutation methods for Session/Patch ---
-
-  /// Ensure at least `additional` bytes of spare capacity.
-  pub(crate) fn reserve_internal(&mut self, additional: u32) {
-    self.buf.reserve(additional);
-  }
-
-  /// Allocate aligned space for one `U`, returning its position.
-  pub(crate) fn alloc_internal<U: Flat>(&mut self) -> Pos {
-    self.buf.alloc::<U>()
-  }
-
-  /// Write a [`Flat`] value at position `at`.
-  ///
-  /// # Safety
-  ///
-  /// `at` must have been allocated for `U` via `alloc_internal::<U>()`,
-  /// ensuring correct alignment.
-  pub(crate) unsafe fn write_flat_internal<U: Flat>(&mut self, at: Pos, val: U) {
-    // SAFETY: Caller guarantees `at` was allocated for `U`.
-    unsafe { crate::buf::write_flat(&mut self.buf, at, val) };
-  }
-
-  /// Patch a [`Near<U>`](crate::Near) at position `at` to point to `target`.
-  ///
-  /// # Safety
-  ///
-  /// `at` must point to a `Near<U>` field within a previously allocated
-  /// value, and `target` must be a position allocated for `U`.
-  pub(crate) unsafe fn patch_near_internal(&mut self, at: Pos, target: Pos) {
-    // SAFETY: Caller guarantees `at` points to a `Near<U>` and `target`
-    // was allocated for `U`.
-    unsafe { crate::buf::patch_near(&mut self.buf, at, target) };
-  }
-
-  /// Patch a [`NearList<U>`](crate::NearList) header at position `at`.
-  ///
-  /// # Safety
-  ///
-  /// `at` must point to a `NearList<U>` field within a previously allocated
-  /// value, and `target` must be a position of a `Segment<U>` (or
-  /// `Pos::ZERO` when `len == 0`).
-  pub(crate) unsafe fn patch_list_header_internal(&mut self, at: Pos, target: Pos, len: u32) {
-    // SAFETY: Caller guarantees `at` points to a `NearList<U>` and `target`
-    // is a valid segment position (or `Pos::ZERO` when `len == 0`).
-    unsafe { crate::buf::patch_list_header(&mut self.buf, at, target, len) };
-  }
-
-  /// Allocate a segment header plus `count` contiguous values of type `U`.
-  ///
-  /// Returns the position of the segment header. The segment's `len` field
-  /// is initialized to `count`; `next` is 0 (end of chain, from zero-fill).
-  pub(crate) fn alloc_segment_internal<U: Flat>(&mut self, count: u32) -> Pos {
-    crate::buf::alloc_segment::<U>(&mut self.buf, count)
-  }
-
-  /// Patch the `next` pointer of a segment at `seg_pos`.
-  ///
-  /// # Safety
-  ///
-  /// `seg_pos` must be a position of a previously allocated `Segment<T>`.
-  pub(crate) unsafe fn patch_segment_next_internal(&mut self, seg_pos: Pos, next_seg_pos: Pos) {
-    // SAFETY: Caller guarantees `seg_pos` is a previously allocated segment.
-    unsafe { crate::buf::patch_segment_next(&mut self.buf, seg_pos, next_seg_pos) };
-  }
-
-  /// Copy raw bytes to position `at`.
-  ///
-  /// # Safety
-  ///
-  /// `src` must be valid for reading `len` bytes. `at` must be a valid
-  /// position with at least `len` bytes available.
-  pub(crate) unsafe fn write_bytes_internal(&mut self, at: Pos, src: *const u8, len: usize) {
-    // SAFETY: Caller guarantees `src` is valid for `len` bytes and `at`
-    // has at least `len` bytes available.
-    unsafe { crate::buf::write_bytes(&mut self.buf, at, src, len) };
-  }
-
-  /// Return the raw byte contents of this region.
-  ///
-  /// The returned slice can be persisted (e.g. written to a file) and later
-  /// restored via [`from_bytes`](Self::from_bytes).
-  ///
-  /// # Examples
-  ///
-  /// ```
-  /// use nearest::{Flat, NearList, Region, empty, list};
-  ///
-  /// #[derive(Flat, Debug)]
-  /// struct Node {
-  ///   id: u32,
-  ///   children: NearList<u32>,
-  /// }
-  ///
-  /// let region = Region::new(Node::make(1, list([10u32, 20, 30])));
-  /// let bytes = region.as_bytes();
-  /// assert!(bytes.len() >= core::mem::size_of::<Node>());
-  /// ```
-  #[must_use]
-  pub fn as_bytes(&self) -> &[u8] {
-    self.buf.as_bytes()
-  }
-
-  /// Consume the region and return the underlying buffer.
-  ///
-  /// This is a zero-copy operation — it simply unwraps the inner buffer.
-  /// The returned buffer can be passed to [`from_bytes`](Self::from_bytes)
-  /// (via [`Buf::as_bytes`]) for reconstruction, or converted to bytes.
-  ///
-  /// # Examples
-  ///
-  /// ```
-  /// use nearest::{Flat, NearList, Region, empty, list};
-  ///
-  /// #[derive(Flat, Debug)]
-  /// struct Node {
-  ///   id: u32,
-  ///   children: NearList<u32>,
-  /// }
-  ///
-  /// let region = Region::new(Node::make(1, list([10u32, 20, 30])));
-  /// let buf = region.into_buf();
-  /// ```
-  pub fn into_buf(self) -> B {
-    self.buf
-  }
-
-  /// Consume the region and return its contents as a `Vec<u8>`.
-  ///
-  /// The returned vector contains the same bytes as [`as_bytes`](Self::as_bytes).
-  /// This is useful for APIs that need an owned byte buffer (e.g. I/O,
-  /// network transmission, or storage). The bytes can later be restored
-  /// via [`Region::from_bytes`].
-  ///
-  /// # Examples
-  ///
-  /// ```
-  /// use nearest::{Flat, NearList, Region, list};
-  ///
-  /// #[derive(Flat, Debug)]
-  /// struct Node {
-  ///   id: u32,
-  ///   children: NearList<u32>,
-  /// }
-  ///
-  /// let region = Region::new(Node::make(1, list([10u32, 20, 30])));
-  /// let bytes: Vec<u8> = region.into_vec();
-  /// let restored: Region<Node> = Region::from_bytes(&bytes).unwrap();
-  /// assert_eq!(restored.id, 1);
-  /// assert_eq!(restored.children.len(), 3);
-  /// ```
-  #[cfg(feature = "alloc")]
-  pub fn into_vec(self) -> alloc::vec::Vec<u8> {
-    self.buf.as_bytes().to_vec()
-  }
-
-  /// Validate and reconstruct a region from raw bytes.
-  ///
-  /// Copies the bytes into an aligned buffer first, then runs
-  /// [`T::validate`](Flat::validate) on the copy. This copy-then-validate
-  /// order means the input is read only once (during the copy), and
-  /// validation reads the cache-hot aligned buffer instead.
   ///
   /// # Errors
-  ///
-  /// Returns [`ValidateError`](crate::ValidateError) if the bytes do not
-  /// form a valid representation of `T` and its transitively reachable data.
-  ///
-  /// # Examples
-  ///
-  /// Round-trip through bytes:
-  ///
-  /// ```
-  /// use nearest::{Flat, NearList, Region, empty, list};
-  ///
-  /// #[derive(Flat, Debug)]
-  /// struct Node {
-  ///   id: u32,
-  ///   children: NearList<u32>,
-  /// }
-  ///
-  /// let original = Region::new(Node::make(1, list([10u32, 20, 30])));
-  /// let bytes = original.as_bytes();
-  /// let restored: Region<Node> = Region::from_bytes(bytes).unwrap();
-  /// assert_eq!(restored.id, 1);
-  /// assert_eq!(restored.children.len(), 3);
-  /// ```
-  ///
-  /// Validation catches invalid data — here a `bool` field with value `2`:
-  ///
-  /// ```
-  /// use nearest::{Flat, Near, Region, ValidateError, near};
-  ///
-  /// #[derive(Flat, Debug)]
-  /// struct Flags {
-  ///   active: bool,
-  ///   label: Near<u32>,
-  /// }
-  ///
-  /// let region = Region::new(Flags::make(true, near(42u32)));
-  /// let mut bytes = region.as_bytes().to_vec();
-  /// // Corrupt the bool — its offset is computed from the struct layout.
-  /// let bool_offset = core::mem::offset_of!(Flags, active);
-  /// bytes[bool_offset] = 2;
-  /// assert!(matches!(
-  ///   Region::<Flags>::from_bytes(&bytes),
-  ///   Err(ValidateError::InvalidBool { .. })
-  /// ));
-  /// ```
-  pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::ValidateError> {
-    let mut buf = B::empty();
-    buf.extend_from_slice(bytes);
-    T::validate(0, buf.as_bytes())?;
-    // SAFETY: `T::validate` just verified the buffer contents are valid.
-    Ok(unsafe { Self::from_buf(buf) })
+  /// [`Invalid`] if the bytes are not the compact image of a valid `T`.
+  pub fn from_bytes(bytes: &[u8]) -> Result<Self, Invalid> {
+    // The checker reads bytes at any alignment, so nothing is copied for a bad image.
+    check::<T>(bytes)?;
+    // SAFETY: just checked.
+    Ok(unsafe { Self::from_bytes_unchecked(bytes) })
   }
 
-  /// Reconstruct a region from raw bytes **without validation**.
+  /// [`from_bytes`](Self::from_bytes) without the check, for bytes that are trusted.
   ///
-  /// This is the unsafe fast path for deserialization. The bytes are copied
-  /// into a fresh aligned buffer but **no validation** is performed — no
-  /// bounds checks, no pointer validation, no discriminant checks.
+  /// ```
+  /// use nearest::{Near, Region, flat};
   ///
-  /// For a safe alternative that validates the buffer, use
-  /// [`from_bytes`](Self::from_bytes).
+  /// #[flat]
+  /// struct Msg { id: u8, body: Near<str> }
+  ///
+  /// let bytes = Region::new(Msg::new(1, "hi")).to_bytes().into_owned();
+  /// // SAFETY: the bytes come from `to_bytes` for the same type, in this build.
+  /// let back = unsafe { Region::<Msg>::from_bytes_unchecked(&bytes) };
+  /// assert_eq!((back.id, &*back.body), (1, "hi"));
+  /// ```
   ///
   /// # Safety
+  /// `bytes` are what [`to_bytes`](Self::to_bytes) returned for a `Region<T>`, in a build with
+  /// the same layout of `T`.
   ///
-  /// The caller must guarantee **all** of the following:
-  ///
-  /// - `bytes` was originally produced by [`as_bytes`](Self::as_bytes) on a
-  ///   valid `Region<T>` (or is byte-for-byte identical to such output).
-  /// - The buffer contains a valid representation of `T` at byte offset 0,
-  ///   with correct size (`bytes.len() >= size_of::<T>()`).
-  /// - All [`Near<U>`](crate::Near) self-relative offsets resolve to
-  ///   in-bounds, correctly aligned addresses within the buffer, and the
-  ///   target bytes form a valid `U`.
-  /// - All [`NearList<U>`](crate::NearList) headers have in-bounds segment
-  ///   chains with correct lengths, and every element is a valid `U`.
-  /// - All enum discriminants are valid for their `#[repr]`.
-  /// - All `bool` values are `0` or `1`.
-  /// - No `Option<Near<T>>` contains a bit pattern that is neither `None`
-  ///   nor a valid `Some(Near<T>)`.
-  ///
-  /// Violating any of these preconditions causes **undefined behavior** on
-  /// subsequent reads through the region.
-  ///
-  /// # Examples
-  ///
-  /// ```
-  /// use nearest::{Flat, NearList, Region, list};
-  ///
-  /// #[derive(Flat, Debug)]
-  /// struct Node {
-  ///   id: u32,
-  ///   children: NearList<u32>,
-  /// }
-  ///
-  /// let original = Region::new(Node::make(1, list([10u32, 20, 30])));
-  /// let bytes = original.as_bytes();
-  ///
-  /// // SAFETY: `bytes` was produced by `as_bytes()` on a valid `Region<Node>`.
-  /// let restored: Region<Node> = unsafe { Region::from_bytes_unchecked(bytes) };
-  /// assert_eq!(restored.id, 1);
-  /// assert_eq!(restored.children.len(), 3);
-  /// ```
+  /// # Panics
+  /// If `bytes` is longer than 2 GiB.
+  #[must_use]
   pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self {
-    let mut buf = B::empty();
-    buf.extend_from_slice(bytes);
-    // SAFETY: Caller guarantees the bytes form a valid region buffer for `T`.
-    // The copy into `buf` provides the required alignment (see `Buf` trait).
-    unsafe { Self::from_buf(buf) }
+    fits::<T>();
+    let mut buf = Buf::new();
+    let at = buf.alloc(bytes.len(), 8);
+    // SAFETY: `bytes.len()` bytes were allocated at `at`.
+    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buf.ptr().add(at), bytes.len()) };
+    Self { buf, _t: PhantomData }
   }
 
-  /// Reconstruct a region from a pre-existing buffer **without validation**.
+  /// The value whose image is `bytes`, read in place, for example from a memory-mapped file.
+  /// The slice must be 8-aligned; the bytes are checked as by [`from_bytes`](Self::from_bytes).
   ///
-  /// Unlike [`from_bytes_unchecked`](Self::from_bytes_unchecked), this takes
-  /// an already-allocated buffer `B`, avoiding an extra copy when the caller
-  /// already has an aligned buffer (e.g. memory-mapped I/O with a
-  /// [`FixedBuf`](crate::FixedBuf)).
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Msg { id: u8, body: Near<str> }
+  ///
+  /// let r = Region::new(Msg::new(1, "hi"));
+  /// let bytes = r.to_bytes(); // the region's own buffer, which is 8-aligned
+  /// let msg: &Msg = Region::view(&bytes)?;
+  /// assert_eq!(&*msg.body, "hi");
+  /// # Ok::<(), nearest::Invalid>(())
+  /// ```
+  ///
+  /// # Errors
+  /// [`Invalid`] if the slice is not 8-aligned or the bytes are not the compact image of a
+  /// valid `T`.
+  pub fn view(bytes: &[u8]) -> Result<&T, Invalid> {
+    if !bytes.as_ptr().addr().is_multiple_of(8) {
+      return Err(Invalid(0));
+    }
+    check::<T>(bytes)?;
+    // SAFETY: just checked.
+    Ok(unsafe { Self::view_unchecked(bytes) })
+  }
+
+  /// [`view`](Self::view) without the check, for bytes that are trusted: nothing is read
+  /// before the value is used.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Msg { id: u8, body: Near<str> }
+  ///
+  /// let r = Region::new(Msg::new(1, "hi"));
+  /// let bytes = r.to_bytes(); // the region's own buffer, which is 8-aligned
+  /// // SAFETY: the bytes come from `to_bytes` for the same type, in this build.
+  /// let msg: &Msg = unsafe { Region::view_unchecked(&bytes) };
+  /// assert_eq!(&*msg.body, "hi");
+  /// ```
   ///
   /// # Safety
-  ///
-  /// The caller must guarantee **all** of the following:
-  ///
-  /// - `buf` contains a valid representation of `T` at byte offset 0,
-  ///   with `buf.len() >= size_of::<T>()`.
-  /// - The buffer base is aligned to at least `align_of::<T>()` (guaranteed
-  ///   by the [`Buf`](crate::Buf) trait, but the *contents* must also be
-  ///   valid).
-  /// - All [`Near<U>`](crate::Near) self-relative offsets resolve to
-  ///   in-bounds, correctly aligned addresses within the buffer, and the
-  ///   target bytes form a valid `U`.
-  /// - All [`NearList<U>`](crate::NearList) headers have in-bounds segment
-  ///   chains with correct lengths, and every element is a valid `U`.
-  /// - All enum discriminants are valid for their `#[repr]`.
-  /// - All `bool` values are `0` or `1`.
-  /// - No `Option<Near<T>>` contains a bit pattern that is neither `None`
-  ///   nor a valid `Some(Near<T>)`.
-  ///
-  /// Violating any of these preconditions causes **undefined behavior** on
-  /// subsequent reads through the region.
-  ///
-  /// # Examples
+  /// `bytes` is 8-aligned and holds what [`to_bytes`](Self::to_bytes) returned for a
+  /// `Region<T>`, in a build with the same layout of `T`.
+  #[must_use]
+  pub const unsafe fn view_unchecked(bytes: &[u8]) -> &T {
+    fits::<T>();
+    // SAFETY: per the caller, the bytes are 8-aligned and the image of a valid `T`, whose
+    // pointers all aim inside them.
+    unsafe { &*bytes.as_ptr().cast::<T>() }
+  }
+
+  /// Bytes in use, including those no longer reachable after edits.
   ///
   /// ```
-  /// use nearest::{Buf, Flat, NearList, Region, FixedBuf, list};
+  /// use nearest::Region;
   ///
-  /// #[derive(Flat, Debug)]
-  /// struct Node {
-  ///   id: u32,
-  ///   children: NearList<u32>,
-  /// }
-  ///
-  /// let original: Region<Node, FixedBuf<256>> =
-  ///   Region::new_in(Node::make(1, list([10u32, 20, 30])));
-  /// let bytes = original.as_bytes();
-  ///
-  /// let mut buf = FixedBuf::<256>::new();
-  /// buf.extend_from_slice(bytes);
-  ///
-  /// // SAFETY: `buf` contains bytes from a valid `Region<Node>`.
-  /// let restored: Region<Node, FixedBuf<256>> =
-  ///   unsafe { Region::from_buf_unchecked(buf) };
-  /// assert_eq!(restored.id, 1);
-  /// assert_eq!(restored.children.len(), 3);
+  /// assert_eq!(Region::new(1u32).byte_len(), 4);
   /// ```
-  pub unsafe fn from_buf_unchecked(buf: B) -> Self {
-    // SAFETY: Caller guarantees the buffer contains a valid region for `T`.
-    unsafe { Self::from_buf(buf) }
+  #[must_use]
+  pub const fn byte_len(&self) -> usize {
+    self.buf.len()
   }
 }
 
-impl<T: Flat, B: Buf> Deref for Region<T, B> {
+impl<T> Deref for Region<T> {
   type Target = T;
-
   fn deref(&self) -> &T {
-    self.buf.expose_provenance();
-    // SAFETY: The buffer is aligned to `align_of::<T>()` and at least
-    // `size_of::<T>()` bytes. The root `T` starts at byte 0.
-    unsafe { &*self.buf.as_ptr().cast::<T>() }
+    // SAFETY: a region holds a `T` at byte 0 of its 8-aligned buffer.
+    unsafe { &*self.buf.base().cast() }
   }
 }
 
-impl<T: Flat, B: Buf + Clone> Clone for Region<T, B> {
+impl<T> Clone for Region<T> {
   fn clone(&self) -> Self {
-    Self { buf: self.buf.clone(), _type: core::marker::PhantomData }
+    Self { buf: self.buf.to_vec(), _t: PhantomData }
   }
 }
 
-impl<T: Flat + PartialEq, B: Buf> PartialEq for Region<T, B> {
+impl<T: fmt::Debug> fmt::Debug for Region<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    (**self).fmt(f)
+  }
+}
+
+impl<T: PartialEq> PartialEq for Region<T> {
   fn eq(&self, other: &Self) -> bool {
     **self == **other
   }
 }
 
-impl<T: Flat + Eq, B: Buf> Eq for Region<T, B> {}
+impl<T: Eq> Eq for Region<T> {}
 
-impl<T: Flat + fmt::Debug, B: Buf> fmt::Debug for Region<T, B> {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    f.debug_struct("Region").field("root", &**self).finish()
-  }
-}
+// A region owns its value in a buffer of its own: moving the `Region` moves nothing in it.
+impl<T> Unpin for Region<T> {}
 
-impl<T: Flat + fmt::Display, B: Buf> fmt::Display for Region<T, B> {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    fmt::Display::fmt(&**self, f)
-  }
-}
-
-// SAFETY: Region owns its buffer exclusively via Buf which is Send+Sync.
-// The `Send + Sync` bounds on `T` are defense-in-depth: all `Flat` types are
-// `Send + Sync` by construction (no heap pointers, no interior mutability),
-// but we add the bounds explicitly so the compiler checks this invariant.
-unsafe impl<T: Flat + Send + Sync, B: Buf + Send> Send for Region<T, B> {}
-// SAFETY: See above — Region owns its buffer exclusively.
-unsafe impl<T: Flat + Send + Sync, B: Buf + Sync> Sync for Region<T, B> {}
-
-impl<T: Flat, B: Buf> AsRef<[u8]> for Region<T, B> {
-  fn as_ref(&self) -> &[u8] {
-    self.as_bytes()
-  }
-}
-
-#[cfg(feature = "alloc")]
-impl<T: Flat, B: Buf> From<Region<T, B>> for alloc::vec::Vec<u8> {
-  fn from(region: Region<T, B>) -> Self {
-    region.into_vec()
-  }
-}
-
-// ---------------------------------------------------------------------------
-// serde support
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "serde")]
-impl<T: Flat, B: Buf> serde::Serialize for Region<T, B> {
-  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_bytes(self.as_bytes())
-  }
-}
-
-#[cfg(feature = "serde")]
-impl<'de, T: Flat, B: Buf> serde::Deserialize<'de> for Region<T, B> {
-  fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-    struct RegionVisitor<T, B>(core::marker::PhantomData<(T, B)>);
-
-    impl<'de, T: Flat, B: Buf> serde::de::Visitor<'de> for RegionVisitor<T, B> {
-      type Value = Region<T, B>;
-
-      fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        f.write_str("a valid nearest region byte buffer")
-      }
-
-      fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
-        Region::from_bytes(v).map_err(E::custom)
-      }
-
-      fn visit_seq<A: serde::de::SeqAccess<'de>>(
-        self,
-        mut seq: A,
-      ) -> Result<Self::Value, A::Error> {
-        let mut bytes = alloc::vec::Vec::with_capacity(seq.size_hint().unwrap_or(0));
-        while let Some(b) = seq.next_element::<u8>()? {
-          bytes.push(b);
-        }
-        self.visit_byte_buf(bytes)
-      }
-    }
-
-    deserializer.deserialize_byte_buf(RegionVisitor(core::marker::PhantomData))
-  }
-}
+const _: () = {
+  const fn send_sync_unpin<T: Send + Sync + Unpin>() {}
+  send_sync_unpin::<Region<u64>>();
+  send_sync_unpin::<Region<crate::Near<[u64]>>>();
+};

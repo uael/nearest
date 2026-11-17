@@ -1,0 +1,5 @@
+error: `#[flat]` enums need at least one variant
+ --> tests/compile-fail/flat_empty_enum.rs:5:6
+  |
+5 | enum E {}
+  |      ^

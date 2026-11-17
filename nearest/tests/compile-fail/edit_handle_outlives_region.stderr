@@ -1,0 +1,11 @@
+error[E0597]: `r` does not live long enough
+  --> tests/compile-fail/edit_handle_outlives_region.rs:12:5
+   |
+11 |     let mut r = mk();
+   |         ----- binding `r` declared here
+12 |     r.edit()
+   |     ^ borrowed value does not live long enough
+13 |   };
+   |   - `r` dropped here while still borrowed
+14 |   e.set(Expr::Lit(1));
+   |     --- borrow later used by call

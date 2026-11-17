@@ -1,0 +1,36 @@
+error[E0277]: `*mut ()` cannot be sent between threads safely
+  --> tests/compile-fail/edit_handle_to_another_thread.rs:14:13
+   |
+14 |       s.spawn(|| {
+   |         ----- ^-
+   |         |     |
+   |  _______|_____within this `{closure@$DIR/tests/compile-fail/edit_handle_to_another_thread.rs:14:13: 14:15}`
+   | |       |
+   | |       required by a bound introduced by this call
+15 | |       h.kids().push(Row::new(2, ()));
+16 | |     });
+   | |_____^ `*mut ()` cannot be sent between threads safely
+   |
+   = help: within `{closure@$DIR/tests/compile-fail/edit_handle_to_another_thread.rs:14:13: 14:15}`, the trait `Send` is not implemented for `*mut ()`
+   = note: required because it appears within the type `(&mut (), Row, *mut ())`
+note: required because it appears within the type `PhantomData<(&mut (), Row, *mut ())>`
+  --> $RUST/core/src/marker.rs
+note: required because it appears within the type `nearest::__private::Raw<'_, Row>`
+  --> src/edit.rs
+   |
+   | pub struct Raw<'e, T>(PhantomData<(&'e mut (), T, *mut ())>, [()]);
+   |            ^^^
+note: required because it appears within the type `__NearestEdit<'_>`
+  --> tests/compile-fail/edit_handle_to_another_thread.rs:5:1
+   |
+ 5 | #[flat]
+   | ^^^^^^^ required by this field
+   = note: required because it appears within the type `&mut __NearestEdit<'_>`
+note: required because `*h` is used within this closure
+  --> tests/compile-fail/edit_handle_to_another_thread.rs:15:7
+   |
+15 |       h.kids().push(Row::new(2, ()));
+   |       ^
+note: required by a bound in `Scope::<'scope, 'env>::spawn`
+  --> $RUST/std/src/thread/scoped.rs
+   = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)

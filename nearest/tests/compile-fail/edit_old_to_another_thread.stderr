@@ -1,0 +1,28 @@
+error[E0277]: `*mut nearest::__private::Buf` cannot be sent between threads safely
+  --> tests/compile-fail/edit_old_to_another_thread.rs:12:13
+   |
+12 |     s.spawn(move || drop(Region::new(old)));
+   |       ----- -------^^^^^^^^^^^^^^^^^^^^^^^
+   |       |     |
+   |       |     `*mut nearest::__private::Buf` cannot be sent between threads safely
+   |       |     within this `{closure@$DIR/tests/compile-fail/edit_old_to_another_thread.rs:12:13: 12:20}`
+   |       required by a bound introduced by this call
+   |
+   = help: within `{closure@$DIR/tests/compile-fail/edit_old_to_another_thread.rs:12:13: 12:20}`, the trait `Send` is not implemented for `*mut nearest::__private::Buf`
+help: the trait `Send` is implemented for `nearest::__private::Buf`
+  --> src/flat.rs
+   |
+   | unsafe impl Send for Buf {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+note: required because it appears within the type `Old<'_, Row>`
+  --> src/edit.rs
+   |
+   | pub struct Old<'e, T> {
+   |            ^^^
+note: required because `old` is used within this closure
+  --> tests/compile-fail/edit_old_to_another_thread.rs:12:38
+   |
+12 |     s.spawn(move || drop(Region::new(old)));
+   |                                      ^^^
+note: required by a bound in `Scope::<'scope, 'env>::spawn`
+  --> $RUST/std/src/thread/scoped.rs

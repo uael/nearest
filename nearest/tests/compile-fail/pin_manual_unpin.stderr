@@ -1,0 +1,11 @@
+error[E0119]: conflicting implementations of trait `Unpin` for type `Expr`
+ --> tests/compile-fail/pin_manual_unpin.rs:4:1
+  |
+4 | #[flat]
+  | ^^^^^^^ conflicting implementation for `Expr`
+...
+7 | impl Unpin for Expr {}
+  | ------------------- first implementation here
+  |
+  = note: upstream crates may add a new impl of trait `std::marker::Unpin` for type `nearest::Near<Expr>` in future versions
+  = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)

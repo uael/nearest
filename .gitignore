@@ -11,6 +11,7 @@
 
 # Project
 !README.md
+!DESIGN.md
 !CHANGELOG.md
 !LICENSE-*
 !deny.toml
@@ -33,6 +34,7 @@
 !nearest/tests/
 !nearest/tests/compile-fail/
 !nearest/tests/compile-fail/*.stderr
+!nearest/tests/compile-pass/
 !nearest/**/*.rs
 !nearest-derive/
 !nearest-derive/src/

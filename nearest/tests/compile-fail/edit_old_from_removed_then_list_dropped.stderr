@@ -1,0 +1,12 @@
+error[E0597]: `b` does not live long enough
+  --> tests/compile-fail/edit_old_from_removed_then_list_dropped.rs:18:12
+   |
+17 |     let mut b = blocks();
+   |         ----- binding `b` declared here
+18 |     inst = b.edit().insts().remove(0);
+   |            ^ borrowed value does not live long enough
+19 |   }
+   |   - `b` dropped here while still borrowed
+20 |   let mut c = blocks();
+21 |   c.edit().insts().push(inst);
+   |                         ---- borrow later used here

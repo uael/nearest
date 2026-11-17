@@ -1,0 +1,5 @@
+error: `#[flat]` types are `'static`: no lifetime parameters
+ --> tests/compile-fail/flat_lifetime_parameter.rs:5:15
+  |
+5 | struct Tagged<'a> { id: u32, tag: core::marker::PhantomData<&'a ()> }
+  |               ^^

@@ -1,0 +1,10 @@
+error[E0506]: cannot assign to `r` because it is borrowed
+  --> tests/compile-fail/edit_old_then_region_reassigned.rs:17:3
+   |
+16 |   let old = r.edit().replace(Expr::Lit(0));
+   |             - `r` is borrowed here
+17 |   r = tree();
+   |   ^ `r` is assigned to here but it was already borrowed
+18 |   let mut s = tree();
+19 |   s.edit().set(old);
+   |                --- borrow later used here
