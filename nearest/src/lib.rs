@@ -196,7 +196,7 @@
 //! # Storage
 //!
 //! A region keeps its buffer in a [`Storage`]: `Region<T>` is `Region<T, Heap>`, on the
-//! [`Heap`], which grows as needed. [`Inline<N>`] keeps it in `N` bytes inside the `Region`
+//! [`Heap`], which grows as needed ([`Region::with_capacity`] makes room up front). [`Inline<N>`] keeps it in `N` bytes inside the `Region`
 //! value, with no heap; growing past them panics, as growing past 2 GiB does. A storage of
 //! your own, such as an arena or a memory-mapped file, implements the `unsafe` trait
 //! [`Storage`]: two accessors to its memory and, if it grows, `grow`. A region in any storage
@@ -436,5 +436,11 @@ mod tests {
     let compact = Region::new(&*r);
     assert_eq!(compact.byte_len(), 4 + 4 + 4 + 4 * before.len());
     assert_eq!(compact[..], r[..]);
+  }
+
+  #[test]
+  fn capacity_past_the_size_limit_panics() {
+    assert!(catch_unwind(|| Region::with_capacity((1 << 16) + 1, 1u8)).is_err());
+    assert_eq!(*Region::with_capacity(1 << 16, 1u8), 1);
   }
 }

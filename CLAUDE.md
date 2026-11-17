@@ -56,7 +56,7 @@ bytes. `DESIGN.md` is the specification.
 ### Public surface
 
 `#[flat]`, `trait Flat` (`type Edit<'e>`), `trait Emit<T>`, `type Edit<'e, T>`, `Near<T>` (`new`,
-`from_iter`, `as_pin_mut`, `iter_pin_mut`), `Region<T, S = Heap>` (`new`, `new_in`, `edit`, `as_bytes`, `to_bytes`,
+`from_iter`, `as_pin_mut`, `iter_pin_mut`), `Region<T, S = Heap>` (`new`, `with_capacity`, `new_in`, `edit`, `as_bytes`, `to_bytes`,
 `from_bytes`, `view` (both with `alloc`), `from_bytes_with`, `view_with`, `byte_len`, and the
 `unsafe` `from_bytes_unchecked`, `view_unchecked`),
 `unsafe trait Storage` (`memory`, `memory_mut`, `grow`), `Heap`, `Inline<N>`,

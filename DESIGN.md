@@ -92,7 +92,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `trait Emit<T>` | all hidden; "can be written as a `T`" |
 | `type Edit<'e, T>` | `<T as Flat>::Edit<'e>`, the handle type of a place holding a `T` |
 | `Near<T>` | `new`, `from_iter` (builders); `as_pin_mut`, `iter_pin_mut` (pinned view) |
-| `Region<T, S: Storage = Heap>` | `new`, `new_in`, `edit`, `as_bytes`, `to_bytes`, `from_bytes`, `from_bytes_with`, `view`, `view_with`, `byte_len`, and the `unsafe` `from_bytes_unchecked`, `view_unchecked` |
+| `Region<T, S: Storage = Heap>` | `new`, `with_capacity`, `new_in`, `edit`, `as_bytes`, `to_bytes`, `from_bytes`, `from_bytes_with`, `view`, `view_with`, `byte_len`, and the `unsafe` `from_bytes_unchecked`, `view_unchecked` |
 | `unsafe trait Storage` | `memory`, `memory_mut`, `grow`: where a region keeps its bytes |
 | `Heap`, `Inline<N>` | storages: the heap (the default), `N` bytes inside the region |
 | `ListEdit<'e, T>` | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
@@ -419,7 +419,7 @@ default, a vector that grows as the region asks, and `Inline<N>`, `N` bytes insi
 `Region` value, which does not grow. Any other memory, an arena, a borrowed
 buffer or a memory-mapped file, is a storage of the user's: two accessors, and `grow` if it
 grows. `new_in(storage, value)` builds a region in a storage; `new` is `new_in(Heap::default(),
-..)`. `from_bytes`, `from_bytes_unchecked`
+..)`, and `with_capacity(bytes, value)` is `new` on a heap grown to that many bytes first. `from_bytes`, `from_bytes_unchecked`
 and `clone` make a new storage with `Default`; a storage without one loads with
 `Region::new_in(storage, Region::<T>::view(bytes)?)`. Everything else (reading, editing,
 bytes, the trait impls) is the same for every storage.

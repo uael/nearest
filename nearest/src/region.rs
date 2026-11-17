@@ -93,6 +93,31 @@ impl<T: Flat> Region<T> {
   pub fn new(value: impl Emit<T>) -> Self {
     Self::new_in(Heap::default(), value)
   }
+
+  /// [`new`](Self::new), with room for `capacity` bytes from the start: the buffer is not
+  /// reallocated until the region holds more. It is `new_in` on a heap grown first.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Log { entries: Near<[u64]> }
+  ///
+  /// let mut r = Region::with_capacity(4096, Log::new(()));
+  /// for i in 0..100 {
+  ///   r.edit().entries().push(i);
+  /// }
+  /// assert_eq!(r.entries.len(), 100);
+  /// ```
+  ///
+  /// # Panics
+  /// If `capacity` exceeds 2 GiB.
+  pub fn with_capacity(capacity: usize, value: impl Emit<T>) -> Self {
+    assert!(capacity <= crate::flat::MAX, "region exceeds 2 GiB");
+    let mut heap = Heap::default();
+    heap.grow(capacity.div_ceil(8));
+    Self::new_in(heap, value)
+  }
 }
 
 impl<T: Flat, S: Storage> Region<T, S> {
