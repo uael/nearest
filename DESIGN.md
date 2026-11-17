@@ -93,7 +93,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `type Edit<'e, T>` | `<T as Flat>::Edit<'e>`, the handle type of a place holding a `T` |
 | `Near<T>` | `new`, `from_iter` (builders); `as_pin_mut`, `iter_pin_mut` (pinned view) |
 | `Region<T, S: Storage = Heap>` | `new`, `new_in`, `edit`, `as_bytes`, `to_bytes`, `from_bytes`, `from_bytes_with`, `view`, `view_with`, `byte_len`, and the `unsafe` `from_bytes_unchecked`, `view_unchecked` |
-| `unsafe trait Storage` | `memory`, `memory_mut`, `grow`: where a region keeps its bytes |
+| `unsafe trait Storage` | `memory`, `memory_mut`: where a region keeps its bytes |
 | `Heap`, `Inline<N>` | storages: the heap (the default), `N` bytes inside the region |
 | `ListEdit<'e, T>` | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
 | `OptionEdit<'e, T>` | `as_mut`, `insert`, `take`, `set`, `update` |
@@ -409,20 +409,20 @@ A region keeps its bytes in the memory of a storage, `Region<T, S: Storage = Hea
 ```rust
 pub unsafe trait Storage {
   fn memory(&self) -> &[MaybeUninit<u64>];
-  fn memory_mut(&mut self) -> &mut [MaybeUninit<u64>];
-  fn grow(&mut self, words: usize) {}     // memory that does not grow
+  // The memory, made at least `words` long first if the storage can grow.
+  fn memory_mut(&mut self, words: usize) -> &mut [MaybeUninit<u64>];
 }
 ```
 
-Memory is words, so it is 8-aligned by its type. Two storages are provided: `Heap`, the
-default, a vector that grows as the region asks, and `Inline<N>`, `N` bytes inside the
-`Region` value, which does not grow. Any other memory, an arena, a borrowed
-buffer or a memory-mapped file, is a storage of the user's: two accessors, and `grow` if it
-grows. `new_in(storage, value)` builds a region in a storage; `new` is `new_in(Heap::default(),
-..)`. `from_bytes`, `from_bytes_unchecked`
-and `clone` make a new storage with `Default`; a storage without one loads with
-`Region::new_in(storage, Region::<T>::view(bytes)?)`. Everything else (reading, editing,
-bytes, the trait impls) is the same for every storage.
+Memory is words, so it is 8-aligned by its type. Two storages are provided: `Heap`, the default, a
+vector that grows as the region asks, and `Inline<N>`, `N` bytes inside the `Region` value, which
+does not grow. Any other memory, an arena, a borrowed buffer or a memory-mapped file, is a storage
+of the user's: two accessors, the second of which grows the memory when asked for more than it has,
+if the storage can. `new_in(storage, value)` builds a region in a storage; `new` is
+`new_in(Heap::default(), ..)`. `from_bytes`, `from_bytes_unchecked` and `clone` make a new storage
+with `Default`; a storage without one loads with `Region::new_in(storage,
+Region::<T>::view(bytes)?)`. Everything else (reading, editing, bytes, the trait impls) is the same
+for every storage.
 
 ```rust
 let mut r = Region::new_in(Inline::<256>::default(), Block::new(0, (), None));
@@ -431,50 +431,50 @@ let moved = r;                                       // the bytes move with it
 let loaded = Region::<Block, Inline<256>>::from_bytes(bytes)?;
 ```
 
-The memory may hold anything, initialized or not, when given and where `grow` adds to it: the
+The memory may hold anything, initialized or not, when given and where growing adds to it: the
 region zeroes what it uses, as it uses it (see below), so no storage, however safe code builds
 it, can make the region read bytes nobody wrote. The contract of an implementation (the
 trait's `# Safety`):
 
 - **Its own.** Nothing but the region reads or writes the memory while the storage is in a
   region, and the memory stays valid as long as the storage lives.
-- **Stable.** `memory` and `memory_mut` return the same memory (address and length) and change
-  none of it. That memory changes only through `grow`, or, if it is inside the storage value,
-  when that value moves; its bytes are those last written.
-- **Growth.** `grow` keeps the bytes of the memory, wherever it puts them, and never makes the
-  memory shorter; what it adds may hold anything. If it panics, the memory is as before, at the
-  same address.
+- **Stable.** `memory`, and `memory_mut` asked for no more words than the memory has, return the
+  same memory (address and length) and change none of it. That memory changes only through
+  `memory_mut` asked for more, or, if it is inside the storage value, when that value moves; its
+  bytes are those last written.
+- **Growth.** `memory_mut` asked for more words than the memory has may make it longer: it keeps the
+  bytes of the memory, wherever it puts them, and never makes the memory shorter; what it adds may
+  hold anything. If it panics, the memory is as before, at the same address.
 
-The region checks the rest: it asks `grow` for at most 2 GiB, uses at most 2 GiB of any
-memory, and panics if `grow` gives less than it asked for, except in `from_bytes`, which
-returns an error. So `grow` does nothing by default, and a storage that does not grow
-implements only the accessors.
+The region checks the rest: it asks for at most 2 GiB, uses at most 2 GiB of any memory, and
+panics if it gets less than it asked for, except in `from_bytes`, which returns an error. So a
+storage that does not grow returns its memory as it is, whatever it is asked for.
 
 The handles do not know the storage. They reach one concrete `Buf`: byte 0, the length, the
-capacity, the size of the memory, the address of the storage and `regrow`, a function pointer
-made for its type, which calls `grow`. The capacity is the zeroed prefix of the memory: the
+capacity, the size of the memory, the address of the storage and `regrow`, a function pointer made
+for its type, which asks the storage for more. The capacity is the zeroed prefix of the memory: the
 bytes from the length to the capacity are zero, those past it anything. Allocating below the
-capacity is the hot path and calls nothing; past it, a cold path zeroes the next part of the
-memory (twice what is in use, at least 64 bytes and what is asked, at most the memory), and
-calls `grow` first only if the memory itself is too short. So zeroing costs as much as the bytes
-used, never the size of the memory: a large arena or mapping costs nothing up front. The
-capacity is a length, so it survives a move of the storage. Loading copies the image and
-zeroes nothing. A storage may move with its region,
-so its address is not kept between uses: a use through `&self` (`Deref`, `as_bytes`,
-`clone`) calls `memory`, and a use through `&mut self` (`new_in`, `edit`, loading), once the
-region is where it is used, attaches the storage: it calls `memory_mut` and writes the
-address and the size of the memory into the `Buf`, which handles reach through `me` (I8). Growing
-attaches the storage again, also when `grow` unwinds, since the storage was borrowed anew. A
-region cannot move while a handle, an `Old` or a reference into it lives: all of them borrow
-it. A `Region` is `Send`, `Sync` or `Unpin` as its storage is, and the provided ones are all
-three; a pin into it ends with the borrow of the handle, as it does before the heap grows.
+capacity is the hot path and calls nothing; past it, a cold path zeroes the next part of the memory
+(twice what is in use, at least 64 bytes and what is asked, at most the memory), and asks the
+storage for more first only if the memory itself is too short. So zeroing costs as much as the bytes
+used, never the size of the memory: a large arena or mapping costs nothing up front. The capacity is
+a length, so it survives a move of the storage. Loading copies the image and zeroes nothing. A
+storage may move with its region, so its address is not kept between uses: a use through `&self`
+(`Deref`, `as_bytes`, `clone`) calls `memory`, and a use through `&mut self` (`new_in`, `edit`,
+loading), once the region is where it is used, attaches the storage: it calls `memory_mut` (asking
+for no more than the memory has) and writes the address and the size of the memory into the `Buf`,
+which handles reach through `me` (I8). Growing attaches the storage again, also when growing
+unwinds, since the storage was borrowed anew. A region cannot move while a handle, an `Old` or a
+reference into it lives: all of them borrow it. A `Region` is `Send`, `Sync` or `Unpin` as its
+storage is, and the provided ones are all three; a pin into it ends with the borrow of the handle,
+as it does before the heap grows.
 
 Why any storage that keeps the contract is sound: the region reads only below its length,
 and every byte there was written by the region, as a value or as the zeros of the capacity,
 and kept since (Stable, Growth), so every byte it reads is initialized, whatever the memory
 held; pointers into the memory are taken after the last move of the region and after
-every `grow` (Stable, Growth), and nothing else touches the memory meanwhile (Its own); a
-`grow` that unwinds leaves the memory where the restoring guards of I7 write (Growth). The
+every growth (Stable, Growth), and nothing else touches the memory meanwhile (Its own); a
+growth that unwinds leaves the memory where the restoring guards of I7 write (Growth). The
 memory is words, so 8-aligned, and at most 2 GiB of it is used, so every offset fits.
 
 A region in storage that cannot hold it panics where a heap region would grow (Runtime

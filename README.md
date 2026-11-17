@@ -168,8 +168,8 @@ A region keeps its buffer in a storage. `Region<T>` is on the `Heap`, where it g
 needed; `Inline<N>` keeps it in `N` bytes inside the `Region` value, with no heap, and growing
 past them panics (`from_bytes` returns an error). Other memory, an arena or a memory-mapped
 file, is a storage of your own: the `unsafe` trait `Storage` asks for two accessors to its
-memory, and `grow` if it grows. A region in any storage is built with `new_in`, or with
-`from_bytes`; everything else is the same.
+memory, the second of which grows it when asked for more, if it can. A region in any storage
+is built with `new_in`, or with `from_bytes`; everything else is the same.
 
 ```rust
 let mut r = Region::new_in(Inline::<256>::default(), Block::new(0, (), None));

@@ -52,7 +52,7 @@ impl<T, S: Storage> Region<T, S> {
   fn attach(&mut self) {
     // SAFETY: the storage holds the buffer's bytes (none when given), moves only with the
     // region, and is reached only through the buffer while the region is borrowed.
-    unsafe { self.buf.attach(&raw mut self.store) };
+    unsafe { self.buf.attach(&raw mut self.store, 0) };
   }
 
   /// Byte 0, for reading, from the storage where the region is now.

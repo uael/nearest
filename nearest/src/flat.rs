@@ -71,24 +71,25 @@ unsafe impl Sync for Buf {}
 /// `regrow` of a buffer that has no storage yet: nothing grows.
 const fn unattached(_: &mut Buf, _: usize) {}
 
-/// Grows the storage of `buf`, an `S`, to at least `words` words, and attaches it again: also
-/// if growing unwinds, since the storage was borrowed anew and pointers into it are stale.
+/// Asks the storage of `buf`, an `S`, for at least `words` words, and attaches it again: also
+/// if that unwinds, since the storage was borrowed anew and pointers into it are stale.
 ///
 /// # Safety
 /// `buf` is attached to an `S`.
 unsafe fn regrow<S: Storage>(buf: &mut Buf, words: usize) {
-  /// Attaches the storage again.
+  /// Attaches the storage again, as it is, if growing unwinds.
   struct Again<'b, S: Storage>(&'b mut Buf, PhantomData<S>);
   impl<S: Storage> Drop for Again<'_, S> {
     fn drop(&mut self) {
       // SAFETY: the buffer is still attached to the same storage, which is where it was.
-      unsafe { self.0.attach(self.0.store.cast::<S>()) }
+      unsafe { self.0.attach(self.0.store.cast::<S>(), 0) }
     }
   }
   let store = buf.store.cast::<S>();
-  let _again = Again::<S>(buf, PhantomData);
-  // SAFETY: per the caller; this borrow of the storage ends with the statement.
-  unsafe { (*store).grow(words) };
+  let again = Again::<S>(buf, PhantomData);
+  // SAFETY: per the caller.
+  unsafe { again.0.attach(store, words) };
+  core::mem::forget(again);
 }
 
 impl Buf {
@@ -106,15 +107,16 @@ impl Buf {
     }
   }
 
-  /// Attaches the storage at `store`, where it is now. `cap` and `len` are lengths, so they
-  /// stay as they are when the storage moves.
+  /// Attaches the storage at `store`, where it is now, asking it for `words` words (0: its
+  /// memory as it is). `cap` and `len` are lengths, so they stay as they are when the storage
+  /// moves.
   ///
   /// # Safety
   /// `store` is valid, its memory holds this buffer's `cap` bytes, and it is reached only
   /// through this buffer, and stays where it is, while the buffer is used.
-  pub(crate) unsafe fn attach<S: Storage>(&mut self, store: *mut S) {
+  pub(crate) unsafe fn attach<S: Storage>(&mut self, store: *mut S, words: usize) {
     // SAFETY: per the caller; this borrow of the storage ends with the statement.
-    let memory = unsafe { (*store).memory_mut() };
+    let memory = unsafe { (*store).memory_mut(words) };
     self.ptr = memory.as_mut_ptr().cast();
     self.mem = memory.len().saturating_mul(8).min(MAX);
     self.store = store.cast();

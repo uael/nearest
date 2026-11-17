@@ -3,12 +3,12 @@ use alloc::vec::Vec;
 use core::{mem::MaybeUninit, slice};
 
 /// Where a [`Region`](crate::Region) keeps its bytes: memory of 8-byte words, which the region
-/// grows through [`grow`](Self::grow) as it needs.
+/// asks to grow, through [`memory_mut`](Self::memory_mut), as it needs.
 ///
 /// Two are provided: [`Heap`], the default, and [`Inline<N>`], `N` bytes inside the `Region`
 /// value. Write your own for other memory, such as an arena or a memory-mapped file: the
-/// region needs nothing else, and a storage that does not grow implements only the two
-/// accessors.
+/// region needs nothing else, and a storage that does not grow ignores the length it is
+/// asked for.
 ///
 /// ```
 /// use core::mem::MaybeUninit;
@@ -23,8 +23,8 @@ use core::{mem::MaybeUninit, slice};
 ///   fn memory(&self) -> &[MaybeUninit<u64>] {
 ///     self.0
 ///   }
-///   fn memory_mut(&mut self) -> &mut [MaybeUninit<u64>] {
-///     self.0
+///   fn memory_mut(&mut self, _words: usize) -> &mut [MaybeUninit<u64>] {
+///     self.0 // does not grow
 ///   }
 /// }
 ///
@@ -40,36 +40,34 @@ use core::{mem::MaybeUninit, slice};
 /// # Safety
 ///
 /// A region reads and writes the memory through raw pointers, and keeps them while it is
-/// borrowed; it calls `memory` only through `&self` of the region, `memory_mut` and `grow`
-/// only through `&mut`. The memory may hold anything, initialized or not: the region zeroes
-/// what it uses before it uses it, and reads only that. An implementation guarantees:
+/// borrowed; it calls `memory` only through `&self` of the region, `memory_mut` only through
+/// `&mut`. The memory may hold anything, initialized or not: the region zeroes what it uses
+/// before it uses it, and reads only that. An implementation guarantees:
 ///
 /// - **Its own.** Nothing but the region reads or writes the memory while the storage is in a
 ///   region, and the memory stays valid as long as the storage lives.
-/// - **Stable.** `memory` and `memory_mut` return the same memory (address and length) and
-///   change none of it. That memory changes only through `grow`, or, if it is inside the
-///   storage value, when that value moves; its bytes are those last written.
-/// - **Growth.** `grow` keeps the bytes of the memory, wherever it puts them, and never makes
-///   the memory shorter; what it adds may hold anything. If it panics, the memory is as before,
-///   at the same address.
+/// - **Stable.** `memory`, and `memory_mut` asked for no more words than the memory has, return
+///   the same memory (address and length) and change none of it. That memory changes only
+///   through `memory_mut` asked for more, or, if it is inside the storage value, when that
+///   value moves; its bytes are those last written.
+/// - **Growth.** `memory_mut` asked for more words than the memory has may make it longer: it
+///   keeps the bytes of the memory, wherever it puts them, and never makes it shorter; what it
+///   adds may hold anything. If it panics, the memory is as before, at the same address.
 ///
-/// The region checks the rest: it asks `grow` for at most 2 GiB, uses at most 2 GiB of any
-/// memory, and panics if `grow` gives less than it asked for, except in
+/// The region checks the rest: it asks for at most 2 GiB, uses at most 2 GiB of any memory,
+/// and panics if it gets less than it asked for, except in
 /// [`from_bytes`](crate::Region::from_bytes), which returns an error.
 pub unsafe trait Storage {
   /// The memory, for reading.
   fn memory(&self) -> &[MaybeUninit<u64>];
 
-  /// The memory, for writing.
-  fn memory_mut(&mut self) -> &mut [MaybeUninit<u64>];
-
-  /// Makes the memory at least `words` long, if it can. The default does nothing, for memory
-  /// that does not grow: a region that gets less than it asked for panics, as growing past
-  /// 2 GiB does, except [`Region::from_bytes`](crate::Region::from_bytes), which returns an
-  /// error.
-  fn grow(&mut self, words: usize) {
-    let _ = words;
-  }
+  /// The memory, for writing, made at least `words` long first if the storage can grow.
+  ///
+  /// The region asks for no more than the memory has, except when it needs more. A storage
+  /// that does not grow returns its memory as it is: a region that gets less than it asked for
+  /// panics, as growing past 2 GiB does, except
+  /// [`Region::from_bytes`](crate::Region::from_bytes), which returns an error.
+  fn memory_mut(&mut self, words: usize) -> &mut [MaybeUninit<u64>];
 }
 
 /// The heap, the default storage: memory that grows as the region needs, up to 2 GiB. It is a
@@ -89,15 +87,12 @@ unsafe impl Storage for Heap {
     &self.0
   }
 
-  fn memory_mut(&mut self) -> &mut [MaybeUninit<u64>] {
-    &mut self.0
-  }
-
-  fn grow(&mut self, words: usize) {
+  fn memory_mut(&mut self, words: usize) -> &mut [MaybeUninit<u64>] {
     if words > self.0.len() {
       // Nothing is written: the region zeroes what it uses.
       self.0.resize(words, MaybeUninit::uninit());
     }
+    &mut self.0
   }
 }
 
@@ -122,8 +117,8 @@ unsafe impl<const N: usize> Storage for Inline<N> {
     unsafe { slice::from_raw_parts(self.0.as_ptr().cast(), N / 8) }
   }
 
-  fn memory_mut(&mut self) -> &mut [MaybeUninit<u64>] {
-    // SAFETY: as above.
+  fn memory_mut(&mut self, _words: usize) -> &mut [MaybeUninit<u64>] {
+    // SAFETY: as above; the memory does not grow.
     unsafe { slice::from_raw_parts_mut(self.0.as_mut_ptr().cast(), N / 8) }
   }
 }
