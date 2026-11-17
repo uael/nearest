@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4](https://github.com/uael/nearest/compare/v0.5.3...v0.5.4) - 2026-11-17
+
+### Added
+
+- *(derive)* #[flat(rename = "..")] on variants ([#42](https://github.com/uael/nearest/pull/42))
+
 ## [0.5.3](https://github.com/uael/nearest/compare/v0.5.2...v0.5.3) - 2026-11-17
 
 ### Added
