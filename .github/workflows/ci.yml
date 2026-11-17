@@ -72,11 +72,12 @@ jobs:
           toolchain: nightly-2026-02-10
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
-      # With both features, which only add code: every other test runs too. `nightly` turns
-      # on patterns over pinned values.
-      - run: cargo +nightly-2026-02-10 miri test -p nearest --features unstable,nightly --lib --test integration
+      # With `unstable`, which only adds code: every other test runs too. `nearest_nightly`
+      # builds `tests/pin_v2.rs`, where patterns project types marked `#[pin_v2]`.
+      - run: cargo +nightly-2026-02-10 miri test -p nearest --features unstable --lib --test integration --test pin_v2
         env:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
+          RUSTFLAGS: --cfg nearest_nightly
 
   deny:
     name: Cargo Deny

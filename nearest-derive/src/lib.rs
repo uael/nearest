@@ -121,7 +121,10 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // A method of a handle whose `.0` is the `Raw` of the value, returning a field's handle.
   let field_method = |f: &Field, i: usize, fvis: TokenStream, off: &TokenStream| {
     let mname = match &f.ident {
-      Some(id) if id == "set" || id == "replace" => format_ident!("{id}_"),
+      // The handle's own methods keep their names.
+      Some(id) if ["set", "replace", "pin", "update"].iter().any(|m| id == m) => {
+        format_ident!("{id}_")
+      }
       Some(id) => id.clone(),
       None => format_ident!("_{i}"),
     };
@@ -170,13 +173,14 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           (0..tys.len()).map(|k| format_ident!("f{k}", span = Span::mixed_site())).collect();
         let (fvis, ftys): (Vec<_>, Vec<_>) =
           (s.fields.iter().map(|f| (&f.vis, unself(f.ty.to_token_stream(), &self_ty)))).unzip();
+        let fdocs = members.iter().map(|m| format!("`{}`, pinned.", m.to_token_stream()));
         let (decl, make) = match &s.fields {
           Fields::Named(_) => (
-            quote!(#p_where { #(#fvis #members: #pin<&#lt mut #ftys>,)* }),
+            quote!(#p_where { #(#[doc = #fdocs] #fvis #members: #pin<&#lt mut #ftys>,)* }),
             quote!(#pin_name { #(#members: #pin::new_unchecked(#binds),)* }),
           ),
           _ => (
-            quote!((#(#fvis #pin<&#lt mut #ftys>,)*) #p_where;),
+            quote!((#(#[doc = #fdocs] #fvis #pin<&#lt mut #ftys>,)*) #p_where;),
             quote!(#pin_name(#(#pin::new_unchecked(#binds),)*)),
           ),
         };
@@ -186,7 +190,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           quote!(let Self { #(#members: #binds,)* } = self.get_unchecked_mut(); #make),
         ));
       }
-      field_tys.extend(tys.iter().cloned());
+      field_tys.extend(tys.iter().map(|ty| unself(ty.clone(), &self_ty)));
       (plain, any, quote!(#(#stores)*), checks)
     }
     Data::Enum(data) => {
@@ -225,8 +229,9 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         let (pin_decl, pin_make) = match &v.fields {
           Fields::Named(f) => {
             let ids: Vec<_> = f.named.iter().map(|f| &f.ident).collect();
+            let fdocs = ids.iter().map(|id| format!("`{}`, pinned.", id.to_token_stream()));
             (
-              quote!({ #(#ids: #pin<&#lt mut #ftys>),* }),
+              quote!({ #(#[doc = #fdocs] #ids: #pin<&#lt mut #ftys>),* }),
               quote!({ #(#ids: #pin::new_unchecked(#binds)),* }),
             )
           }
@@ -352,9 +357,9 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let update = cfg!(feature = "unstable").then(|| {
     quote! {
       /// Writes over the value what `f` builds from the old one, which moves into it.
-      #vis fn update<#lt, E: ::nearest::Emit<#self_ty>>(
+      #vis fn update<#lt, __NearestNew: ::nearest::Emit<#self_ty>>(
         &#lt mut self,
-        f: impl ::core::ops::FnOnce(::nearest::Old<#lt, #self_ty>) -> E,
+        f: impl ::core::ops::FnOnce(::nearest::Old<#lt, #self_ty>) -> __NearestNew,
       ) {
         self.0.update(f);
       }
@@ -365,10 +370,10 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     input.attrs.insert(0, repr);
   }
   // A pinned value must keep its pointers, so the type is `Unpin` exactly when its fields are.
-  // On nightly `#[pin_v2]` says so and gives patterns on `Pin<&mut X>`; otherwise an impl
-  // with a bound on all the fields does, and makes any impl written by hand a conflict.
-  let unpin = if cfg!(feature = "nightly") {
-    input.attrs.insert(0, parse_quote!(#[pin_v2]));
+  // An impl with a bound on all the fields says so, and makes any impl written by hand a
+  // conflict. A type the user marked `#[pin_v2]` (nightly) has that from the compiler, which
+  // then also rejects this impl.
+  let unpin = if input.attrs.iter().any(|a| a.path().is_ident("pin_v2")) {
     quote!()
   } else {
     // With the bounds the user wrote, and no others.
@@ -525,7 +530,8 @@ fn snake(variant: &Ident) -> Ident {
     s.extend(c.to_lowercase());
   }
   match &*s {
-    "self" | "super" | "crate" => format_ident!("{s}_", span = variant.span()),
+    // `project` is the generated method on pinned values.
+    "self" | "super" | "crate" | "project" => format_ident!("{s}_", span = variant.span()),
     // syn accepts `gen`, which edition 2024 reserves.
     _ if s == "gen" || syn::parse_str::<Ident>(&s).is_err() => Ident::new_raw(&s, variant.span()),
     _ => Ident::new(&s, variant.span()),

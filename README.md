@@ -89,7 +89,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `Region<T>` | the buffer: `new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`; `unsafe` `from_bytes_unchecked`, `view_unchecked` |
 | `Near<T>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
-| `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `get_mut`, `set`, `replace`, `iter_pin_mut` |
+| `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `iter_pin_mut` |
 | `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set` |
 | `StrEdit<'e>` | the handle of a `Near<str>`: `set`, `replace` |
 | `Old<'e, T>` | a value that left its place: write it anywhere to move it there |
@@ -133,8 +133,8 @@ bump(r.edit().pin(), 10);
 ```
 
 Nothing is pushed, built or moved through a pin; the handle is borrowed meanwhile and edits
-again afterwards. With the `nightly` feature (nightly Rust and `#![feature(pin_ergonomics)]`
-in your crate) a pattern does what `project` does: `match e { Expr::Add(a, b) => .. }`.
+again afterwards. On nightly Rust, also mark the type `#[pin_v2]` (feature `pin_ergonomics`)
+and a pattern does what `project` does: `match e { Expr::Add(a, b) => .. }`.
 
 ## Bytes
 

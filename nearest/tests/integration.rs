@@ -1,7 +1,4 @@
 #![expect(clippy::many_single_char_names, reason = "short names for regions and models")]
-// With `nightly`, `#[flat]` marks types `#[pin_v2]`.
-#![cfg_attr(feature = "nightly", feature(pin_ergonomics))]
-#![cfg_attr(feature = "nightly", expect(incomplete_features, reason = "pin_ergonomics"))]
 
 use std::{
   borrow::Cow,
@@ -704,17 +701,17 @@ fn list_index_panics() {
   });
   fails(|| *r.edit().insert(3, 0) = 0);
   fails(|| r.edit().swap(0, 2));
-  // `get_mut` is `at` without the panic.
+  // `try_at` is `at` without the panic.
   let list = r.edit();
-  assert!(list.get_mut(2).is_none());
-  if let Some(x) = list.get_mut(1) {
+  assert!(list.try_at(2).is_none());
+  if let Some(x) = list.try_at(1) {
     *x += 1;
   }
   assert_eq!((r[..].to_vec(), r.byte_len()), (vec![1, 3], 4 + 8 + 8));
   let mut exprs = Region::new(Lst::<Expr>::new([Expr::Lit(1)]));
   let items = exprs.edit().items();
-  assert!(items.get_mut(1).is_none());
-  items.get_mut(0).unwrap().set(Expr::neg(Expr::Lit(2)));
+  assert!(items.try_at(1).is_none());
+  items.try_at(0).unwrap().set(Expr::neg(Expr::Lit(2)));
   assert_eq!(show(&exprs.items[0]), "-2");
 }
 
@@ -2018,34 +2015,72 @@ mod pinned {
     next.next.set(None);
     assert_eq!((n.id, n.next.as_ref().unwrap().id), (3, 2));
   }
+}
 
-  /// With `nightly`, patterns bind the fields of a pinned value, pinned.
-  #[cfg(feature = "nightly")]
-  #[test]
-  fn patterns_on_pinned_values() {
-    fn bump(e: Pin<&mut Expr>, by: i64) {
-      match e {
-        // A binding is the pinned field; `mut` would copy the number out instead.
-        Expr::Lit(n) => *n.get_mut() += by,
-        Expr::Neg(x) => bump(x.as_pin_mut(), by),
-        Expr::Add(a, b) => {
-          let (a, b) = (a.as_pin_mut(), b.as_pin_mut());
-          bump(b, by);
-          bump(a, by);
-        }
-      }
-    }
-    let mut r = Region::new(Expr::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2)));
-    bump(r.edit().pin(), 5);
-    assert_eq!(show(&r), "(-6 + 7)");
-    let mut b = Region::new(Block::new(1, [Inst::new(1, [1])], None));
-    let Block { id, insts, .. } = b.edit().pin();
-    let id = id.get_mut();
-    for inst in insts.iter_pin_mut() {
-      let Inst { op, .. } = inst;
-      *op.get_mut() += 1;
-      *id += 1;
-    }
-    assert_eq!((b.id, b.insts[0].op), (2, 2));
+/// Names that the generated code keeps for itself, and `Self` inside a field type.
+mod names {
+  use nearest::{Near, Region, flat};
+
+  use super::Lst;
+
+  /// Fields called like a method of the handle get a trailing underscore.
+  #[flat]
+  struct Led {
+    pin: u8,
+    update: u32,
+    set: bool,
+    replace: Near<str>,
   }
+
+  /// A variant called `Project` gets the constructor `project_`: `project` is for pinned values.
+  #[flat]
+  enum Plan {
+    Scan(u32),
+    Project(Near<Plan>, u32),
+  }
+
+  /// A type parameter called like one the generated code could use.
+  #[flat]
+  struct Wrap<E> {
+    value: Near<E>,
+    count: u32,
+  }
+
+  #[flat]
+  struct Tree {
+    id: u32,
+    kids: Lst<Self>,
+  }
+
+  #[test]
+  fn reserved_names_and_self() {
+    let mut led = Region::new(Led::new(1, 2, false, "a"));
+    let l = led.edit();
+    *l.pin_() += 1;
+    *l.update_() += 1;
+    *l.set_() = true;
+    l.replace_().set("b");
+    assert_eq!(*l.pin().project().pin, 2);
+    assert_eq!((led.pin, led.update, led.set, &*led.replace), (2, 3, true, "b"));
+
+    let mut plan = Region::new(Plan::project_(Plan::Scan(1), 2));
+    if let PlanPin::Project(_, mut n) = plan.edit().pin().project() {
+      *n += 1;
+    }
+    assert!(matches!(&*plan, Plan::Project(input, 3) if matches!(**input, Plan::Scan(1))));
+
+    let mut wrap = Region::new(Wrap::<u8>::new(7, 1));
+    *wrap.edit().value() += 1;
+    assert_eq!((*wrap.value, wrap.count), (8, 1));
+
+    let mut tree = Region::new(Tree::new(0, Lst::new([Tree::new(1, Lst::new(()))])));
+    tree.edit().kids().items().push(Tree::new(2, Lst::new(())));
+    assert_eq!(tree.kids.items.iter().map(|t| t.id).sum::<u32>(), 3);
+
+    // A region can be moved whatever it holds.
+    unpin::<Region<Tree>>();
+    unpin::<Region<Plan>>();
+  }
+
+  const fn unpin<T: Unpin>() {}
 }

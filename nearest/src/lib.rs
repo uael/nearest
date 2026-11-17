@@ -108,7 +108,7 @@
 //! | `#[flat]` struct | generated | a method per field, `set`, `replace` |
 //! | `#[flat]` enum `X` | generated | `as_mut()` (returns `XMut`), `set`, `replace` |
 //! | `Near<T>` | the handle of the `T` | |
-//! | `Near<[T]>` | [`ListEdit<T>`] | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `get_mut`, `set`, `replace` |
+//! | `Near<[T]>` | [`ListEdit<T>`] | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `iter_pin_mut` |
 //! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `take`, `set` |
 //! | `Near<str>` | [`StrEdit`] | `set`, `replace` |
 //!
@@ -160,9 +160,8 @@
 //! assert!(matches!(&*r, Expr::Add(a, _) if matches!(**a, Expr::Lit(11))));
 //! ```
 //!
-//! With the cargo feature `nightly` (nightly Rust and `#![feature(pin_ergonomics)]` in the
-//! crate that uses `#[flat]`), a pattern on a pinned value binds its fields pinned, as
-//! `project` does.
+//! On nightly Rust, a type that is also marked `#[pin_v2]` (feature `pin_ergonomics`) is
+//! projected by patterns, as `project` does: `match e { Expr::Add(a, b) => .. }`.
 //!
 //! # Bytes
 //!
@@ -220,14 +219,17 @@ pub use near::Near;
 ///
 /// - constructors whose parameters take anything that can be written as the field's type
 ///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
-///   named after it in snake case. A parameter for a field written `Near<X>` takes a builder
-///   of `X` and allocates the target (a list or string builder if `X` is a slice or `str`);
+///   named after it in snake case (`project_` for a variant called `Project`). A parameter
+///   for a field written `Near<X>` takes a builder of `X` and allocates the target (a list or
+///   string builder if `X` is a slice or `str`);
 /// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign), `replace` (assign and return the
 ///   old value as an [`Old`]) and `pin` (a pinned view), and for structs one method per field
-///   (`_0`, `_1`, .. for tuple fields; `set_` and `replace_` for fields named `set` and
-///   `replace`) returning the field's handle, with the field's visibility;
+///   (`_0`, `_1`, .. for tuple fields; a trailing underscore for fields named `set`,
+///   `replace`, `pin` or `update`) returning the field's handle, with the field's visibility;
 /// - `project(self: Pin<&mut X>) -> XPin<'_>`: the fields of a pinned value, all pinned, as a
-///   struct or an enum with the shape of `X`. `X` is `Unpin` exactly when its fields are;
+///   struct or an enum with the shape of `X`. `X` is `Unpin` exactly when its fields are, and
+///   cannot implement it by hand. The types `XPin` and, for enums with fields, `XMut` are
+///   defined next to `X`;
 /// - for enums with fields, `as_mut` on the handle and the enum `XMut<'a, 'e>` it returns, all
 ///   of whose variants are tuple-like: unit variants stay units, a variant with one field holds
 ///   that field's handle, and a variant with several fields holds a handle with a method per

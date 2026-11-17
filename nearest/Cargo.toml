@@ -14,9 +14,6 @@ categories = ["data-structures", "memory-management"]
 [features]
 # APIs that may change in any release. Today: `update` on every handle.
 unstable = ["nearest-derive/unstable"]
-# Needs nightly Rust and `#![feature(pin_ergonomics)]` in the crate that uses `#[flat]`:
-# patterns on a pinned value bind its fields pinned, without `project`.
-nightly = ["nearest-derive/nightly"]
 
 [dependencies]
 nearest-derive = { version = "=0.3.5", path = "../nearest-derive" }

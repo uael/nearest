@@ -66,21 +66,31 @@ impl<'e, T: Flat> Raw<'e, T> {
     unsafe { &*(*self.buf()).base().add(self.at()).cast::<T>() }
   }
 
+  /// The `T`, for writing.
+  ///
+  /// # Safety
+  /// No safe code gets a `&mut T` out of it unless `T` has no pointers.
+  unsafe fn place(&mut self) -> &mut T {
+    // SAFETY: as for `get`.
+    unsafe { &mut *(*self.buf()).ptr().add(self.at()).cast::<T>() }
+  }
+
   /// The `T`, which has no pointers since it is `Copy`.
   pub fn get_mut(&mut self) -> &mut T
   where
     T: Copy,
   {
-    // SAFETY: as for `get`; a `Copy` type has no `Near`, so assigning to it is sound.
-    unsafe { &mut *(*self.buf()).ptr().add(self.at()).cast::<T>() }
+    // SAFETY: a `Copy` type has no `Near`, so assigning to it is sound.
+    unsafe { self.place() }
   }
 
   /// The `T`, pinned: a view in which several fields can be borrowed at once. It borrows the
   /// handle, so nothing can grow the buffer while it lives, and being pinned it gives no
   /// `&mut` to anything that contains a `Near`.
   pub fn pin(&mut self) -> Pin<&mut T> {
-    // SAFETY: as for `get`; the value stays where it is while the handle is borrowed.
-    unsafe { Pin::new_unchecked(&mut *(*self.buf()).ptr().add(self.at()).cast::<T>()) }
+    // SAFETY: the value stays where it is while the handle is borrowed, and pinned it gives a
+    // `&mut` only to what is `Unpin`, which has no pointers.
+    unsafe { Pin::new_unchecked(self.place()) }
   }
 
   /// Writes `value` over the `T`. The old bytes wait on the stack and come back if writing
@@ -514,12 +524,12 @@ impl<'e, T: Flat> ListEdit<'e, T> {
   pub fn at(&mut self, index: usize) -> &mut Edit<'e, T> {
     let len = self.len();
     self
-      .get_mut(index)
+      .try_at(index)
       .unwrap_or_else(|| panic!("index out of bounds: the len is {len} but the index is {index}"))
   }
 
   /// The handle of the element at `index`, or `None` out of bounds: [`at`](Self::at) without
-  /// the panic, like `get_mut` on a slice.
+  /// the panic.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -529,13 +539,13 @@ impl<'e, T: Flat> ListEdit<'e, T> {
   ///
   /// let mut r = Region::new(Names::new(["a"]));
   /// let names = r.edit().names();
-  /// if let Some(name) = names.get_mut(0) {
+  /// if let Some(name) = names.try_at(0) {
   ///   name.set("b");
   /// }
-  /// assert!(names.get_mut(1).is_none());
+  /// assert!(names.try_at(1).is_none());
   /// assert_eq!(&*r.names[0], "b");
   /// ```
-  pub fn get_mut(&mut self, index: usize) -> Option<&mut Edit<'e, T>> {
+  pub fn try_at(&mut self, index: usize) -> Option<&mut Edit<'e, T>> {
     let (buf, list) = self.list();
     // SAFETY: a valid element; the new handle borrows this one.
     (index < list.len).then(|| unsafe { T::edit(buf, list.elem::<T>(index)) })

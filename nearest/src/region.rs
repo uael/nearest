@@ -268,7 +268,11 @@ impl<T: PartialEq> PartialEq for Region<T> {
 
 impl<T: Eq> Eq for Region<T> {}
 
+// A region owns its value in a buffer of its own: moving the `Region` moves nothing in it.
+impl<T> Unpin for Region<T> {}
+
 const _: () = {
-  const fn send_sync<T: Send + Sync>() {}
-  send_sync::<Region<u64>>();
+  const fn send_sync_unpin<T: Send + Sync + Unpin>() {}
+  send_sync_unpin::<Region<u64>>();
+  send_sync_unpin::<Region<crate::Near<[u64]>>>();
 };
