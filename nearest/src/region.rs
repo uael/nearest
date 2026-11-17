@@ -440,6 +440,19 @@ impl<T: fmt::Debug, S: Storage> fmt::Debug for Region<T, S> {
   }
 }
 
+/// Shows the value, as the value does.
+///
+/// ```
+/// use nearest::Region;
+///
+/// assert_eq!(Region::new(7u32).to_string(), "7");
+/// ```
+impl<T: fmt::Display, S: Storage> fmt::Display for Region<T, S> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Display::fmt(&**self, f)
+  }
+}
+
 impl<T: PartialEq, S: Storage> PartialEq for Region<T, S> {
   fn eq(&self, other: &Self) -> bool {
     **self == **other

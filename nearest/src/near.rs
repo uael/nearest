@@ -225,6 +225,26 @@ where
   }
 }
 
+/// Shows the target, as the target does: a string or a number.
+///
+/// ```
+/// use nearest::{Near, Region, flat};
+///
+/// #[flat]
+/// struct Greeting { to: Near<str>, times: Near<u8> }
+///
+/// let r = Region::new(Greeting::new("world", 3));
+/// assert_eq!(format!("hello {} x{}", r.to, r.times), "hello world x3");
+/// ```
+impl<T: ?Sized + fmt::Display> fmt::Display for Near<T>
+where
+  Self: Deref<Target = T>,
+{
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Display::fmt(&**self, f)
+  }
+}
+
 impl<T: ?Sized + PartialEq> PartialEq for Near<T>
 where
   Self: Deref<Target = T>,

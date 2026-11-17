@@ -502,6 +502,9 @@ fn near_traits() {
   let e = Region::new_in(Store::default(), Expr::neg(Expr::Lit(1)));
   let Expr::Neg(x) = &*e else { unreachable!() };
   assert_eq!((format!("{x:?}"), x == x), ("Lit(1)".into(), true));
+  // `Display` shows the target.
+  let d = Region::new_in(Store::default(), Pair::<Near<u64>, Near<str>>::new(Near::new(42), "text"));
+  assert_eq!(format!("{} {:>6}", d.first, d.second), "42   text");
 }
 
 #[test]
@@ -513,6 +516,7 @@ fn region_traits() {
     assert_eq!(f, g);
     assert_eq!(format!("{f:?}"), format!("{:?}", *g));
     assert!(format!("{f:?}").starts_with("Func { name: \"main\""));
+    assert_eq!(Region::new_in(Store::default(), 1.5f64).to_string(), "1.5");
     // The clone is independent.
     let mut h = f.clone();
     *h.edit().flag() = false;
