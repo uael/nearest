@@ -108,7 +108,7 @@
 //! | `#[flat]` struct | generated | a method per field, `set`, `replace` |
 //! | `#[flat]` enum `X` | generated | `as_mut()` (returns `XMut`), `set`, `replace` |
 //! | `Near<T>` | the handle of the `T` | |
-//! | `Near<[T]>` | [`ListEdit<T>`] | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`, `replace` |
+//! | `Near<[T]>` | [`ListEdit<T>`] | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `get_mut`, `set`, `replace` |
 //! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `take`, `set` |
 //! | `Near<str>` | [`StrEdit`] | `set`, `replace` |
 //!

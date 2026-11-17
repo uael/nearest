@@ -44,8 +44,8 @@ limit, index bounds and the check of loaded bytes. `DESIGN.md` is the specificat
 `#[flat]`, `trait Flat` (`type Edit<'e>`), `trait Emit<T>`, `type Edit<'e, T>`, `Near<T>` (`new`,
 `from_iter`), `Region<T>` (`new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`, and the
 `unsafe` `from_bytes_unchecked`, `view_unchecked`),
-`ListEdit<'e, T>` (`push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`,
-`replace`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`, `set`), `StrEdit<'e>` (`set`,
+`ListEdit<'e, T>` (`push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `get_mut`,
+`set`, `replace`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`, `set`), `StrEdit<'e>` (`set`,
 `replace`), `Old<'e, T>` (no methods), `Invalid`, plus the trait impls listed in `DESIGN.md`.
 Hidden plumbing for the macro: `nearest::__private::{Raw, Buf, Sink, Check, fits, make,
 Variant, Pointer}` and the hidden items of the two traits. Do not add public items.

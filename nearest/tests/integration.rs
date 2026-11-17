@@ -701,7 +701,18 @@ fn list_index_panics() {
   });
   fails(|| *r.edit().insert(3, 0) = 0);
   fails(|| r.edit().swap(0, 2));
-  assert_eq!((r[..].to_vec(), r.byte_len()), (vec![1, 2], 4 + 8 + 8));
+  // `get_mut` is `at` without the panic.
+  let list = r.edit();
+  assert!(list.get_mut(2).is_none());
+  if let Some(x) = list.get_mut(1) {
+    *x += 1;
+  }
+  assert_eq!((r[..].to_vec(), r.byte_len()), (vec![1, 3], 4 + 8 + 8));
+  let mut exprs = Region::new(Lst::<Expr>::new([Expr::Lit(1)]));
+  let items = exprs.edit().items();
+  assert!(items.get_mut(1).is_none());
+  items.get_mut(0).unwrap().set(Expr::neg(Expr::Lit(2)));
+  assert_eq!(show(&exprs.items[0]), "-2");
 }
 
 #[test]

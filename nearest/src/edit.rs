@@ -503,11 +503,33 @@ impl<'e, T: Flat> ListEdit<'e, T> {
   /// assert_eq!((r.insts[0].op, &r.insts[0].args[..]), (2, &[10, 11][..]));
   /// ```
   pub fn at(&mut self, index: usize) -> &mut Edit<'e, T> {
+    let len = self.len();
+    self
+      .get_mut(index)
+      .unwrap_or_else(|| panic!("index out of bounds: the len is {len} but the index is {index}"))
+  }
+
+  /// The handle of the element at `index`, or `None` out of bounds: [`at`](Self::at) without
+  /// the panic, like `get_mut` on a slice.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Names { names: Near<[Near<str>]> }
+  ///
+  /// let mut r = Region::new(Names::new(["a"]));
+  /// let names = r.edit().names();
+  /// if let Some(name) = names.get_mut(0) {
+  ///   name.set("b");
+  /// }
+  /// assert!(names.get_mut(1).is_none());
+  /// assert_eq!(&*r.names[0], "b");
+  /// ```
+  pub fn get_mut(&mut self, index: usize) -> Option<&mut Edit<'e, T>> {
     let (buf, list) = self.list();
-    let len = list.len;
-    assert!(index < len, "index out of bounds: the len is {len} but the index is {index}");
     // SAFETY: a valid element; the new handle borrows this one.
-    unsafe { T::edit(buf, list.elem::<T>(index)) }
+    (index < list.len).then(|| unsafe { T::edit(buf, list.elem::<T>(index)) })
   }
 
   /// Replaces the list with `value`.

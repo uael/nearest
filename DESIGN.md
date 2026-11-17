@@ -91,7 +91,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `type Edit<'e, T>` | `<T as Flat>::Edit<'e>`, the handle type of a place holding a `T` |
 | `Near<T>` | `new`, `from_iter` (builders) |
 | `Region<T>` | `new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`, and the `unsafe` `from_bytes_unchecked`, `view_unchecked` |
-| `ListEdit<'e, T>` | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`, `replace` |
+| `ListEdit<'e, T>` | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `get_mut`, `set`, `replace` |
 | `OptionEdit<'e, T>` | `as_mut`, `insert`, `take`, `set` |
 | `StrEdit<'e>` | `set`, `replace` |
 | `Old<'e, T>` | none: a value that left its place; it can only be written somewhere |
@@ -155,7 +155,8 @@ checked while a program runs. What is checked at run time is what cannot be know
 - **Size.** Growing a region past 2 GiB panics, before anything changes. It is the capacity
   overflow of `Vec`, at the size a 4-byte offset can span, and it is only looked at when the
   buffer reallocates.
-- **Indices.** `at`, `insert`, `remove` and `swap` panic out of bounds, like slice indexing.
+- **Indices.** `at`, `insert`, `remove` and `swap` panic out of bounds, like slice indexing;
+  `get_mut` is `at` without the panic.
 - **Loaded bytes.** `from_bytes` and `view` check bytes that come from outside and return a
   `Result`; see Bytes. A region built or edited in the program is never checked, and the
   `unsafe` unchecked forms skip the check for bytes the caller trusts.
@@ -307,7 +308,7 @@ of twice the capacity (at least 4) and its pointer is re-aimed. `insert`, `remov
 `retain` move elements inside the block; each move re-aims the element's pointers, and plain
 elements are moved with `memmove`. `remove` first moves the element out to fresh bytes and
 returns it as an `Old`. `truncate` only writes the length. `at(i)` is the handle of
-element `i` and panics out of bounds, like indexing. `retain` keeps the unvisited elements if
+element `i` and panics out of bounds, like indexing; `get_mut(i)` returns `None` instead. `retain` keeps the unvisited elements if
 its closure panics.
 
 ## Building
