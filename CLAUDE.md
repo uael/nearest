@@ -165,7 +165,8 @@ Releases are automated with [release-plz](https://release-plz.dev/). On every pu
 - Config: `release-plz.toml`
 - Workflow: `.github/workflows/release-plz.yml`
 - Only `nearest` and `nearest-derive` are published; `xtask` is excluded
-- `nearest` owns the changelog and git tags (`v{{ version }}`); `nearest-derive` is bumped in lockstep without its own changelog or tags
+- `nearest` owns the changelog and git tags (`v{{ version }}`); `nearest-derive` has no changelog or tags of its own
+- Both crates are released under the same version (`version_group` in `release-plz.toml`): the higher of their next versions
 
 ### Commit Message Format
 
