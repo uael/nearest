@@ -1960,6 +1960,21 @@ mod pinned {
     }
   }
 
+  /// Data without pointers stays `Unpin`, also with the `nightly` feature, where every type is
+  /// `#[pin_v2]` and has no `Unpin` impl from the macro: a pin of it gives a `&mut`.
+  #[test]
+  fn plain_data_is_unpin() {
+    const fn unpin<T: Unpin>() {}
+    unpin::<super::Prims>();
+    unpin::<super::Rgb>();
+    unpin::<super::Shape>();
+    let mut r = Region::new(super::Rgb { r: 1, g: 2, b: 3, c: super::Color::Red });
+    r.edit().pin().get_mut().r = 9;
+    let mut p = Region::new(super::Pad { a: 1, b: 2 });
+    p.edit().pin().get_mut().b = 7;
+    assert_eq!((r.r, p.b), (9, 7));
+  }
+
   #[test]
   fn several_fields_are_borrowed_at_once() {
     let mut r =

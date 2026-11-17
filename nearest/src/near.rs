@@ -97,9 +97,7 @@ impl<T: Flat> Near<T> {
   pub fn new(value: impl Emit<T>) -> impl Emit<Self> + Emit<Option<Self>> {
     New(value)
   }
-}
 
-impl<T> Near<T> {
   /// The target, pinned: the way down in a pinned view (see `pin` on handles).
   ///
   /// ```
@@ -120,35 +118,11 @@ impl<T> Near<T> {
   /// ```
   #[must_use]
   pub fn as_pin_mut(self: Pin<&mut Self>) -> Pin<&mut T> {
+    #[cfg(feature = "nightly")]
+    crate::unpin::pinned::<T>();
     // SAFETY: the target is not moved while the pointer is pinned: a pinned view borrows the
     // handle it comes from, so nothing can grow the buffer; and a `Near` owns its target alone.
     unsafe { Pin::new_unchecked(&mut *Pin::get_unchecked_mut(self).target_mut().cast::<T>()) }
-  }
-}
-
-impl<T> Near<[T]> {
-  /// The elements, pinned, all at once.
-  ///
-  /// ```
-  /// use nearest::{Near, Region, flat};
-  ///
-  /// #[flat]
-  /// struct Node { id: u32, kids: Near<[Node]> }
-  ///
-  /// let mut r = Region::new(Node::new(0, [Node::new(1, ()), Node::new(2, ())]));
-  /// let NodePin { mut id, kids } = r.edit().pin().project();
-  /// for kid in kids.iter_pin_mut() {
-  ///   *kid.project().id += 10;
-  ///   *id += 1;
-  /// }
-  /// assert_eq!((r.id, r.kids[0].id, r.kids[1].id), (2, 11, 12));
-  /// ```
-  pub fn iter_pin_mut(self: Pin<&mut Self>) -> impl ExactSizeIterator<Item = Pin<&mut T>> {
-    // SAFETY: as for `Near::as_pin_mut`; the elements are disjoint and stay where they are.
-    unsafe {
-      (Pin::get_unchecked_mut(self).list_mut::<T>().iter_mut())
-        .map(|element| Pin::new_unchecked(element))
-    }
   }
 }
 
@@ -167,6 +141,32 @@ impl<T: Flat> Near<[T]> {
   #[expect(clippy::should_implement_trait, reason = "a builder, not a `Near<[T]>`")]
   pub fn from_iter<I: IntoIterator<Item: Emit<T>>>(items: I) -> impl Emit<Self> {
     Seq(items)
+  }
+
+  /// The elements, pinned, all at once.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Node { id: u32, kids: Near<[Node]> }
+  ///
+  /// let mut r = Region::new(Node::new(0, [Node::new(1, ()), Node::new(2, ())]));
+  /// let NodePin { mut id, kids } = r.edit().pin().project();
+  /// for kid in kids.iter_pin_mut() {
+  ///   *kid.project().id += 10;
+  ///   *id += 1;
+  /// }
+  /// assert_eq!((r.id, r.kids[0].id, r.kids[1].id), (2, 11, 12));
+  /// ```
+  pub fn iter_pin_mut(self: Pin<&mut Self>) -> impl ExactSizeIterator<Item = Pin<&mut T>> {
+    #[cfg(feature = "nightly")]
+    crate::unpin::pinned::<T>();
+    // SAFETY: as for `Near::as_pin_mut`; the elements are disjoint and stay where they are.
+    unsafe {
+      (Pin::get_unchecked_mut(self).list_mut::<T>().iter_mut())
+        .map(|element| Pin::new_unchecked(element))
+    }
   }
 }
 

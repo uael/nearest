@@ -11,7 +11,8 @@ A `Region<T>` keeps a `T` and everything it points to in one buffer. A pointer i
 - reading is plain `&T`, with `Near` dereferencing like `Box`;
 - the bytes mean the same at any address, so a region can be written out and read back.
 
-Stable Rust, `#![no_std]` + `alloc`, no features, no dependencies besides the macro.
+Stable Rust, `#![no_std]` + `alloc`, no dependencies besides the macro. One opt-in feature,
+`nightly`, for nightly compilers only.
 
 ## Example
 
@@ -110,6 +111,13 @@ Trait impls: `Region`: `Deref`, `Clone`, `Debug`, `PartialEq`, `Eq`. `Near`: `De
 `Deref`, and `DerefMut` for plain data. `Invalid`: `Debug`, `Display`, `Error`, `Clone`,
 `PartialEq`, `Eq`. Hidden plumbing for the macro lives in
 `nearest::__private`. Nothing else is public.
+
+The cargo feature `nightly` (forwarded to `nearest-derive`) makes `#[flat]` mark every type
+`#[pin_v2]`, so that patterns on a pinned value bind its fields pinned (see "The pinned view").
+It adds no public item. It needs a nightly compiler for the whole build, and uses
+`specialization` (in `nearest`) and `allow_internal_unstable` (in `nearest-derive`) inside the
+two crates; crates that use `#[flat]` need no `#![feature]` for it. Without the feature,
+nothing changes.
 
 ## Stored types
 
@@ -269,15 +277,26 @@ if let Some(next) = next.as_pin_mut() {          // `Option::as_pin_mut`, from `
   pushed, built or moved through a pin; that is what handles are for.
 - `X::project(self: Pin<&mut X>) -> XPin<'_>` is generated: `XPin` has the fields of a struct,
   or the variants of an enum with their fields, each as `Pin<&mut Field>`. On nightly Rust a
-  type that is also marked `#[pin_v2]` (feature `pin_ergonomics`) is projected by patterns:
-  `match e.pin() { Expr::Add(a, b) => .. }`. Nothing in this crate has to be enabled for it.
+  type that is also marked `#[pin_v2]` is projected by patterns, in a crate that enables
+  `pin_ergonomics`: `match e.pin() { Expr::Add(a, b) => .. }`. Mark it by hand, or enable the
+  `nightly` feature, under which `#[flat]` marks every type.
 - `Near::as_pin_mut` pins the target of a pointer, `Near::<[T]>::iter_pin_mut` the elements of
   a list (also on `ListEdit`), and `core` provides `Option::as_pin_mut`.
 - A `Near` is `!Unpin`, and a stored type is `Unpin` exactly when its fields are: the macro
   implements `Unpin` under a bound on all the fields, which makes an impl written by hand a
-  conflict; for a type marked `#[pin_v2]` the compiler forbids such impls itself, and the
-  macro leaves it to it. So a `Pin<&mut T>` gives a `&mut T` only for data without pointers
-  (I2), where it is harmless. A `Region` is always `Unpin`: it owns its buffer.
+  conflict. So a `Pin<&mut T>` gives a `&mut T` only for data without pointers (I2), where it
+  is harmless. A `Region` is always `Unpin`: it owns its buffer.
+- A type marked `#[pin_v2]` cannot have that impl: in a crate that enables `pin_ergonomics`,
+  the compiler forbids every `Unpin` impl of such a type, the macro's and a hand-written one
+  alike. So the macro writes none, and in that crate the compiler keeps the rule. Under the
+  `nightly` feature every type is `#[pin_v2]`, also in crates without `pin_ergonomics`, where
+  the compiler accepts a hand-written `Unpin` impl. There the check is the library's: every
+  place that hands out a `Pin<&mut T>` (`pin`, `Near::as_pin_mut`, `iter_pin_mut`) evaluates,
+  at compile time, a hidden constant of `T` that asks, through `specialization`, whether `T`
+  and each type it holds by value is `Unpin`, and fails the build if one is while one of its
+  fields is not. A hand-written impl on a type holding a `Near` is thus rejected when the type,
+  or a type holding it by value, is first pinned; an impl on data without pointers is accepted,
+  and harmless.
 - `Pin::set` assigns a value held by value, which cannot contain a pointer (I1): the place then
   holds a complete value, and what it pointed to is garbage, as after `set` on a handle.
 
@@ -425,8 +444,9 @@ Padding is not looked at.
 
 ## Toolchain
 
-The crates build on stable Rust (pinned in `rust-toolchain`). A pinned nightly is used only by
-`cargo xtask fmt` (unstable rustfmt options) and by Miri.
+The crates build on stable Rust (pinned in `rust-toolchain`). A pinned nightly is used by
+`cargo xtask fmt` (unstable rustfmt options), by Miri, and by the `nightly` feature, which is
+tested on it, under Miri too.
 
 ## What is not here, and why
 
@@ -440,11 +460,6 @@ The crates build on stable Rust (pinned in `rust-toolchain`). A pinned nightly i
 - No sibling swap in the pinned view: two pins do not say whether they are in the same region,
   and a pointer cannot be re-aimed across regions.
 - A pin cannot be turned back into a handle: it has an address, not a position in a buffer.
-- No cargo feature under which `#[flat]` writes `#[pin_v2]` itself. The compiler forbids
-  `Unpin` impls on such a type only in crates that enable `pin_ergonomics`, the macro's own
-  bounded impl included; in other crates it accepts them, a hand-written one included. The
-  macro cannot tell in which kind of crate it expands, so it would either fail in the first
-  kind or leave the second without protection. Write `#[pin_v2]` on the types you match on.
 - No single-lifetime handles. A moved value must outlive the borrow of the handle it was taken
   through, or it could not be written into another place; that longer borrow is `'e`. Both
   lifetimes are elided wherever a handle is only passed down.

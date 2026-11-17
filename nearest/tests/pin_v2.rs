@@ -1,6 +1,7 @@
-//! On nightly, a type also marked `#[pin_v2]` is projected by patterns: no `project` needed.
-//! Built only with `--cfg nearest_nightly` (the Miri job of CI), on a nightly compiler.
-#![cfg(nearest_nightly)]
+//! With the `nightly` feature, `#[flat]` marks every type `#[pin_v2]`, so patterns project a
+//! pinned value in a crate with `pin_ergonomics`: no `project` needed. Built only with
+//! `--features nightly`, on a nightly compiler.
+#![cfg(feature = "nightly")]
 #![feature(pin_ergonomics)]
 #![expect(incomplete_features, reason = "pin_ergonomics")]
 
@@ -9,13 +10,13 @@ use std::pin::Pin;
 use nearest::{Near, Region, flat};
 
 #[flat]
-#[pin_v2]
 enum Expr {
   Lit(i64),
   Neg(Near<Expr>),
   Add(Near<Expr>, Near<Expr>),
 }
 
+/// Marked by hand as well: the macro does not add it a second time.
 #[flat]
 #[pin_v2]
 struct Block {
@@ -24,7 +25,6 @@ struct Block {
 }
 
 #[flat]
-#[pin_v2]
 struct Inst {
   op: u8,
   args: Near<[u32]>,

@@ -88,6 +88,8 @@ impl<'e, T: Flat> Raw<'e, T> {
   /// handle, so nothing can grow the buffer while it lives, and being pinned it gives no
   /// `&mut` to anything that contains a `Near`.
   pub fn pin(&mut self) -> Pin<&mut T> {
+    #[cfg(feature = "nightly")]
+    crate::unpin::pinned::<T>();
     // SAFETY: the value stays where it is while the handle is borrowed, and pinned it gives a
     // `&mut` only to what is `Unpin`, which has no pointers.
     unsafe { Pin::new_unchecked(self.place()) }
@@ -146,7 +148,9 @@ impl<'e, T: Flat> Raw<'e, T> {
   ///
   /// The handle is borrowed while the closure runs:
   ///
-  /// ```compile_fail,E0499
+  // The nightly of the `nightly` feature reports this as E0500 and E0501.
+  #[cfg_attr(not(feature = "nightly"), doc = "```compile_fail,E0499")]
+  #[cfg_attr(feature = "nightly", doc = "```compile_fail")]
   /// # use nearest::{Near, Region, flat};
   /// # #[flat]
   /// # enum Expr { Lit(i64), Neg(Near<Expr>) }

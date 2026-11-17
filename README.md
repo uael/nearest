@@ -140,8 +140,9 @@ bump(r.edit().pin(), 10);
 ```
 
 Nothing is pushed, built or moved through a pin; the handle is borrowed meanwhile and edits
-again afterwards. On nightly Rust, also mark the type `#[pin_v2]` (feature `pin_ergonomics`)
-and a pattern does what `project` does: `match e { Expr::Add(a, b) => .. }`.
+again afterwards. On nightly Rust, a type marked `#[pin_v2]` is projected by patterns in a crate
+that enables `pin_ergonomics`: `match e { Expr::Add(a, b) => .. }` does what `project` does.
+Mark the type by hand, or enable the `nightly` feature, under which `#[flat]` marks every type.
 
 ## Bytes
 
@@ -178,6 +179,12 @@ Stable Rust (1.95 or later), `#![no_std]` + `alloc`, no dependencies besides the
 ```sh
 cargo add nearest
 ```
+
+The one cargo feature, `nightly`, needs a nightly compiler for the whole build: `#[flat]` then
+marks every type `#[pin_v2]`. It uses `specialization` and `allow_internal_unstable` inside
+`nearest` and `nearest-derive`; crates that use `#[flat]` need no `#![feature]` for it, only
+code that writes a pattern on a pinned value needs `pin_ergonomics`. Under it, an `Unpin`
+impl written by hand for a type that holds a `Near` fails the build where the type is pinned.
 
 Examples: [`expr.rs`](nearest/examples/expr.rs) simplifies an expression tree by rewriting it
 in place; [`ir.rs`](nearest/examples/ir.rs) runs constant folding and dead-code elimination on

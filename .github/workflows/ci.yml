@@ -70,12 +70,26 @@ jobs:
           toolchain: nightly-2026-02-10
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
-      # `nearest_nightly` builds `tests/pin_v2.rs`, where patterns project types marked
-      # `#[pin_v2]`.
-      - run: cargo +nightly-2026-02-10 miri test -p nearest --lib --test integration --test pin_v2
+      # With the `nightly` feature, which also builds `tests/pin_v2.rs`.
+      - run: cargo +nightly-2026-02-10 miri test -p nearest --features nightly --lib --test integration --test pin_v2
         env:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
-          RUSTFLAGS: --cfg nearest_nightly
+
+  nightly:
+    name: Nightly feature
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-10
+      - uses: Swatinem/rust-cache@v2
+      # The trybuild test stays on stable: its expected messages are those of the pinned stable.
+      - run: cargo +nightly-2026-02-10 test -p nearest --features nightly --lib --test integration --test pin_v2
+      - run: cargo +nightly-2026-02-10 test -p nearest --features nightly --doc
 
   deny:
     name: Cargo Deny

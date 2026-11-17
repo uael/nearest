@@ -11,6 +11,11 @@ readme = "../README.md"
 keywords = ["self-relative", "pointer", "region", "allocation", "arena"]
 categories = ["data-structures", "memory-management"]
 
+[features]
+# Nightly Rust only: `#[flat]` marks every type `#[pin_v2]`, so that patterns on a pinned value
+# bind its fields pinned. Crates that use `#[flat]` need no `#![feature]` for it.
+nightly = ["nearest-derive/nightly"]
+
 [dependencies]
 nearest-derive = { version = "=0.3.5", path = "../nearest-derive" }
 

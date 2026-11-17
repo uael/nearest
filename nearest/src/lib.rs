@@ -162,8 +162,20 @@
 //! assert!(matches!(&*r, Expr::Add(a, _) if matches!(**a, Expr::Lit(11))));
 //! ```
 //!
-//! On nightly Rust, a type that is also marked `#[pin_v2]` (feature `pin_ergonomics`) is
-//! projected by patterns, as `project` does: `match e { Expr::Add(a, b) => .. }`.
+//! On nightly Rust, a type that is also marked `#[pin_v2]` is projected by patterns, as
+//! `project` does, in a crate that enables `pin_ergonomics`: `match e { Expr::Add(a, b) => .. }`.
+//! Mark the type by hand, or enable the `nightly` feature.
+//!
+//! # The `nightly` feature
+//!
+//! The one cargo feature, `nightly`, needs a nightly compiler for the whole build. With it
+//! `#[flat]` marks every type `#[pin_v2]`, and gives it no `Unpin` impl of its own. It uses
+//! `specialization` and `allow_internal_unstable` inside this crate and `nearest-derive`; crates
+//! that use `#[flat]` need no `#![feature]` for it, only code that writes a pattern on a pinned
+//! value needs `pin_ergonomics`. An `Unpin` impl written by hand for a type that holds a `Near`
+//! would give a `&mut` to it through `Pin::get_mut`: in a crate with `pin_ergonomics` the
+//! compiler rejects it, and in one without, the build fails where the type, or a type holding
+//! it by value, is pinned.
 //!
 //! # Bytes
 //!
@@ -194,6 +206,12 @@
 //! compile time). A region holds at most `i32::MAX` bytes; growing past that panics.
 #![no_std]
 #![deny(missing_docs)]
+// The `nightly` feature: `unpin` asks whether a type implements `Unpin` (see `mod unpin`).
+#![cfg_attr(feature = "nightly", feature(specialization))]
+#![cfg_attr(
+  feature = "nightly",
+  expect(incomplete_features, reason = "`specialization`, only to ask whether a type is `Unpin`")
+)]
 
 extern crate alloc;
 
@@ -202,6 +220,8 @@ mod edit;
 mod flat;
 mod near;
 mod region;
+#[cfg(feature = "nightly")]
+mod unpin;
 
 pub use bytes::Invalid;
 pub use edit::{ListEdit, Old, OptionEdit, StrEdit};
@@ -296,6 +316,8 @@ pub type Edit<'e, T> = <T as Flat>::Edit<'e>;
 /// Plumbing for the code [`#[flat]`](flat) generates. Not public API.
 #[doc(hidden)]
 pub mod __private {
+  #[cfg(feature = "nightly")]
+  pub use crate::unpin::unpin;
   use crate::{Emit, Flat, Near};
   pub use crate::{
     bytes::Check,

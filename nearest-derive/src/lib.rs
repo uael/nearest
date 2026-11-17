@@ -1,5 +1,11 @@
 //! The `#[flat]` attribute of the [`nearest`](https://docs.rs/nearest) crate, re-exported as
 //! `nearest::flat`. Use it from there.
+// The `nightly` feature: `#[flat]` writes `#[pin_v2]`, which crates using it need not enable.
+#![cfg_attr(feature = "nightly", feature(allow_internal_unstable))]
+#![cfg_attr(
+  feature = "nightly",
+  expect(internal_features, reason = "`allow_internal_unstable(pin_ergonomics)` on `flat`")
+)]
 
 use proc_macro2::{Group, Ident, Literal, Span, TokenStream, TokenTree};
 use quote::{ToTokens, format_ident, quote};
@@ -10,6 +16,7 @@ use syn::{
 
 /// Makes a struct or enum storable in a `nearest` region. See `nearest::flat`.
 #[proc_macro_attribute]
+#[cfg_attr(feature = "nightly", allow_internal_unstable(pin_ergonomics))]
 pub fn flat(
   attr: proc_macro::TokenStream,
   item: proc_macro::TokenStream,
@@ -369,9 +376,16 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   }
   // A pinned value must keep its pointers, so the type is `Unpin` exactly when its fields are.
   // An impl with a bound on all the fields says so, and makes any impl written by hand a
-  // conflict. A type the user marked `#[pin_v2]` (nightly) has that from the compiler, which
-  // then also rejects this impl.
-  let unpin = if input.attrs.iter().any(|a| a.path().is_ident("pin_v2")) {
+  // conflict. A type marked `#[pin_v2]` (nightly) cannot have it: with `pin_ergonomics` on, the
+  // compiler rejects every `Unpin` impl of such a type, this one too, and a hand-written one
+  // with it. With the `nightly` feature every type is `#[pin_v2]`, also in crates without
+  // `pin_ergonomics`, where the compiler accepts a hand-written impl; there, `UNPIN` below
+  // rejects it when the type is first pinned.
+  let pin_v2 = input.attrs.iter().any(|a| a.path().is_ident("pin_v2"));
+  if cfg!(feature = "nightly") && !pin_v2 {
+    input.attrs.push(parse_quote!(#[pin_v2]));
+  }
+  let unpin = if pin_v2 || cfg!(feature = "nightly") {
     quote!()
   } else {
     // With the bounds the user wrote, and no others.
@@ -389,6 +403,14 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       impl #f_impl ::core::marker::Unpin for #self_ty #unpin_where {}
     }
   };
+  // With the `nightly` feature: every field is `Unpin`, and, checked on evaluation, so is this
+  // type only if it should be. `&` and not `&&`, so that every field is checked.
+  let unpin_const = cfg!(feature = "nightly").then(|| {
+    quote! {
+      const UNPIN: bool =
+        #np::unpin::<Self>(true #(& <#field_tys as ::nearest::Flat>::UNPIN)*);
+    }
+  });
   let (pin_decl, project) = pinned.map_or((None, None), |(decl, body)| {
     let project = quote! {
       /// The fields of a pinned value, pinned, all at once.
@@ -413,6 +435,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           #plain
         };
         const ANY: bool = #any;
+        #unpin_const
         unsafe fn store(
           &self,
           #sink: &mut #np::Sink,

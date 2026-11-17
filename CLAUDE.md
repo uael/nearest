@@ -12,7 +12,9 @@ cargo test --test integration TESTNAME  # Run a single integration test
 cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
 cargo run --example expr             # Examples (also: ir); they assert their results
 cargo bench --bench region           # Benchmarks (criterion)
-RUSTFLAGS="--cfg nearest_nightly" MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --lib --test integration --test pin_v2  # Miri
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --features nightly --lib --test integration --test pin_v2  # Miri
+RUSTFLAGS="-D warnings" cargo +nightly-2026-02-10 test -p nearest --features nightly --lib --test integration --test pin_v2  # The `nightly` feature
+RUSTFLAGS="-D warnings" cargo +nightly-2026-02-10 test -p nearest --features nightly --doc  # Its doc tests
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
 cargo xtask fmt --check              # Check formatting
 cargo xtask lint                     # Clippy (workspace, tests, examples, benches, -D warnings) + format check
@@ -34,7 +36,7 @@ limit, index bounds and the check of loaded bytes. `DESIGN.md` is the specificat
 
 ### Workspace Crates
 
-- **`nearest/`** — the library (`#![no_std]` + `alloc`, no features)
+- **`nearest/`** — the library (`#![no_std]` + `alloc`; one opt-in feature, `nightly`)
 - **`nearest-derive/`** — the `#[flat]` attribute, re-exported as `nearest::flat`
 - **`xtask/`** — dev automation (fmt, lint)
 
@@ -60,13 +62,23 @@ generates `X::project` and `XPin<'a>` (a struct or an enum with the shape of `X`
 `impl Unpin for X where __NearestFields<'a, ..>: Unpin` (all field types), which makes a
 hand-written impl a conflict. For a type the user also marked `#[pin_v2]` (nightly, feature
 `pin_ergonomics`) the macro skips that impl: the compiler forbids `Unpin` impls there and
-makes patterns project. `tests/pin_v2.rs` covers it; it is built only with `--cfg
-nearest_nightly`, on the pinned nightly:
-`RUSTFLAGS="--cfg nearest_nightly" cargo +nightly-2026-02-10 test -p nearest --test pin_v2`.
-The macro must not write `#[pin_v2]` itself (with `allow_internal_unstable`): in a crate
-without `#![feature(pin_ergonomics)]` the compiler then accepts a hand-written `impl Unpin`,
-while the macro's own bounded impl is rejected in crates with the gate, so nothing would keep
-`Pin::get_mut` away from values holding pointers.
+makes patterns project.
+
+The feature `nightly` (`nearest/nightly` forwards to `nearest-derive/nightly`; nightly compiler
+only) makes `#[flat]` add `#[pin_v2]` to every type, through
+`#[allow_internal_unstable(pin_ergonomics)]` on the macro, so crates using `#[flat]` need no
+gate. The bounded `Unpin` impl cannot stay under it: in a crate with `pin_ergonomics` the
+compiler rejects every `Unpin` impl of a `#[pin_v2]` type, the macro's too, while in a crate
+without it the compiler accepts a hand-written one. So the macro writes none, and the library
+checks instead (`nearest/src/unpin.rs`, built only with the feature, as it uses
+`specialization`): the hidden `Flat::UNPIN` ("every field is `Unpin`": `true` for plain
+types, `false` for pointers without looking at the target, `__private::unpin::<Self>(true &
+F1::UNPIN & ..)` for generated types) asserts that a type is not `Unpin` unless its fields
+are. `Raw::pin`, `Near::as_pin_mut` and `Near::<[T]>::iter_pin_mut` evaluate it
+(`unpin::pinned::<T>()`), so a hand-written impl on a type holding a `Near` fails the build
+where it, or a type holding it by value, is pinned. Without the feature nothing changes.
+`tests/pin_v2.rs` is built only with the feature; the feature's own `compile_fail` doc tests
+are on `nearest/src/unpin.rs`. The trybuild test runs on stable only.
 Names the generated code keeps: a field called `set`, `replace`, `pin` or `update` gets a
 trailing underscore, and a variant called `Project` gets the constructor `project_`.
 

@@ -222,6 +222,13 @@ pub unsafe trait Flat: Sized + 'static {
   #[doc(hidden)]
   const ANY: bool = false;
 
+  /// Every field is `Unpin` (`nightly` feature). Evaluating it checks, for `Self` and for every
+  /// type it holds by value, that `Unpin` is not implemented by hand for a type holding a
+  /// `Near`; see `__private::unpin`.
+  #[cfg(feature = "nightly")]
+  #[doc(hidden)]
+  const UNPIN: bool;
+
   /// Writes `self` at `at`. With `shift == None` every pointer target is copied too; with
   /// `Some(d)` every pointer keeps its target and is re-aimed for a move of `d` bytes, and no
   /// pointer is dereferenced.
@@ -352,6 +359,8 @@ macro_rules! plain {
       type Edit<'e> = Self;
       const PLAIN: bool = true;
       const ANY: bool = $any;
+      #[cfg(feature = "nightly")]
+      const UNPIN: bool = true;
       unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<i32>) {
         // SAFETY: the caller allocated `at` for `Self`.
         unsafe { sink.write(at, *self) }
@@ -390,6 +399,8 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
     T::PLAIN
   };
   const ANY: bool = T::ANY;
+  #[cfg(feature = "nightly")]
+  const UNPIN: bool = T::UNPIN;
   unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<i32>) {
     fits::<Self>();
     // SAFETY: the caller allocated `at` for the array.
@@ -423,6 +434,10 @@ impl<T: ?Sized> Near<T> {
 // SAFETY: copies the target, or re-aims the offset by the distance moved.
 unsafe impl<T: Flat> Flat for Near<T> {
   type Edit<'e> = T::Edit<'e>;
+  // A pointer is never `Unpin`; its target is checked when it is pinned, not here, so that
+  // recursive types do not cycle.
+  #[cfg(feature = "nightly")]
+  const UNPIN: bool = false;
   unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<i32>) {
     // SAFETY: the caller allocated `at` for a `Near`; the target is allocated before the
     // source is read.
@@ -451,6 +466,10 @@ unsafe impl<T: Flat> Flat for Near<T> {
 // SAFETY: copies the list, or re-aims the offset by the distance moved.
 unsafe impl<T: Flat> Flat for Near<[T]> {
   type Edit<'e> = ListEdit<'e, T>;
+  // A pointer is never `Unpin`; its target is checked when it is pinned, not here, so that
+  // recursive types do not cycle.
+  #[cfg(feature = "nightly")]
+  const UNPIN: bool = false;
   unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<i32>) {
     // SAFETY: the caller allocated `at` for a `Near`.
     unsafe {
@@ -474,6 +493,10 @@ unsafe impl<T: Flat> Flat for Near<[T]> {
 // SAFETY: copies the text, or re-aims the offset by the distance moved.
 unsafe impl Flat for Near<str> {
   type Edit<'e> = StrEdit<'e>;
+  // A pointer is never `Unpin`; its target is checked when it is pinned, not here, so that
+  // recursive types do not cycle.
+  #[cfg(feature = "nightly")]
+  const UNPIN: bool = false;
   unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<i32>) {
     // SAFETY: the caller allocated `at` for a `Near`.
     unsafe {
@@ -496,6 +519,10 @@ unsafe impl Flat for Near<str> {
 // SAFETY: `None` is a zero offset; `Some` is the `Near`.
 unsafe impl<T: Flat> Flat for Option<Near<T>> {
   type Edit<'e> = OptionEdit<'e, T>;
+  // A pointer is never `Unpin`; its target is checked when it is pinned, not here, so that
+  // recursive types do not cycle.
+  #[cfg(feature = "nightly")]
+  const UNPIN: bool = false;
   unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<i32>) {
     // SAFETY: the caller allocated `at` for a `Near`.
     unsafe {
