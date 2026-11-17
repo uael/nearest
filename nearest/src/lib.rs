@@ -3,7 +3,8 @@
 //! A [`Region<T>`] keeps a `T` and everything it points to in one buffer. A pointer is a
 //! [`Near<T>`]: 4 bytes holding the distance from its own address to its target. So copying
 //! the buffer copies the whole value (`Clone` is a `memcpy`), reading is plain `&T` with `Near`
-//! dereferencing like `Box`, and the bytes mean the same at any address.
+//! dereferencing like `Box`, and the bytes mean the same at any address, so a region can be
+//! written out and read back.
 //!
 //! ```
 //! use nearest::{Edit, Near, Region, flat};
@@ -25,28 +26,37 @@
 //! b.insts().push(Inst::new(9, [1, 2])).args().push(3);   // `push` returns the new element
 //! b.insts().at(0).args()[1] = 21;                         // plain data is a real slice
 //! b.insts().retain(|inst| inst.op != 2);
-//! b.next().insert(Block::new(1, (), None)).insts().push(Inst::new(4, ()));
-//! assert_eq!(b.next().as_ref().map(|n| n.insts.len()), Some(1));
-//! b.next().set(None);
+//!
+//! // Move. A value that leaves its place can be written anywhere else in the region, in O(1).
+//! let inst = b.insts().remove(0);                                 // like `Vec::remove`
+//! b.next().insert(Block::new(1, (), None)).insts().push(inst);    // the instruction changes block
+//! assert_eq!(b.next().as_ref().map(|n| &n.insts[0].args[..]), Some(&[10, 21, 30][..]));
+//! let tail = b.next().take();                                     // like `Option::take`
+//! drop(tail);
 //!
 //! // Compact. A copy into a new region keeps only what is reachable.
 //! r = Region::new(&*r);
-//! assert_eq!(r.id, 7);
-//! assert_eq!(r.insts.iter().map(|i| (i.op, &i.args[..])).collect::<Vec<_>>(),
-//!            [(1, &[10, 21, 30][..]), (9, &[1, 2, 3][..])]);
+//! assert_eq!((r.id, r.insts.len(), &r.insts[0].args[..]), (7, 1, &[1, 2, 3][..]));
 //! assert!(r.next.is_none());
+//!
+//! // Save and load. Loading checks the bytes.
+//! let bytes = r.to_bytes();
+//! let copy = Region::<Block>::from_bytes(&bytes)?;
+//! assert_eq!(copy.insts[0].op, 9);
+//! // A memory-mapped file, or any 8-aligned slice, is read in place.
+//! let block: &Block = Region::view(&bytes)?;
+//! assert_eq!(block.id, 7);
+//! # Ok::<(), nearest::Invalid>(())
 //! ```
 //!
-//! Enums get a view of their variant, and `replace` hands over the old value, which moves
-//! into the new one instead of being copied:
+//! Enums get a view of their variant, and `replace` returns the old value, like
+//! `mem::replace`; written somewhere else in the region, it moves there:
 //!
 //! ```
 //! use nearest::{Edit, Near, Region, flat};
 //!
 //! #[flat]
 //! enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
-//!
-//! fn inner(e: &Expr) -> &Expr { match e { Expr::Neg(x) => x, e => e } }
 //!
 //! /// `--x` becomes `x`, bottom up.
 //! fn simplify(e: &mut Edit<Expr>) {
@@ -55,8 +65,9 @@
 //!     ExprMut::Neg(x) => simplify(x),
 //!     ExprMut::Add(args) => { simplify(args._0()); simplify(args._1()); }
 //!   }
-//!   if let Expr::Neg(x) = &**e && let Expr::Neg(_) = &**x {
-//!     e.replace(|old| old.map(|e| inner(inner(e))));   // the inner value moves up, O(1)
+//!   if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Neg(y) = x.as_mut() {
+//!     let inner = y.replace(Expr::Lit(0));     // like `mem::replace`: the old value comes back
+//!     e.set(inner);                            // and moves up, O(1)
 //!   }
 //! }
 //!
@@ -69,12 +80,21 @@
 //! }
 //!
 //! let mut r = Region::new(Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2))));
-//! simplify(r.edit());
-//! r.edit().replace(|old| Expr::neg(old));              // wrap: the old value moves, O(1)
-//! assert_eq!(show(&r), "-(1 + -2)");
-//! r.edit().replace(|old| Expr::neg(old));
-//! simplify(r.edit());
-//! assert_eq!(show(&r), "(1 + -2)");
+//! let e = r.edit();
+//! simplify(e);
+//! let old = e.replace(Expr::Lit(0));
+//! e.set(Expr::neg(old));                       // wrap: the old value moves, O(1)
+//! if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
+//!   let a = args._0().replace(Expr::Lit(0));   // swap two children: three moves
+//!   let b = args._1().replace(a);
+//!   args._0().set(b);
+//! }
+//! assert_eq!(show(&r), "-(-2 + 1)");
+//! let e = r.edit();
+//! let old = e.replace(Expr::Lit(0));
+//! e.set(Expr::neg(Expr::neg(old)));
+//! simplify(e);
+//! assert_eq!(show(&r), "-(-2 + 1)");
 //! ```
 //!
 //! # Editing
@@ -89,13 +109,29 @@
 //! | `#[flat]` enum `X` | generated | `as_mut()` (returns `XMut`), `set`, `replace` |
 //! | `Near<T>` | the handle of the `T` | |
 //! | `Near<[T]>` | [`ListEdit<T>`] | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`, `replace` |
-//! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `set`, `replace` |
+//! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `take`, `set` |
 //! | `Near<str>` | [`StrEdit`] | `set`, `replace` |
 //!
 //! Handles dereference to the value they designate, and mutably so for plain data. A handle
 //! borrows its parent handle, so one handle is usable at a time, and no reference into the
-//! buffer outlives a change that may grow it. Edits append: compact with
-//! `Region::new(&*region)`.
+//! buffer outlives a change that may grow it.
+//!
+//! A handle has two lifetimes, `&'a mut Edit<'e, T>`: `'a` borrows the parent handle, `'e` is the
+//! edit, the borrow of the region taken by `Region::edit`. Both can be left out in the usual
+//! case, `fn pass(e: &mut Edit<Expr>)`; a function that returns a handle or an [`Old`] names
+//! them: `fn pop<'e>(list: &mut Edit<'e, Near<[Inst]>>) -> Old<'e, Inst>`.
+//!
+//! `set` assigns; `replace`, [`ListEdit::remove`] and [`OptionEdit::take`] return the value that
+//! left its place as an [`Old`], which can be written into any other place of the region in
+//! O(1). Edits append: compact with `Region::new(&*region)`.
+//!
+//! # Bytes
+//!
+//! [`Region::to_bytes`] returns the compact image: the bytes a deep copy writes, borrowed from the
+//! region when it has not been edited since it was built. [`Region::from_bytes`] copies and
+//! checks bytes; [`Region::view`] checks an 8-aligned slice and reads it in place. Checking
+//! accepts exactly the compact images of valid values, in one pass, without recursion or
+//! panics. The bytes hold native-endian integers and the layout of the target.
 //!
 //! # Safety model
 //!
@@ -103,7 +139,8 @@
 //! - No safe API gives a `&mut T` for a `T` that contains a `Near`; such places are reached
 //!   through handles, which are unsized, so they cannot be swapped or assigned through.
 //! - A region is a tree: builders make fresh targets, `&T` copies, and the only moves are
-//!   [`Old`] (used at most once) and list operations.
+//!   [`Old`] (used at most once) and list operations. Bytes no longer reachable are never
+//!   written again, so an `Old` stays intact for the whole edit, which it keeps borrowed.
 //! - A handle holds a position, not an address, so it stays valid when the buffer grows; real
 //!   references into the buffer borrow the handle.
 //! - A panic leaves every place either unchanged or holding its complete new value.
@@ -117,11 +154,13 @@
 
 extern crate alloc;
 
+mod bytes;
 mod edit;
 mod flat;
 mod near;
 mod region;
 
+pub use bytes::Invalid;
 pub use edit::{ListEdit, Old, OptionEdit, StrEdit};
 pub use flat::{Emit, Flat};
 pub use near::Near;
@@ -134,12 +173,14 @@ pub use near::Near;
 ///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
 ///   named after it in snake case. A parameter for a field written `Near<X>` (with `X` not a
 ///   slice or `str`) takes a builder of `X` and allocates the target;
-/// - the handle, [`Edit<X>`](Edit), with `set` and `replace`, and for structs one method per
-///   field (`_0`, `_1`, .. for tuple fields; `set_` and `replace_` for fields named `set` and
-///   `replace`) returning the field's handle, with the field's visibility;
-/// - for enums with fields, `as_mut` on the handle and the enum `XMut<'a>` it returns: unit
-///   variants stay units, a variant with one field holds that field's handle, and a variant
-///   with several fields holds a handle with a method per field.
+/// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign) and `replace` (assign and return
+///   the old value as an [`Old`]), and for structs one method per field (`_0`, `_1`, .. for
+///   tuple fields; `set_` and `replace_` for fields named `set` and `replace`) returning the
+///   field's handle, with the field's visibility;
+/// - for enums with fields, `as_mut` on the handle and the enum `XMut<'a, 'e>` it returns, all
+///   of whose variants are tuple-like: unit variants stay units, a variant with one field holds
+///   that field's handle, and a variant with several fields holds a handle with a method per
+///   field (and no `set` or `replace`, so the variant cannot change under it).
 ///
 /// Generic type parameters must be [`Flat`]. Unions, `repr(packed)`, enum `repr`s other than
 /// `u8`, explicit discriminants, empty enums and enums of more than 256 variants are rejected.
@@ -162,17 +203,22 @@ pub use near::Near;
 /// )));
 /// if let JsonMut::Obj(fields) = doc.edit().as_mut() {
 ///   fields.at(0).value().set(Json::Null);
-///   fields.at(1).key().set("c");
+///   let key = fields.at(1).key().replace("c");
+///   fields.at(0).key().set(key); // the old key moves
 /// }
 /// let Json::Obj(fields) = &*doc else { unreachable!() };
-/// assert_eq!((&*fields[0].key, &fields[0].value), ("a", &Json::Null));
+/// assert_eq!((&*fields[0].key, &fields[0].value), ("b", &Json::Null));
 /// assert_eq!(fields[1].value, *Region::new(Json::arr((Json::Null, Json::str("x")))));
 /// ```
 pub use nearest_derive::flat;
 pub use region::Region;
 
-/// The handle of a place holding a `T`: `&mut Edit<T>` is what [`Region::edit`], field methods
-/// and [`ListEdit::at`] return.
+/// The handle of a place holding a `T`, during the edit `'e`: `&mut Edit<'e, T>` is what
+/// [`Region::edit`], field methods and [`ListEdit::at`] return.
+///
+/// Both lifetimes can be left out in a function that only takes a handle; one that returns a
+/// handle or an [`Old`] names them, as in
+/// `fn first<'a, 'e>(b: &'a mut Edit<'e, Block>) -> &'a mut Edit<'e, Inst>`.
 ///
 /// For plain data it is `T` itself; for `Near<T>` it is the handle of the target; for lists,
 /// optional pointers and strings it is [`ListEdit`], [`OptionEdit`] and [`StrEdit`]; for
@@ -195,20 +241,21 @@ pub use region::Region;
 /// hit(r.edit());
 /// assert_eq!((r.hits, &r.log[..]), (2, &[1, 2][..]));
 /// ```
-pub type Edit<T> = <T as Flat>::Edit;
+pub type Edit<'e, T> = <T as Flat>::Edit<'e>;
 
 /// Plumbing for the code [`#[flat]`](flat) generates. Not public API.
 #[doc(hidden)]
 pub mod __private {
   pub use crate::{
+    bytes::Check,
     edit::Raw,
     flat::{Buf, Sink, fits, make},
   };
 
   /// Names the handle of a variant with several fields, for `XMut`.
   pub trait Variant<const I: u8> {
-    /// The handle.
-    type Edit: ?Sized;
+    /// The handle, during the edit `'e`.
+    type Edit<'e>: ?Sized;
   }
 }
 

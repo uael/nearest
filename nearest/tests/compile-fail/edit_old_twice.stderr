@@ -1,9 +1,0 @@
-error[E0382]: use of moved value: `old`
-  --> tests/compile-fail/edit_old_twice.rs:13:15
-   |
-11 |   r.edit().replace(|old| {
-   |                     --- move occurs because `old` has type `Old<'_, Expr>`, which does not implement the `Copy` trait
-12 |     let again = old;
-   |                 --- value moved here
-13 |     Expr::add(old, again)
-   |               ^^^ value used here after move

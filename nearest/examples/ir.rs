@@ -2,7 +2,7 @@
 //!
 //! - constant folding rewrites instructions in place, with no new memory;
 //! - dead-code elimination keeps the live instructions of each block, moving them;
-//! - a final pass renames the function and appends a block.
+//! - a final pass renames the function and splits a block, moving its instructions.
 //!
 //! An interpreter checks that every pass keeps the function's result.
 
@@ -169,14 +169,18 @@ fn main() {
     f.byte_len()
   );
 
-  // Rename, and route the exit through a new block that doubles the result.
+  // Rename, and split the exit: its instructions move to a new block, which also doubles the
+  // result; the old exit jumps there.
   let func = f.edit();
   func.name().set("f.opt");
   let blocks = func.blocks();
   let Term::Ret(r) = blocks[1].term else { unreachable!() };
   **blocks.at(1).term() = Term::Jump(2);
-  blocks.push(Block::new([Inst { dst: 9, op: Op::Add(r, r) }], Term::Ret(9)));
+  let insts = blocks.at(1).insts().replace(());
+  let exit = blocks.push(Block::new(insts, Term::Ret(9)));
+  exit.insts().push(Inst { dst: 9, op: Op::Add(r, r) });
   assert_eq!((&*f.name, f.blocks.len(), run(&f)), ("f.opt", 3, 2 * expected));
+  assert_eq!((f.blocks[1].insts.len(), f.blocks[2].insts.len()), (0, 2));
 
   let compact = Region::new(&*f);
   println!(

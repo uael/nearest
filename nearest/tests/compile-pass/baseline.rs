@@ -14,6 +14,9 @@ struct A { x: u64 }
 struct S { maybe: Option<Near<u32>> }
 
 fn take(_: &mut Edit<Expr>) {}
+fn first<'a, 'e>(e: &'a mut Edit<'e, Expr>) -> &'a mut Edit<'e, Expr> {
+  e
+}
 
 fn main() {
   let mut r = Region::new(Expr::neg(Expr::Lit(1)));
@@ -24,17 +27,17 @@ fn main() {
     }
     x.set(Expr::Lit(2));
   }
-  e.replace(|old| Expr::add(old, Expr::Lit(1)));
-  take(e);
+  let old = e.replace(Expr::Lit(0));
+  e.set(Expr::add(old, Expr::Lit(1)));
+  take(first(e));
   let v: &Expr = &**e;
   let _ = matches!(v, Expr::Add(..));
-  let mut stash = None;
-  r.edit().replace(|old| {
-    stash = Some(old.map(|e| e));
-    Expr::Lit(1)
-  });
-  let copy = Region::new(stash.take().unwrap());
+  let old = r.edit().replace(Expr::Lit(1));
+  let copy = Region::new(old);
   r.edit().set(&*copy);
+  let (mut s, mut t) = (Region::new(Expr::Lit(1)), Region::new(Expr::Lit(2)));
+  let old = s.edit().replace(Expr::Lit(0));
+  t.edit().set(Expr::neg(old));
 
   let mut b = Region::new(Block::new(0, [Inst::new(1, [1, 2])], None));
   let insts = b.edit().insts();

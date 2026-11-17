@@ -1,9 +1,0 @@
-error[E0499]: cannot borrow `*e` as mutable more than once at a time
-  --> tests/compile-fail/edit_child_across_parent_replace.rs:13:3
-   |
-12 |   let ExprMut::Neg(x) = e.as_mut() else { return };
-   |                         - first mutable borrow occurs here
-13 |   e.replace(|old| old);
-   |   ^ second mutable borrow occurs here
-14 |   x.set(Expr::Lit(1));
-   |   - first borrow later used here

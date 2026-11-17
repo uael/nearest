@@ -1,15 +1,17 @@
-use alloc::vec::Vec;
-use core::{fmt, marker::PhantomData, ops::Deref, ptr, slice};
+use alloc::borrow::Cow;
+use core::{fmt, marker::PhantomData, ops::Deref, ptr};
 
 use crate::{
-  Edit, Emit, Flat,
-  flat::{Buf, Sink, fits},
+  Edit, Emit, Flat, Invalid,
+  bytes::check,
+  flat::{Buf, MAX, Sink, fits},
 };
 
 /// One buffer holding a `T` at byte 0 and everything it points to.
 ///
 /// Reading is plain `&T` through [`Deref`]; [`Clone`] is one `memcpy`; [`edit`](Self::edit)
-/// changes it in place.
+/// changes it in place; [`to_bytes`](Self::to_bytes) and [`from_bytes`](Self::from_bytes) save
+/// and load it.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -29,7 +31,8 @@ pub struct Region<T> {
 }
 
 impl<T: Flat> Region<T> {
-  /// A new region holding `value`: a value, a copy (`&T`, from any region) or a builder.
+  /// A new region holding `value`: a value, a copy (`&T`, from any region), an `Old` or a
+  /// builder.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -54,7 +57,8 @@ impl<T: Flat> Region<T> {
     Self { buf, _t: PhantomData }
   }
 
-  /// The handle of the root, for edits in place.
+  /// The handle of the root, for edits in place. `'e`, the borrow of the region, is the edit:
+  /// handles and moved values ([`Old`](crate::Old)) of the edit live at most that long.
   ///
   /// Every field has a method of the same name that returns its handle; plain data is a real
   /// `&mut`.
@@ -73,13 +77,79 @@ impl<T: Flat> Region<T> {
   /// b.name().set("entry");
   /// assert_eq!((r.id, &r.insts[..], &*r.name), (7, &[1, 3, 4][..], "entry"));
   /// ```
-  pub fn edit(&mut self) -> &mut Edit<T> {
+  pub fn edit(&mut self) -> &mut Edit<'_, T> {
     fits::<T>();
-    // SAFETY: the root is a `T` at byte 0, and the handle borrows the region.
-    unsafe { T::edit(&raw mut self.buf, 0) }
+    self.buf.compact = false;
+    self.buf.me = &raw mut self.buf;
+    // SAFETY: the root is a `T` at byte 0, the region is borrowed for the edit, and every
+    // access of the edit goes through `me` (I8).
+    unsafe { T::edit(self.buf.me, 0) }
   }
 
-  /// A compact, fully initialized image of the region, for [`from_bytes`](Self::from_bytes).
+  /// The compact image of the region: borrowed if the region is compact (it was not edited
+  /// since it was built or loaded), otherwise a compact copy.
+  ///
+  /// ```
+  /// use std::borrow::Cow;
+  ///
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Msg { id: u8, body: Near<str> }
+  ///
+  /// let mut r = Region::new(Msg::new(1, "hi"));
+  /// assert!(matches!(r.to_bytes(), Cow::Borrowed(_)));
+  /// r.edit().body().set("hello");
+  /// let bytes = r.to_bytes();
+  /// assert!(matches!(bytes, Cow::Owned(_)) && bytes.len() < r.byte_len());
+  /// assert_eq!(&*Region::<Msg>::from_bytes(&bytes)?.body, "hello");
+  /// # Ok::<(), nearest::Invalid>(())
+  /// ```
+  #[must_use]
+  pub fn to_bytes(&self) -> Cow<'_, [u8]> {
+    if self.buf.compact {
+      // SAFETY: a compact buffer is initialized.
+      Cow::Borrowed(unsafe { self.buf.bytes() })
+    } else {
+      let copy = Self::new(&**self);
+      // SAFETY: as above; a deep copy is compact.
+      Cow::Owned(unsafe { copy.buf.bytes() }.to_vec())
+    }
+  }
+
+  /// The region whose image is `bytes`, which may have any alignment. The bytes are copied,
+  /// then checked: they must be exactly what [`to_bytes`](Self::to_bytes) writes for a `T`.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Msg { id: u8, body: Near<str> }
+  ///
+  /// let bytes = Region::new(Msg::new(1, "hi")).to_bytes().into_owned();
+  /// let back = Region::<Msg>::from_bytes(&bytes)?;
+  /// assert_eq!((back.id, &*back.body), (1, "hi"));
+  /// assert!(Region::<Msg>::from_bytes(&bytes[1..]).is_err());
+  /// # Ok::<(), nearest::Invalid>(())
+  /// ```
+  ///
+  /// # Errors
+  /// [`Invalid`] if the bytes are not the compact image of a valid `T`.
+  pub fn from_bytes(bytes: &[u8]) -> Result<Self, Invalid> {
+    if bytes.len() > MAX {
+      return Err(Invalid(0));
+    }
+    let mut buf = Buf::new();
+    let at = buf.alloc(bytes.len(), 8);
+    // SAFETY: `bytes.len()` bytes were allocated at `at`.
+    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buf.ptr().add(at), bytes.len()) };
+    // SAFETY: every byte was just written.
+    check::<T>(unsafe { buf.bytes() })?;
+    Ok(Self { buf, _t: PhantomData })
+  }
+
+  /// The value whose image is `bytes`, read in place, for example from a memory-mapped file.
+  /// The slice must be 8-aligned; the bytes are checked as by [`from_bytes`](Self::from_bytes).
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -88,39 +158,23 @@ impl<T: Flat> Region<T> {
   /// struct Msg { id: u8, body: Near<str> }
   ///
   /// let r = Region::new(Msg::new(1, "hi"));
-  /// let bytes = r.to_bytes();
-  /// // SAFETY: the bytes come from `to_bytes` of a `Region<Msg>` in this program.
-  /// let back = unsafe { Region::<Msg>::from_bytes(&bytes) };
-  /// assert_eq!(&*back.body, "hi");
-  /// ```
-  #[must_use]
-  pub fn to_bytes(&self) -> Vec<u8> {
-    let copy = Self::new(&**self);
-    // SAFETY: the bytes of a new region are initialized: zero-filled, then written field by
-    // field.
-    unsafe { slice::from_raw_parts(copy.buf.base(), copy.buf.len()).to_vec() }
-  }
-
-  /// The region whose image is `bytes`.
-  ///
-  /// ```
-  /// use nearest::Region;
-  ///
-  /// let bytes = Region::new(5u64).to_bytes();
-  /// // SAFETY: the bytes come from `to_bytes` of a `Region<u64>` in this program.
-  /// assert_eq!(*unsafe { Region::<u64>::from_bytes(&bytes) }, 5);
+  /// let bytes = r.to_bytes(); // the region's own buffer, which is 8-aligned
+  /// let msg: &Msg = Region::view(&bytes)?;
+  /// assert_eq!(&*msg.body, "hi");
+  /// # Ok::<(), nearest::Invalid>(())
   /// ```
   ///
-  /// # Safety
-  /// `bytes` came from [`to_bytes`](Self::to_bytes) of a `Region<T>`, for the same `T` on a
-  /// target with the same layout.
-  #[must_use]
-  pub unsafe fn from_bytes(bytes: &[u8]) -> Self {
-    let mut buf = Buf::new();
-    let at = buf.alloc(bytes.len(), 8);
-    // SAFETY: `bytes.len()` bytes were allocated at `at`.
-    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buf.ptr().add(at), bytes.len()) };
-    Self { buf, _t: PhantomData }
+  /// # Errors
+  /// [`Invalid`] if the slice is not 8-aligned or the bytes are not the compact image of a
+  /// valid `T`.
+  pub fn view(bytes: &[u8]) -> Result<&T, Invalid> {
+    if !bytes.as_ptr().addr().is_multiple_of(8) {
+      return Err(Invalid(0));
+    }
+    check::<T>(bytes)?;
+    // SAFETY: the bytes are 8-aligned and the image of a valid `T`, whose pointers all aim
+    // inside them.
+    Ok(unsafe { &*bytes.as_ptr().cast::<T>() })
   }
 
   /// Bytes in use, including those no longer reachable after edits.
@@ -163,3 +217,8 @@ impl<T: PartialEq> PartialEq for Region<T> {
 }
 
 impl<T: Eq> Eq for Region<T> {}
+
+const _: () = {
+  const fn send_sync<T: Send + Sync>() {}
+  send_sync::<Region<u64>>();
+};

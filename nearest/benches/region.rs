@@ -43,7 +43,9 @@ fn func(blocks: u32, insts: u32) -> Region<Func> {
 fn expr(depth: u32) -> Region<Expr> {
   let mut r = Region::new(Expr::Lit(1));
   for i in 0..depth {
-    r.edit().replace(|old| Expr::add(old, Expr::Lit(i64::from(i))));
+    let e = r.edit();
+    let old = e.replace(Expr::Lit(0));
+    e.set(Expr::add(old, Expr::Lit(i64::from(i))));
   }
   Region::new(&*r)
 }
@@ -98,7 +100,7 @@ fn clone_and_compact(c: &mut Criterion) {
   g.bench_function("compact", |b| b.iter(|| Region::new(&**black_box(&f))));
   reverse(&mut f);
   g.bench_function("compact after edit", |b| b.iter(|| Region::new(&**black_box(&f))));
-  g.bench_function("to_bytes", |b| b.iter(|| black_box(&f).to_bytes()));
+  g.bench_function("to_bytes (edited: compacts)", |b| b.iter(|| black_box(&f).to_bytes()));
   g.finish();
 }
 
@@ -141,6 +143,19 @@ fn edit(c: &mut Criterion) {
       criterion::BatchSize::LargeInput,
     );
   });
+  g.bench_function("structural: move 100 elements between two lists", |b| {
+    b.iter_batched_ref(
+      || func(2, 100),
+      |f| {
+        let blocks = f.edit().blocks();
+        for _ in 0..100 {
+          let inst = blocks.at(0).insts().remove(0);
+          blocks.at(1).insts().push(inst);
+        }
+      },
+      criterion::BatchSize::SmallInput,
+    );
+  });
   g.bench_function("structural: 100 pushes", |b| {
     b.iter_batched_ref(
       || Region::new(Inst::new(0, ())),
@@ -156,8 +171,10 @@ fn edit(c: &mut Criterion) {
     b.iter_batched_ref(
       || Region::new(Expr::Lit(0)),
       |r| {
+        let e = r.edit();
         for i in 0..100 {
-          r.edit().replace(|old| Expr::add(old, Expr::Lit(i)));
+          let old = e.replace(Expr::Lit(0));
+          e.set(Expr::add(old, Expr::Lit(i)));
         }
       },
       criterion::BatchSize::SmallInput,
@@ -166,5 +183,21 @@ fn edit(c: &mut Criterion) {
   g.finish();
 }
 
-criterion_group!(benches, build, read, clone_and_compact, edit);
+fn bytes(c: &mut Criterion) {
+  let f = func(100, 100);
+  let image = f.to_bytes().into_owned();
+  let mut g = c.benchmark_group("bytes");
+  g.bench_function("to_bytes (compact: borrowed)", |b| b.iter(|| black_box(&f).to_bytes().len()));
+  g.bench_function("from_bytes 100 blocks x 100 insts", |b| {
+    b.iter(|| Region::<Func>::from_bytes(black_box(&image)).unwrap());
+  });
+  // The region's own buffer is 8-aligned.
+  let aligned = f.to_bytes();
+  g.bench_function("view 100 blocks x 100 insts", |b| {
+    b.iter(|| Region::<Func>::view(black_box(&aligned)).unwrap().blocks.len());
+  });
+  g.finish();
+}
+
+criterion_group!(benches, build, read, clone_and_compact, edit, bytes);
 criterion_main!(benches);

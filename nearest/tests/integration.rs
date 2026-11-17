@@ -1,6 +1,7 @@
 #![expect(clippy::many_single_char_names, reason = "short names for regions and models")]
 
 use std::{
+  borrow::Cow,
   collections::hash_map::DefaultHasher,
   hash::{Hash, Hasher},
   num::NonZero,
@@ -625,12 +626,14 @@ fn list_handles() {
   assert!(
     b.insts[2..].iter().enumerate().all(|(i, x)| x.op as usize == i && x.args.len() == i % 7)
   );
-  // `set` and `replace` act on the pointer.
+  // `set` and `replace` act on the pointer; a whole list moves.
   b.edit().insts().set(());
   assert!(b.insts.is_empty());
   b.edit().insts().set([Inst::new(1, [1])]);
-  b.edit().insts().replace(|old| (Inst::new(0, ()), old.map(|l| &l[0])));
-  assert_eq!(ops(&b), [0, 1]);
+  let e = b.edit();
+  let old = e.insts().replace((Inst::new(0, ()),));
+  e.next().insert(Block::new(9, old, None));
+  assert_eq!((ops(&b), ops(b.next.as_ref().unwrap())), (vec![0], vec![1]));
   // Lists of lists, of pointers and of strings.
   let mut l = Region::new(Lst::<Near<[u8]>>::new(([1u8], ())));
   l.edit().items().at(1).push(2);
@@ -641,8 +644,10 @@ fn list_handles() {
     [vec![0], vec![1], vec![2], vec![3, 4]]
   );
   let mut p = Region::new(Lst::<Near<Expr>>::new([Near::new(Expr::Lit(1))]));
-  p.edit().items().push(Near::new(Expr::Lit(2))).set(Expr::Lit(3));
-  p.edit().items().at(0).replace(Expr::neg);
+  let items = p.edit().items();
+  items.push(Near::new(Expr::Lit(2))).set(Expr::Lit(3));
+  let one = items.at(0).replace(Expr::Lit(0));
+  items.at(0).set(Expr::neg(one));
   assert_eq!(p.items.iter().map(|e| eval(e)).collect::<Vec<_>>(), [-1, 3]);
   let mut s = Region::new(Lst::<Near<str>>::new(["b"]));
   s.edit().items().insert(0, "a");
@@ -653,10 +658,12 @@ fn list_handles() {
 #[test]
 fn list_index_panics() {
   let mut r = Region::new(Near::from_iter([1u32, 2]));
-  assert!(catch_unwind(AssertUnwindSafe(|| *r.edit().at(2) = 0)).is_err());
-  assert!(catch_unwind(AssertUnwindSafe(|| r.edit().remove(2))).is_err());
-  assert!(catch_unwind(AssertUnwindSafe(|| *r.edit().insert(3, 0) = 0)).is_err());
-  assert!(catch_unwind(AssertUnwindSafe(|| r.edit().swap(0, 2))).is_err());
+  fails(|| *r.edit().at(2) = 0);
+  fails(|| {
+    let _ = r.edit().remove(2);
+  });
+  fails(|| *r.edit().insert(3, 0) = 0);
+  fails(|| r.edit().swap(0, 2));
   assert_eq!((r[..].to_vec(), r.byte_len()), (vec![1, 2], 4 + 8 + 8));
 }
 
@@ -664,6 +671,7 @@ fn list_index_panics() {
 fn option_handles() {
   let mut b = Region::new(Block::new(0, (), None));
   assert!(b.edit().next().as_mut().is_none());
+  assert!(b.edit().next().take().is_none());
   let next = b.edit().next();
   next.insert(Block::new(1, (), None)).insts().push(Inst::new(1, ()));
   assert!(next.is_some()); // reads as `Option<Near<Block>>`
@@ -677,10 +685,14 @@ fn option_handles() {
   b.edit().next().set(None);
   assert!(b.next.is_none());
   b.edit().next().set(Near::new(Block::new(5, (), None)));
-  // `replace`: push a block in front, the old one moves.
-  b.edit().next().replace(|old| Near::new(Block::new(6, (), old)));
+  // `take`: push a block in front, the old one moves; `take` allocates nothing.
+  let e = b.edit();
+  let before = e.next().as_mut().map(|n| n.id);
+  let old = e.next().take().unwrap();
+  assert!(e.next().is_none());
+  e.next().insert(Block::new(6, (), Near::new(old)));
   let n = b.next.as_ref().unwrap();
-  assert_eq!((n.id, n.next.as_ref().unwrap().id), (6, 5));
+  assert_eq!((before, n.id, n.next.as_ref().unwrap().id), (Some(5), 6, 5));
   // Optional pointers to plain data are `&mut T`.
   let mut o = Region::new(Pair::new(0u8, None::<Near<u64>>));
   *o.edit().second().insert(1) += 1;
@@ -688,7 +700,7 @@ fn option_handles() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Replacing
+// Moving
 
 #[test]
 fn set_and_replace() {
@@ -699,86 +711,124 @@ fn set_and_replace() {
   assert_eq!((f.entry.id, ops(&f.entry)), (5, vec![1, 2]));
   f.edit().set(&*other);
   assert_eq!(*f, *other);
-  // `replace` on a struct: the old value is moved, field by field through `map`.
-  f.edit().entry().replace(|old| Block::new(7, old.map(|b| &b.insts), None));
-  assert_eq!((f.entry.id, args(&f.entry)), (7, vec![vec![10, 20, 30], vec![]]));
-  f.edit().name().replace(|old| old); // identity
-  assert_eq!(&*f.name, "main");
+  // `set` allocates nothing for the old value.
+  let len = f.byte_len();
+  *f.edit().entry().id() = 1;
+  f.edit().entry().next().set(None);
+  f.edit().flag().clone_from(&false);
+  assert_eq!(f.byte_len(), len);
+  // `replace` returns the old value; it moves with everything it points to.
+  let e = f.edit();
+  let old = e.entry().replace(Block::new(7, (), None));
+  e.entry().next().insert(old);
+  let _ = e.name().replace("renamed");
+  e.entry().insts().push(Inst::new(9, ()));
+  let len = f.byte_len();
+  let e = f.edit();
+  let n = e.entry().next().as_mut().unwrap().insts().at(0).args().replace(());
+  e.entry().insts().at(0).args().set(n);
+  assert!(f.byte_len() <= len + 4 + 8, "moves copy no elements");
+  let entry = &f.entry;
+  assert_eq!(
+    (&*f.name, entry.id, ops(entry), args(entry)),
+    ("renamed", 7, vec![9], vec![vec![10, 20, 30]])
+  );
+  assert_eq!(args(entry.next.as_ref().unwrap()), [vec![], vec![]]);
 }
 
 #[test]
-fn wrap_hoist_and_moves() {
-  fn inner(e: &Expr) -> &Expr {
-    match e {
-      Expr::Neg(x) => x,
-      e => e,
-    }
+fn moves_in_a_tree() {
+  let mut r = Region::new(Expr::add(Expr::neg(Expr::neg(Expr::Lit(3))), Expr::Lit(4)));
+  let e = r.edit();
+  // Wrap, like `mem::replace`.
+  let old = e.replace(Expr::Lit(0));
+  e.set(Expr::neg(old));
+  assert_eq!(show(e), "-(--3 + 4)");
+  // Hoist: a child takes the place of its parent.
+  if let ExprMut::Neg(x) = e.as_mut() {
+    let inner = x.replace(Expr::Lit(0));
+    e.set(inner);
   }
-  let mut e = Region::new(Expr::add(Expr::Lit(2), Expr::Lit(5)));
-  // x -> -x: the old value moves under the new node.
-  let before = e.byte_len();
-  e.edit().replace(Expr::neg);
-  assert_eq!(show(&e), "-(2 + 5)");
-  assert!(e.byte_len() - before <= 3 * size_of::<Expr>() + 8); // no copy of the children
-  // -x -> x: the child moves up.
-  e.edit().replace(|old| old.map(inner));
-  assert_eq!(show(&e), "(2 + 5)");
-  // (a + b) -> (b + -a), deep inside: children trade places, nothing is copied.
-  let mut e = Region::new(Expr::neg(Expr::add(Expr::Lit(2), Expr::Lit(5))));
-  let before = e.byte_len();
-  let ExprMut::Neg(x) = e.edit().as_mut() else { unreachable!() };
-  x.replace(|old| {
-    let b = old.map(|e| match e {
-      Expr::Add(_, b) => &**b,
-      e => e,
-    });
-    Expr::add(b, Expr::Lit(0))
-  });
-  assert_eq!(show(&e), "-(5 + 0)");
-  assert!(e.byte_len() - before <= 4 * size_of::<Expr>() + 8);
+  assert_eq!(show(e), "(--3 + 4)");
+  // Swap two children: three moves.
+  let before = r.byte_len();
+  let e = r.edit();
+  if let ExprMut::Add(args) = e.as_mut() {
+    let a = args._0().replace(Expr::Lit(0));
+    let b = args._1().replace(a);
+    args._0().set(b);
+  }
+  assert_eq!(show(e), "(4 + --3)");
+  // Rotate with two parts of the old value: (a + b) -> (b + (a + 9)).
+  if let ExprMut::Add(args) = e.as_mut() {
+    let a = args._0().replace(Expr::Lit(0));
+    let b = args._1().replace(Expr::Lit(0));
+    e.set(Expr::add(b, Expr::add(a, Expr::Lit(9))));
+  }
+  assert_eq!(show(&r), "(--3 + (4 + 9))");
+  assert!(r.byte_len() - before <= 12 * size_of::<Expr>(), "moves, no deep copies");
   // Many wraps: the buffer reallocates under the moves.
-  let mut r = Region::new(Expr::Lit(1));
+  let e = r.edit();
   for i in 0..200 {
-    r.edit().replace(|old| Expr::add(old, Expr::Lit(i)));
+    let old = e.replace(Expr::Lit(0));
+    e.set(Expr::add(old, Expr::Lit(i)));
   }
-  assert_eq!(eval(&r), 1 + (0..200).sum::<i64>());
+  assert_eq!(eval(&r), 3 + 13 + (0..200).sum::<i64>());
   let copy = Region::new(&*r);
-  assert_eq!(eval(&copy), eval(&r));
+  assert_eq!(show(&copy), show(&r));
   assert!(copy.byte_len() < r.byte_len());
 }
 
+/// Helper functions name the edit's lifetime to return handles and moved values.
+fn first<'a, 'e>(b: &'a mut Edit<'e, Block>) -> &'a mut Edit<'e, Inst> {
+  b.insts().at(0)
+}
+
+fn pop<'e>(list: &mut Edit<'e, Near<[Inst]>>) -> nearest::Old<'e, Inst> {
+  list.remove(0)
+}
+
 #[test]
-fn old_elsewhere_is_a_copy() {
-  static FIVE: Expr = Expr::Lit(5);
-  let mut a = Region::new(Expr::neg(Expr::Lit(7)));
-  let mut b = Region::new(Expr::Lit(0));
-  // A part that is not inside the old value is copied.
-  a.edit().replace(|old| Expr::add(old.map(|_| &FIVE), Expr::Lit(1)));
-  assert_eq!(show(&a), "(5 + 1)");
-  // An `Old` taken out of its closure keeps its region borrowed; elsewhere it is a copy.
-  let mut stash = None;
-  a.edit().replace(|old| {
-    stash = Some(old.map(|e| match e {
-      Expr::Add(l, _) => &**l,
-      e => e,
-    }));
-    Expr::neg(Expr::Lit(9))
-  });
-  b.edit().replace(|old| Expr::add(old, stash.take().unwrap()));
-  assert_eq!((show(&a), show(&b)), ("-9".into(), "(0 + 5)".into()));
-  // The whole old value, while the other replacement is still running.
-  a.edit().replace(|old_a| {
-    b.edit().replace(|old_b| Expr::add(old_b, old_a));
-    Expr::Lit(2)
-  });
-  assert_eq!((show(&a), show(&b)), ("2".into(), "((0 + 5) + -9)".into()));
-  // Into a new region.
-  let mut copy = None;
-  b.edit().replace(|old| {
-    copy = Some(Region::new(old));
-    Expr::Lit(3)
-  });
-  assert_eq!((show(&b), show(&copy.unwrap())), ("3".into(), "((0 + 5) + -9)".into()));
+fn moves_between_lists_and_regions() {
+  let mut f = func();
+  let b = f.edit().entry();
+  // An instruction moves to the next block, with its arguments.
+  let inst = pop(b.insts());
+  b.next().as_mut().unwrap().insts().push(inst);
+  assert_eq!(ops(b), [2]);
+  assert_eq!(args(b.next.as_ref().unwrap()), [vec![0, 1, 2, 3, 4], vec![10, 20, 30]]);
+  // A whole list moves, and a removed element comes back elsewhere.
+  let list = b.next().as_mut().unwrap().insts().at(1).args().replace(());
+  first(b).args().set(list);
+  let inst = b.next().as_mut().unwrap().insts().remove(0);
+  b.insts().insert(0, inst).args().push(5);
+  assert_eq!(args(b), [vec![0, 1, 2, 3, 4, 5], vec![10, 20, 30]]);
+  assert_eq!(args(b.next.as_ref().unwrap()), [vec![]]);
+  // A string moves.
+  let _ = f.edit().name().replace("x");
+  let e = f.edit();
+  let name = e.name().replace("y");
+  e.entry().next().as_mut().unwrap().insts().at(0).args().push(1);
+  e.name().set(name);
+  assert_eq!(&*f.name, "x");
+
+  // Into another region, and into a new one, a moved value is a copy.
+  let (mut a, mut c) = (func(), func());
+  let inst = a.edit().entry().insts().remove(0);
+  c.edit().entry().insts().push(inst);
+  assert_eq!((ops(&a.entry), ops(&c.entry)), (vec![2], vec![1, 2, 1]));
+  let next = c.edit().entry().next().take().unwrap();
+  let d = Region::new(next);
+  assert_eq!((d.id, ops(&d)), (1, vec![3]));
+  assert!(c.entry.next.is_none());
+  // Two edits at once, of two regions.
+  let (ea, ec) = (a.edit(), c.edit());
+  let x = ea.entry().insts().remove(0);
+  let y = ec.entry().insts().remove(0);
+  ea.entry().insts().push(y);
+  ec.entry().insts().push(x);
+  assert_eq!((ops(&a.entry), ops(&c.entry)), (vec![1], vec![2, 1, 2]));
+  assert_eq!(*Region::new(&*a), *a);
 }
 
 /// Anything `impl Emit` can be passed on generically.
@@ -790,7 +840,9 @@ fn wrap_twice(e: impl Emit<Expr>) -> impl Emit<Expr> {
 fn builders_compose() {
   let mut r = Region::new(wrap_twice(Expr::Lit(4)));
   assert_eq!(show(&r), "--4");
-  r.edit().replace(wrap_twice);
+  let e = r.edit();
+  let old = e.replace(Expr::Lit(0));
+  e.set(wrap_twice(old));
   assert_eq!(show(&r), "----4");
 }
 
@@ -814,23 +866,35 @@ fn fails(f: impl FnOnce()) {
 #[test]
 fn a_panic_leaves_the_old_value() {
   let mut r = Region::new(Expr::neg(Expr::Lit(7)));
-  fails(|| r.edit().replace(|old| Expr::add(old, Boom)));
-  assert_eq!(show(&r), "-7");
-  fails(|| r.edit().replace(|_| -> &'static Expr { panic!() }));
-  assert_eq!(show(&r), "-7");
-  fails(|| r.edit().replace(|old| Expr::add(Expr::Lit(1), old.map(|_| -> &Expr { panic!() }))));
-  assert_eq!(show(&r), "-7");
-  fails(|| r.edit().set(Expr::add(Expr::Lit(1), Boom)));
-  assert_eq!(show(&r), "-7");
-  let ExprMut::Neg(x) = r.edit().as_mut() else { unreachable!() };
+  let e = r.edit();
+  fails(|| e.set(Expr::add(Expr::Lit(1), Boom)));
+  assert_eq!(show(e), "-7");
+  fails(|| {
+    let _ = e.replace(Expr::add(Expr::Lit(1), Boom));
+  });
+  assert_eq!(show(e), "-7");
+  // A moved value already written into the new one: the old one comes back.
+  let ExprMut::Neg(x) = e.as_mut() else { unreachable!() };
+  let seven = x.replace(Expr::Lit(1));
+  fails(|| e.set(Expr::add(seven, Expr::add(Expr::Lit(2), Boom))));
+  assert_eq!(show(e), "-1");
+  let ExprMut::Neg(x) = e.as_mut() else { unreachable!() };
   x.set(Expr::Lit(8));
   assert_eq!(show(&r), "-8");
 
   let mut f = func();
-  fails(|| f.edit().name().set(Boom));
-  fails(|| f.edit().entry().next().set(Near::new(Block::new(1, (), Boom))));
+  let e = f.edit();
+  fails(|| e.name().set(Boom));
   fails(|| {
-    f.edit().entry().next().insert(Block::new(1, (Inst::new(0, ()), Boom), None));
+    let _ = e.name().replace(Boom);
+  });
+  fails(|| e.entry().next().set(Near::new(Block::new(1, (), Boom))));
+  fails(|| {
+    e.entry().next().insert(Block::new(1, (Inst::new(0, ()), Boom), None));
+  });
+  fails(|| e.entry().insts().at(0).args().set([Boom]));
+  fails(|| {
+    let _ = e.entry().replace(Block::new(1, (), Boom));
   });
   assert_eq!(*f, *func());
 }
@@ -882,29 +946,339 @@ fn the_size_limit_leaves_a_valid_region() {
   let mut r = Region::new(Lst::new([1u64]));
   let len = r.byte_len();
   fails(|| r.edit().items().set(Near::from_iter(std::iter::repeat_n(0u64, usize::MAX / 16))));
-  assert!(r.byte_len() <= len + 8); // only the slot the old value moved to
+  assert_eq!(r.byte_len(), len);
   assert_eq!(r.items[..], [1]);
 }
 
 // ---------------------------------------------------------------------------------------------
-// Bytes and copies
+// Bytes
+
+/// Bytes at an 8-aligned address, as a memory map would give.
+fn aligned(bytes: &[u8]) -> Vec<u64> {
+  let mut words = vec![0u64; bytes.len().div_ceil(8)];
+  for (w, c) in words.iter_mut().zip(bytes.chunks(8)) {
+    let mut word = [0; 8];
+    word[..c.len()].copy_from_slice(c);
+    *w = u64::from_ne_bytes(word);
+  }
+  words
+}
+
+/// `Region::view` of `bytes`, copied to an 8-aligned address.
+fn view<T: Flat, R>(bytes: &[u8], f: impl FnOnce(&T) -> R) -> Result<R, nearest::Invalid> {
+  let words = aligned(bytes);
+  // SAFETY: `words` holds at least `bytes.len()` initialized bytes.
+  let slice = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), bytes.len()) };
+  Region::<T>::view(slice).map(f)
+}
+
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Rec {
+  flag: bool,
+  letter: char,
+  count: NonZero<u16>,
+  color: Color,
+  name: Near<str>,
+  kids: Near<[Rec]>,
+  expr: Option<Near<Expr>>,
+  wide: Near<[u64]>,
+}
+
+fn rec() -> Region<Rec> {
+  let leaf = |c: char| Rec::new(false, c, NonZero::new(1).unwrap(), Color::Red, "", (), None, ());
+  Region::new(Rec::new(
+    true,
+    'é',
+    NonZero::new(300).unwrap(),
+    Color::Blue,
+    "root",
+    (
+      leaf('a'),
+      Rec::new(
+        true,
+        'b',
+        NonZero::new(2).unwrap(),
+        Color::Green,
+        "kid",
+        [leaf('c')],
+        Near::new(Expr::Lit(5)),
+        [7],
+      ),
+    ),
+    Near::new(Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2)))),
+    [1, 2],
+  ))
+}
 
 #[test]
 fn bytes_round_trip() {
-  let mut r = Region::<[Pad; 2]>::new([Pad { a: 1, b: 2 }, Pad { a: 3, b: 4 }]);
-  r.edit()[0] = Pad { a: 9, b: 9 }; // may leave padding uninitialized in the buffer
-  let bytes = r.to_bytes();
-  assert!(bytes.iter().map(|&b| u32::from(b)).sum::<u32>() > 0); // every byte is initialized
-  // SAFETY: from `to_bytes` of the same type.
-  let back = unsafe { Region::<[Pad; 2]>::from_bytes(&bytes) };
-  assert_eq!(*back, [Pad { a: 9, b: 9 }, Pad { a: 3, b: 4 }]);
+  let mut r = rec();
+  let image = r.to_bytes().into_owned();
+  assert!(matches!(r.to_bytes(), Cow::Borrowed(_)));
+  assert_eq!(image.len(), r.byte_len());
+  assert_eq!(view::<Rec, _>(&image, |v| format!("{v:?}")), Ok(format!("{:?}", *r)));
+  // In place, from the region's own (8-aligned) buffer.
+  assert_eq!(Region::<Rec>::view(&r.to_bytes()).map(|v| v.letter), Ok('é'));
+  // Any alignment of the input.
+  let mut shifted = vec![0u8];
+  shifted.extend_from_slice(&image);
+  let back = Region::<Rec>::from_bytes(&shifted[1..]).unwrap();
+  assert_eq!(*back, *r);
+  assert!(matches!(back.to_bytes(), Cow::Borrowed(b) if *b == *image));
+  // `view` needs an 8-aligned slice.
+  let words = aligned(&shifted);
+  // SAFETY: `words` holds `shifted.len()` initialized bytes.
+  let misaligned =
+    unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), shifted.len()) };
+  assert!(Region::<Rec>::view(&misaligned[1..]).is_err());
+  // An edited region is compacted on the way out.
+  let e = r.edit();
+  let kid = e.kids().remove(0);
+  e.kids().at(0).kids().push(kid);
+  e.wide().push(3);
+  e.name().set("edited");
+  let edited = r.to_bytes();
+  assert!(matches!(edited, Cow::Owned(_)) && edited.len() < r.byte_len());
+  let mut back = Region::<Rec>::from_bytes(&edited).unwrap();
+  assert_eq!(*back, *r);
+  assert_eq!(&*back.to_bytes(), &*edited);
+  // A loaded region is editable.
+  back.edit().kids().at(0).kids().at(1).wide().push(5);
+  assert_eq!(back.kids[0].kids[1].wide[..], [5]);
+  // Padding is not part of the value.
+  let mut p = Region::<[Pad; 2]>::new([Pad { a: 1, b: 2 }, Pad { a: 3, b: 4 }]);
+  p.edit()[0] = Pad { a: 9, b: 9 };
+  let bytes = p.to_bytes();
+  assert_eq!(
+    *Region::<[Pad; 2]>::from_bytes(&bytes).unwrap(),
+    [Pad { a: 9, b: 9 }, Pad { a: 3, b: 4 }]
+  );
   let f = func();
-  let bytes = f.to_bytes();
-  assert_eq!(bytes.len(), Region::new(&*f).byte_len());
-  // SAFETY: from `to_bytes` of the same type.
-  let back = unsafe { Region::<Func>::from_bytes(&bytes) };
-  assert_eq!(*back, *f);
-  assert_eq!(back.to_bytes(), bytes);
+  assert_eq!(*Region::<Func>::from_bytes(&f.to_bytes()).unwrap(), *f);
+}
+
+#[test]
+fn builders_write_the_compact_image() {
+  fn same<T: Flat>(r: &Region<T>) {
+    let image = r.to_bytes();
+    assert!(matches!(image, Cow::Borrowed(_)));
+    assert_eq!(*image, *Region::new(&**r).to_bytes());
+    assert!(Region::<T>::from_bytes(&image).is_ok());
+  }
+  same(&func());
+  same(&rec());
+  same(&Region::new(Stmt::block(
+    (Stmt::Nop, Stmt::r#let("x", Expr::Lit(1)), Stmt::r#return(None)),
+    1,
+  )));
+  same(&Region::new(Tree::node(Tree::Leaf(1u16), Tree::node(Tree::leaf(2), Tree::Leaf(3)))));
+  same(&Region::new(Aligned::new([1u8], [2u64, 3], "abc", [4u16])));
+  same(&Region::new(Arr::<2>::new([1, 2], [[3, 4], [5, 6]])));
+  same(&Region::new(Chain::link(1, Chain::link(2, Chain::End))));
+  same(&Region::new(Lst::<Near<Expr>>::new(Near::from_iter(
+    (0..5).map(|i| Near::new(Expr::Lit(i))),
+  ))));
+  same(&Region::new(Prims::new(
+    1u8,
+    2u16,
+    3u32,
+    4u64,
+    5i8,
+    6i16,
+    7i32,
+    8i64,
+    9.0f32,
+    10.0f64,
+    true,
+    'x',
+    [4, 5, 6],
+    NonZero::new(1).unwrap(),
+    NonZero::new(2).unwrap(),
+  )));
+  // A list whose iterator lied about its length is not compact; its spare room is used.
+  for (n, hint) in [(3, 1000), (40, 3)] {
+    let mut r = Region::new(Inst::new(0, Near::from_iter(Liar { n, hint })));
+    assert!(matches!(r.to_bytes(), Cow::Owned(_)));
+    assert!(Region::<Inst>::from_bytes(&r.to_bytes()).is_ok());
+    let len = r.byte_len();
+    r.edit().args().push(7);
+    if hint > n as usize {
+      assert_eq!(r.byte_len(), len, "the spare room takes the element");
+    }
+  }
+}
+
+#[test]
+fn small_corruptions_are_rejected_or_harmless() {
+  let image = rec().to_bytes().into_owned();
+  let (mut accepted, mut rejected) = (0, 0);
+  let mut try_one =
+    |bytes: &[u8]| match view::<Rec, _>(bytes, |v| (format!("{v:?}"), Region::new(v))) {
+      // What is accepted is walked in full and is exactly the image of its value.
+      Ok((shown, again)) => {
+        assert_eq!((format!("{:?}", *again), again.byte_len()), (shown, bytes.len()));
+        accepted += 1;
+      }
+      Err(_) => rejected += 1,
+    };
+  let step = if cfg!(miri) { 19 } else { 1 };
+  for i in (0..image.len()).step_by(step) {
+    for v in [0u8, 1, 2, 4, 8, 0x7f, 0x80, 0xff, image[i].wrapping_add(1), image[i] ^ 0x10] {
+      let mut bytes = image.clone();
+      bytes[i] = v;
+      try_one(&bytes);
+    }
+  }
+  for cut in (0..image.len()).step_by(step) {
+    try_one(&image[..cut]);
+  }
+  let mut longer = image.clone();
+  longer.extend_from_slice(&[0; 8]);
+  try_one(&longer);
+  assert!(accepted > 0 && rejected > accepted, "{accepted} accepted, {rejected} rejected");
+}
+
+#[test]
+fn malformed_images_are_rejected() {
+  let word = |bytes: &[u8], at: usize| i32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+  let put =
+    |bytes: &mut [u8], at: usize, v: i32| bytes[at..at + 4].copy_from_slice(&v.to_ne_bytes());
+  let ok = |bytes: &[u8]| view::<Expr, _>(bytes, show);
+  let image = Region::new(Expr::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2))).to_bytes().into_owned();
+  assert_eq!(ok(&image), Ok("(-1 + 2)".into()));
+  let (l, r) = (4, 8); // the two pointers of the root `Add`
+  let mut shared = image.clone();
+  put(&mut shared, r, word(&image, l) - 4); // both pointers to the same target
+  assert!(ok(&shared).is_err());
+  let mut cycle = image.clone();
+  put(&mut cycle, l, -4); // a pointer back to the root
+  assert!(ok(&cycle).is_err());
+  let mut swapped = image.clone(); // valid targets in the wrong order
+  put(&mut swapped, l, word(&image, r) + 4);
+  put(&mut swapped, r, word(&image, l) - 4);
+  assert!(ok(&swapped).is_err());
+  let mut tag = image.clone();
+  tag[0] = 3; // no such variant
+  assert!(ok(&tag).is_err());
+  assert!(ok(&image[..image.len() - 1]).is_err()); // missing bytes
+  assert!(ok(&[&image[..], &[0; 8]].concat()).is_err()); // trailing bytes
+  assert!(ok(&[]).is_err());
+
+  // Lists and strings: absurd lengths, `cap != len`, bad UTF-8.
+  let r = Region::new(Lst::<Near<str>>::new(["ab", "c"]));
+  let image = r.to_bytes().into_owned();
+  let len_at = usize::try_from(word(&image, 0)).unwrap(); // the list's `len`
+  assert_eq!((word(&image, len_at - 4), word(&image, len_at)), (2, 2));
+  let ok = |bytes: &[u8]| view::<Lst<Near<str>>, _>(bytes, |l| l.items.len());
+  assert_eq!(ok(&image), Ok(2));
+  for (at, v) in [(len_at, -1), (len_at - 4, -1), (len_at - 4, 3), (len_at, 1), (len_at, 3)] {
+    let mut bad = image.clone();
+    put(&mut bad, at, v);
+    assert!(ok(&bad).is_err(), "{at} = {v}");
+  }
+  let text_at = len_at + 4 + usize::try_from(word(&image, len_at + 4)).unwrap();
+  let mut utf8 = image.clone();
+  utf8[text_at + 4] = 0xff;
+  assert!(ok(&utf8).is_err());
+  let mut long = image;
+  put(&mut long, text_at, 1 << 30);
+  assert!(ok(&long).is_err());
+
+  // Values: `bool`, `char`, `NonZero`, enum tags.
+  let image = Region::new(Prims::new(
+    1u8,
+    2u16,
+    3u32,
+    4u64,
+    5i8,
+    6i16,
+    7i32,
+    8i64,
+    9.0f32,
+    10.0f64,
+    true,
+    'x',
+    [4, 5, 6],
+    NonZero::new(1).unwrap(),
+    NonZero::new(2).unwrap(),
+  ))
+  .to_bytes()
+  .into_owned();
+  let ok = |bytes: &[u8]| view::<Prims, _>(bytes, |p| p.l);
+  assert_eq!(ok(&image), Ok('x'));
+  for (field, bytes) in [
+    (std::mem::offset_of!(Prims, k), vec![2u8]),
+    (std::mem::offset_of!(Prims, l), 0xd800u32.to_ne_bytes().to_vec()),
+    (std::mem::offset_of!(Prims, l), 0x11_0000u32.to_ne_bytes().to_vec()),
+    (std::mem::offset_of!(Prims, n), 0u32.to_ne_bytes().to_vec()),
+    (std::mem::offset_of!(Prims, o), vec![0u8]),
+  ] {
+    let mut bad = image.clone();
+    bad[field..field + bytes.len()].copy_from_slice(&bytes);
+    assert!(ok(&bad).is_err(), "field at {field}");
+  }
+  let color = Region::new(Color::Blue).to_bytes().into_owned();
+  assert!(view::<Color, _>(&[3], |_| ()).is_err() && view::<Color, _>(&color, |_| ()).is_ok());
+
+  // The error.
+  let err = Region::<Expr>::from_bytes(&[9]).err().unwrap();
+  let copy = err.clone();
+  assert_eq!(err, copy);
+  assert!(err.to_string().starts_with("invalid region bytes at offset"));
+  let _: &dyn std::error::Error = &err;
+  assert!(format!("{err:?}").starts_with("Invalid"));
+}
+
+#[test]
+fn noise_is_rejected_without_panicking() {
+  let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+  let mut accepted = 0;
+  for _ in 0..if cfg!(miri) { 100 } else { 100_000 } {
+    let len = rng.below(96);
+    let small = rng.below(2) == 0;
+    let bytes: Vec<u8> =
+      (0..len).map(|_| if small { rng.below(24) } else { rng.below(256) } as u8).collect();
+    accepted += usize::from(view::<Expr, _>(&bytes, show).is_ok());
+    accepted += usize::from(view::<Rec, _>(&bytes, |r| format!("{r:?}")).is_ok());
+    accepted += usize::from(view::<Lst<Near<str>>, _>(&bytes, |l| l.items.len()).is_ok());
+  }
+  // Few random images are valid; enough samples find some.
+  assert!(cfg!(miri) || accepted > 0);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "too slow under Miri")]
+fn a_very_deep_value_is_checked_without_recursion() {
+  const N: u32 = 300_000;
+  // Built in a loop; copying it out recurses, so that part gets a large stack.
+  let image = std::thread::Builder::new()
+    .stack_size(1 << 30)
+    .spawn(|| {
+      let mut r = Region::new(Block::new(0, (), None));
+      let mut cur = r.edit();
+      for id in 1..N {
+        cur = cur.next().insert(Block::new(id, [Inst::new(id as u8, [id])], None));
+      }
+      r.to_bytes().into_owned()
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+  std::thread::Builder::new()
+    .stack_size(64 << 10)
+    .spawn(move || {
+      let r = Region::<Block>::from_bytes(&image).unwrap();
+      let (mut b, mut n) = (&*r, 1);
+      while let Some(next) = &b.next {
+        b = next;
+        n += 1;
+      }
+      assert_eq!((n, b.id, b.insts[0].args[0]), (N, N - 1, N - 1));
+    })
+    .unwrap()
+    .join()
+    .unwrap();
 }
 
 #[test]
@@ -954,7 +1328,6 @@ fn size_hint_may_lie() {
     ));
     assert_eq!(b.insts.len(), n as usize);
     assert!(b.insts.iter().all(|i| i.args.len() == usize::from(i.op) % 5));
-    // Pushing to a list whose header says `cap == len` after an over-allocation.
     let mut b = b;
     b.edit().insts().push(Inst::new(0, ()));
     assert_eq!(b.insts.len(), n as usize + 1);
@@ -1036,12 +1409,12 @@ impl Rng {
   }
 }
 
-/// The edit at `depth` levels down the `next` chain of the model and of the region.
+/// The doc `depth` levels down the `next` chain of the model and of the region.
 fn walk(m: &mut MDoc, depth: usize) -> &mut MDoc {
   if depth == 0 { m } else { walk(m.next.as_mut().unwrap(), depth - 1) }
 }
 
-fn walk_edit(e: &mut Edit<Doc>, depth: usize) -> &mut Edit<Doc> {
+fn walk_edit<'a, 'e>(e: &'a mut Edit<'e, Doc>, depth: usize) -> &'a mut Edit<'e, Doc> {
   if depth == 0 { e } else { walk_edit(e.next().as_mut().unwrap(), depth - 1) }
 }
 
@@ -1051,19 +1424,21 @@ fn chain_len(m: &MDoc) -> usize {
 
 #[test]
 fn random_edits_match_a_model() {
-  let steps: u32 = if cfg!(miri) { 120 } else { 4000 };
+  let steps: u32 = if cfg!(miri) { 100 } else { 4000 };
   for seed in [0x2545_f491_u64, 0x9e37_79b9_7f4a_7c15] {
     let mut rng = Rng(seed);
     let mut m = MDoc { id: 0, name: "root".into(), items: vec![], next: None };
     let mut r = Region::new(Doc::new(0, "root", (), None));
-    let other = Region::new(Item::new(7, [7, 7], Near::new(Label::new(70, "other"))));
+    let mut om: Vec<MItem> = vec![];
+    let mut other = Region::new(Lst::<Item>::new(()));
+    let copied = Region::new(Item::new(7, [7, 7], Near::new(Label::new(70, "other"))));
     for step in 0..steps {
       let depth = rng.below(chain_len(&m));
       let (dm, de) = (walk(&mut m, depth), walk_edit(r.edit(), depth));
       let len = dm.items.len();
       let k = rng.below(len);
       let s = step;
-      match rng.below(20) {
+      match rng.below(24) {
         0 => {
           dm.id = s;
           *de.id() = s;
@@ -1085,7 +1460,7 @@ fn random_edits_match_a_model() {
         }
         4 if len > 0 => {
           dm.items.remove(k);
-          de.items().remove(k);
+          let _ = de.items().remove(k);
         }
         5 if len > 0 => {
           let j = rng.below(len);
@@ -1132,48 +1507,93 @@ fn random_edits_match_a_model() {
           }
         }
         13 if len > 0 => {
-          // Replace an item by a new one that moves the old one's values.
+          // A new item takes over the old one's values, which move.
           dm.items[k].tag = dm.items[k].tag.wrapping_add(1);
           dm.items[k].label = None;
           let tag = dm.items[k].tag;
-          de.items().at(k).replace(|old| Item::new(tag, old.map(|i| &i.vals), None));
+          let vals = de.items().at(k).vals().replace(());
+          let _ = de.items().at(k).replace(Item::new(tag, vals, None));
         }
         14 if len > 0 => {
           // Keep only item `k`, moved.
           dm.items = vec![dm.items[k].clone()];
-          de.items().replace(|old| [old.map(|l| &l[k])]);
+          let it = de.items().remove(k);
+          de.items().set([it]);
         }
         15 if len > 0 => {
           // A copy from another region.
-          dm.items[k] = item_model(&other);
-          de.items().at(k).set(&*other);
+          dm.items[k] = item_model(&copied);
+          de.items().at(k).set(&*copied);
         }
         16 => {
           // Wrap: the doc moves into `next` of a new one.
           let old =
             std::mem::replace(dm, MDoc { id: s, name: "w".into(), items: vec![], next: None });
           dm.next = Some(Box::new(old));
-          de.replace(|old| Doc::new(s, "w", (), Near::new(old)));
+          let old = de.replace(Doc::new(0, "", (), None));
+          de.set(Doc::new(s, "w", (), Near::new(old)));
         }
         17 if dm.next.is_some() => {
           // Hoist: `next` takes its parent's place.
           *dm = *dm.next.take().unwrap();
-          de.replace(|old| old.map(|d| &**d.next.as_ref().unwrap()));
+          let next = de.next().take().unwrap();
+          de.set(next);
         }
         18 => {
           dm.next = None;
           de.next().set(None);
         }
+        19 if len > 0 => {
+          // An item moves to the end, or to the next doc.
+          let it = dm.items.remove(k);
+          let old = de.items().remove(k);
+          if let Some(next) = &mut dm.next {
+            next.items.push(it);
+            de.next().as_mut().unwrap().items().push(old);
+          } else {
+            dm.items.push(it);
+            de.items().push(old);
+          }
+        }
+        20 => {
+          // `take` then `insert`: a doc is put in front of `next`.
+          let old = dm.next.take();
+          dm.next = Some(Box::new(MDoc { id: s, name: "f".into(), items: vec![], next: old }));
+          let old = de.next().take();
+          let new = de.next().insert(Doc::new(s, "f", (), None));
+          if let Some(old) = old {
+            new.next().set(Near::new(old));
+          }
+        }
+        21 if len > 1 => {
+          // Two items trade places through `replace` and `set`.
+          let j = (k + 1) % len;
+          dm.items.swap(k, j);
+          let a = de.items().at(k).replace(Item::new(0, (), None));
+          let b = de.items().at(j).replace(a);
+          de.items().at(k).set(b);
+        }
+        22 if len > 0 => {
+          // Into the other region: a copy.
+          om.push(dm.items.remove(k));
+          let it = de.items().remove(k);
+          other.edit().items().push(it);
+        }
         _ => {
           r = match step % 3 {
             0 => Region::new(&*r),
             1 => r.clone(),
-            // SAFETY: from `to_bytes` of the same type.
-            _ => unsafe { Region::from_bytes(&r.to_bytes()) },
+            _ => Region::from_bytes(&r.to_bytes()).unwrap(),
           };
         }
       }
       assert_eq!(doc_model(&r), m, "step {step}");
+      if step % 5 == 0 {
+        let back = Region::<Doc>::from_bytes(&r.to_bytes()).unwrap();
+        assert_eq!(doc_model(&back), m, "step {step}");
+        let others: Vec<MItem> = other.items.iter().map(item_model).collect();
+        assert_eq!(others, om);
+      }
     }
     let compact = Region::new(&*r);
     assert_eq!(doc_model(&compact), m);
@@ -1196,10 +1616,13 @@ fn random_expression_rewrites_match_a_model() {
       Expr::Add(a, b) => M::Add(Box::new(model(a)), Box::new(model(b))),
     }
   }
+
   let steps: u32 = if cfg!(miri) { 150 } else { 5000 };
   let mut rng = Rng(0x1234_5678);
   let mut m = M::Lit(0);
   let mut r = Region::new(Expr::Lit(0));
+  let mut om = M::Lit(0);
+  let mut other = Region::new(Expr::Lit(0));
   for step in 0..steps {
     let s = i64::from(step);
     // Pick a node by a random path.
@@ -1249,18 +1672,21 @@ fn random_expression_rewrites_match_a_model() {
         ExprMut::Lit(_) => unreachable!(),
       };
     }
-    match rng.below(7) {
+    match rng.below(9) {
       0 => {
         *mm = M::Neg(Box::new(mm.clone()));
-        e.replace(Expr::neg);
+        let old = e.replace(Expr::Lit(0));
+        e.set(Expr::neg(old));
       }
       1 => {
         *mm = M::Add(Box::new(mm.clone()), Box::new(M::Lit(s)));
-        e.replace(|old| Expr::add(old, Expr::Lit(s)));
+        let old = e.replace(Expr::Lit(0));
+        e.set(Expr::add(old, Expr::Lit(s)));
       }
       2 => {
         *mm = M::Add(Box::new(M::Lit(s)), Box::new(mm.clone()));
-        e.replace(|old| Expr::add(Expr::Lit(s), old));
+        let old = e.replace(Expr::Lit(0));
+        e.set(Expr::add(Expr::Lit(s), old));
       }
       3 => {
         // Hoist a child.
@@ -1272,19 +1698,18 @@ fn random_expression_rewrites_match_a_model() {
         };
         if let Some(c) = child {
           *mm = c;
-          e.replace(|old| {
-            old.map(|e| match e {
-              Expr::Lit(_) => e,
-              Expr::Neg(x) => x,
-              Expr::Add(a, b) => {
-                if side == 0 {
-                  a
-                } else {
-                  b
-                }
+          let old = match e.as_mut() {
+            ExprMut::Lit(_) => unreachable!(),
+            ExprMut::Neg(x) => x.replace(Expr::Lit(0)),
+            ExprMut::Add(args) => {
+              if side == 0 {
+                args._0().replace(Expr::Lit(0))
+              } else {
+                args._1().replace(Expr::Lit(0))
               }
-            })
-          });
+            }
+          };
+          e.set(old);
         }
       }
       4 => {
@@ -1299,15 +1724,32 @@ fn random_expression_rewrites_match_a_model() {
         *mm = M::Lit(s);
         e.set(Expr::Lit(s));
       }
+      6 => {
+        // Swap the children of an `Add`: three moves.
+        if let M::Add(a, b) = mm {
+          std::mem::swap(a, b);
+        }
+        if let ExprMut::Add(args) = e.as_mut() {
+          let a = args._0().replace(Expr::Lit(0));
+          let b = args._1().replace(a);
+          args._0().set(b);
+        }
+      }
+      7 => {
+        // Into the other region: a copy; the place keeps a literal.
+        om = std::mem::replace(mm, M::Lit(s));
+        let old = e.replace(Expr::Lit(s));
+        other.edit().set(old);
+      }
       _ => {
         if step % 2 == 0 {
           r = Region::new(&*r);
         } else {
-          // SAFETY: from `to_bytes` of the same type.
-          r = unsafe { Region::from_bytes(&r.to_bytes()) };
+          r = Region::from_bytes(&r.to_bytes()).unwrap();
         }
       }
     }
     assert_eq!(model(&r), m, "step {step}");
+    assert_eq!(model(&other), om, "step {step}");
   }
 }

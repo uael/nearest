@@ -1,16 +1,16 @@
-error[E0599]: the method `set` exists for struct `nearest::__private::Raw<__NearestMirrorAdd>`, but its trait bounds were not satisfied
+error[E0599]: the method `set` exists for struct `nearest::__private::Raw<'_, __NearestMirrorAdd>`, but its trait bounds were not satisfied
   --> tests/compile-fail/edit_payload_cannot_change_variant.rs:10:12
    |
  4 | #[flat]
    | ------- doesn't satisfy `__NearestMirrorAdd: Flat`
 ...
 10 |     args.0.set(Expr::Lit(3));
-   |            ^^^ method cannot be called on `nearest::__private::Raw<__NearestMirrorAdd>` due to unsatisfied trait bounds
+   |            ^^^ method cannot be called on `nearest::__private::Raw<'_, __NearestMirrorAdd>` due to unsatisfied trait bounds
    |
    = note: the following trait bounds were not satisfied:
            `__NearestMirrorAdd: Flat`
 note: the trait `Flat` must be implemented
   --> src/flat.rs
    |
-   | pub unsafe trait Flat: Sized {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | pub unsafe trait Flat: Sized + 'static {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

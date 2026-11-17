@@ -1,0 +1,10 @@
+error[E0502]: cannot borrow `r` as immutable because it is also borrowed as mutable
+  --> tests/compile-fail/edit_old_then_read_region.rs:17:14
+   |
+16 |   let old = r.edit().replace(Expr::Lit(0));
+   |             - mutable borrow occurs here
+17 |   let _x = &*r;
+   |              ^ immutable borrow occurs here
+18 |   let mut s = tree();
+19 |   s.edit().set(old);
+   |                --- mutable borrow later used here

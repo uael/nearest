@@ -44,13 +44,19 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   }
   let (impl_g, ty_g, where_c) = generics.split_for_impl();
   let self_ty = quote!(#name #ty_g);
-  let mut a = String::from("a");
-  while input.generics.lifetimes().any(|l| l.lifetime.ident == a) {
-    a.push('_');
-  }
-  let lt = Lifetime::new(&format!("'{a}"), Span::call_site());
-  let [sink, at, shift, buf] =
-    ["sink", "at", "shift", "buf"].map(|s| Ident::new(s, Span::mixed_site()));
+  // `'a`: the borrow of a handle; `'e`: the edit.
+  let [lt, e] = ["a", "e"].map(|base| {
+    let mut name = String::from(base);
+    while input.generics.lifetimes().any(|l| l.lifetime.ident == name) {
+      name.push('_');
+    }
+    Lifetime::new(&format!("'{name}"), Span::call_site())
+  });
+  let mut handle_g = generics.clone();
+  handle_g.params.insert(0, GenericParam::Lifetime(parse_quote!(#e)));
+  let (h_impl, h_ty, h_where) = handle_g.split_for_impl();
+  let [sink, at, shift, buf, ck] =
+    ["sink", "at", "shift", "buf", "ck"].map(|s| Ident::new(s, Span::mixed_site()));
   let np = quote!(::nearest::__private);
   let handle = format_ident!("__NearestEdit");
 
@@ -91,6 +97,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       }
     };
   let store = |field: TokenStream, off: &TokenStream| quote!(::nearest::Flat::store(#field, #sink, #at + #off, #shift););
+  let check = |tys: &[TokenStream], offs: &[TokenStream]| quote!(#(<#tys as ::nearest::Flat>::check(#ck, #at + #offs)?;)*);
   // A method of a handle whose `.0` is the `Raw` of the value, returning a field's handle.
   let field_method = |f: &Field, i: usize, fvis: TokenStream, off: &TokenStream| {
     let mname = match &f.ident {
@@ -103,7 +110,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     let doc = format!("The handle of `{label}`.");
     quote! {
       #[doc = #doc]
-      #fvis fn #mname(&mut self) -> &mut ::nearest::Edit<#fty> {
+      #fvis fn #mname(&mut self) -> &mut ::nearest::Edit<#e, #fty> {
         unsafe { self.0.field::<#fty>(#off) }
       }
     }
@@ -112,12 +119,12 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // What differs between structs and enums.
   let (mut mirrors, mut ctors, mut methods, mut extra) = (vec![], vec![], vec![], vec![]);
   let mut view = None;
-  let (plain, body) = match &input.data {
+  let (plain, body, checks) = match &input.data {
     Data::Union(u) => {
       return Err(Error::new(u.union_token.span, "`#[flat]` does not support unions"));
     }
     Data::Struct(s) => {
-      let tys: Vec<_> = s.fields.iter().map(|f| &f.ty).collect();
+      let tys: Vec<_> = s.fields.iter().map(|f| f.ty.to_token_stream()).collect();
       let members: Vec<Member> = s.fields.members().collect();
       let offs: Vec<_> =
         members.iter().map(|m| quote!(::core::mem::offset_of!(Self, #m))).collect();
@@ -134,18 +141,21 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         true #(&& <#tys as ::nearest::Flat>::PLAIN)*
           && ::core::mem::size_of::<Self>() == 0 #(+ ::core::mem::size_of::<#tys>())*
       };
-      (plain, quote!(#(#stores)*))
+      let checks = check(&tys, &offs);
+      (plain, quote!(#(#stores)*), checks)
     }
-    Data::Enum(e) => {
-      if let Some(v) = e.variants.iter().nth(256) {
+    Data::Enum(data) => {
+      if let Some(v) = data.variants.iter().nth(256) {
         return Err(Error::new_spanned(v, "`#[flat]` enums have at most 256 variants"));
       }
-      if e.variants.is_empty() {
+      if data.variants.is_empty() {
         return Err(Error::new_spanned(name, "`#[flat]` enums need at least one variant"));
       }
       let mut_name = format_ident!("{name}Mut");
       let (mut arms, mut built, mut views, mut view_arms) = (vec![], vec![], vec![], vec![]);
-      for (i, v) in e.variants.iter().enumerate() {
+      let mut check_arms = vec![];
+      let last = data.variants.len() - 1;
+      for (i, v) in data.variants.iter().enumerate() {
         if let Some((eq, expr)) = &v.discriminant {
           return Err(Error::new_spanned(quote!(#eq #expr), "`#[flat]` numbers variants in order"));
         }
@@ -163,7 +173,9 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         let tag_store = store(quote!(&#tag), &quote!(0));
         let vdoc = format!("`{name}::{vname}`.");
         let view_arm = quote!(#name::#vname { .. } => #mut_name::#vname);
+        let tag_pat = if i == last { quote!(_) } else { tag.to_token_stream() };
         if matches!(v.fields, Fields::Unit) {
+          check_arms.push(quote!(#tag_pat => {}));
           arms.push(quote!(Self::#vname => { #tag_store }));
           views.push(quote!(#[doc = #vdoc] #vname));
           view_arms.push(view_arm);
@@ -185,6 +197,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
             quote!(::core::mem::offset_of!(#mirror #ty_g, #k))
           })
           .collect();
+        let checks = check(&tys, &offs);
+        check_arms.push(quote!(#tag_pat => { #checks }));
         let doc = format!("Builds `{name}::{vname}` from its fields, in declaration order.");
         let tag_emit = quote!(::nearest::Emit::<u8>::emit(#tag, #sink, #at););
         ctors.push(ctor(snake(vname), doc, &v.fields, tag_emit, offs.clone()));
@@ -193,7 +207,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         // Tells the dead-code lint that the variant is built, by the constructor.
         built.push(quote!(let _ = |#(#binds),*| Self::#vname #pat;));
         if let ([ty], [off]) = (&tys[..], &offs[..]) {
-          views.push(quote!(#[doc = #vdoc] #vname(&#lt mut ::nearest::Edit<#ty>)));
+          views.push(quote!(#[doc = #vdoc] #vname(&#lt mut ::nearest::Edit<#e, #ty>)));
           view_arms.push(quote!(#view_arm(unsafe { self.0.field::<#ty>(#off) })));
           continue;
         }
@@ -207,30 +221,30 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         extra.push(quote! {
           #[doc = #pdoc]
           #[repr(transparent)]
-          #vis struct #payload #impl_g (#np::Raw<#mirror #ty_g>) #where_c;
+          #vis struct #payload #h_impl (#np::Raw<#e, #mirror #ty_g>) #h_where;
           impl #impl_g #np::Variant<#tag> for #self_ty #where_c {
-            type Edit = #payload #ty_g;
+            type Edit<#e> = #payload #h_ty;
           }
-          impl #impl_g #payload #ty_g #where_c {
+          impl #h_impl #payload #h_ty #h_where {
             #(#fmethods)*
           }
         });
-        views.push(quote!(#[doc = #vdoc] #vname(&#lt mut <#self_ty as #np::Variant<#tag>>::Edit)));
+        views.push(quote! {
+          #[doc = #vdoc]
+          #vname(&#lt mut <#self_ty as #np::Variant<#tag>>::Edit<#e>)
+        });
         view_arms.push(quote! {
-          #view_arm(unsafe { &mut *(::core::ptr::from_mut(&mut self.0) as *mut #payload #ty_g) })
+          #view_arm(unsafe { &mut *(::core::ptr::from_mut(&mut self.0) as *mut #payload #h_ty) })
         });
       }
       if !built.is_empty() {
         let mut mg = generics.clone();
+        mg.params.insert(0, GenericParam::Lifetime(parse_quote!(#e: #lt)));
         mg.params.insert(0, GenericParam::Lifetime(parse_quote!(#lt)));
-        for p in input.generics.type_params() {
-          let id = &p.ident;
-          mg.make_where_clause().predicates.push(parse_quote!(#id: #lt));
-        }
         let (m_impl, m_ty, m_where) = mg.split_for_impl();
         let doc = format!(
           "The variant of a `{name}` in a region, holding the handles of its fields. Returned \
-           by `as_mut` on `Edit<{name}>`."
+           by `as_mut` on `Edit<'e, {name}>`."
         );
         methods.push(quote! {
           /// The variant, holding the handles of its fields.
@@ -247,15 +261,17 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           }
         });
       }
-      let unit = e.variants.iter().all(|v| matches!(v.fields, Fields::Unit));
-      (quote!(#unit), quote!(#(#built)* match self { #(#arms)* }))
+      let unit = data.variants.iter().all(|v| matches!(v.fields, Fields::Unit));
+      let count = data.variants.len();
+      let checks = quote!(match #ck.tag(#at, #count)? { #(#check_arms)* });
+      (quote!(#unit), quote!(#(#built)* match self { #(#arms)* }), checks)
     }
   };
 
-  let mut copy_g = generics.clone();
+  let mut copy_g = handle_g.clone();
   copy_g.make_where_clause().predicates.push(parse_quote!(for<#lt> #self_ty: ::core::marker::Copy));
   let copy_where = copy_g.split_for_impl().2;
-  let handle_doc = format!("The handle of a `{name}` in a region: `Edit<{name}>`.");
+  let handle_doc = format!("The handle of a `{name}` in a region: `Edit<'e, {name}>`.");
   if !has_repr {
     let repr = if is_enum { parse_quote!(#[repr(u8)]) } else { parse_quote!(#[repr(C)]) };
     input.attrs.insert(0, repr);
@@ -266,7 +282,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     const _: () = {
       #(#mirrors)*
       unsafe impl #impl_g ::nearest::Flat for #self_ty #where_c {
-        type Edit = #handle #ty_g;
+        type Edit<#e> = #handle #h_ty;
         const PLAIN: bool = {
           #np::fits::<Self>();
           #plain
@@ -280,11 +296,18 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           #np::fits::<Self>();
           unsafe { #body }
         }
-        unsafe fn edit<#lt>(#buf: *mut #np::Buf, #at: usize) -> &#lt mut Self::Edit {
+        unsafe fn edit<#lt, #e: #lt>(#buf: *mut #np::Buf, #at: usize) -> &#lt mut Self::Edit<#e> {
           #np::fits::<Self>();
           unsafe {
-            &mut *(::core::ptr::from_mut(#np::Raw::<Self>::new(#buf, #at)) as *mut #handle #ty_g)
+            &mut *(::core::ptr::from_mut(#np::Raw::<#e, Self>::new(#buf, #at)) as *mut #handle #h_ty)
           }
+        }
+        fn check(
+          #ck: &mut #np::Check<'_>,
+          #at: usize,
+        ) -> ::core::result::Result<(), ::nearest::Invalid> {
+          #checks
+          ::core::result::Result::Ok(())
         }
       }
       impl #impl_g #self_ty #where_c {
@@ -292,28 +315,28 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       }
       #[doc = #handle_doc]
       #[repr(transparent)]
-      #vis struct #handle #impl_g (#np::Raw<#self_ty>) #where_c;
-      impl #impl_g #handle #ty_g #where_c {
-        /// Replaces the value with `value`.
+      #vis struct #handle #h_impl (#np::Raw<#e, #self_ty>) #h_where;
+      impl #h_impl #handle #h_ty #h_where {
+        /// Writes `value` over the value, like `*place = value`.
         #vis fn set(&mut self, value: impl ::nearest::Emit<#self_ty>) {
           self.0.set(value);
         }
-        /// Replaces the value with what `f` makes of the old one.
-        #vis fn replace<#lt, __NearestE: ::nearest::Emit<#self_ty>>(
-          &#lt mut self,
-          f: impl ::core::ops::FnOnce(::nearest::Old<#lt, #self_ty>) -> __NearestE,
-        ) {
-          self.0.replace(f);
+        /// Writes `value` over the value and returns the old one, like `mem::replace`.
+        #vis fn replace(
+          &mut self,
+          value: impl ::nearest::Emit<#self_ty>,
+        ) -> ::nearest::Old<#e, #self_ty> {
+          self.0.replace(value)
         }
         #(#methods)*
       }
-      impl #impl_g ::core::ops::Deref for #handle #ty_g #where_c {
+      impl #h_impl ::core::ops::Deref for #handle #h_ty #h_where {
         type Target = #self_ty;
         fn deref(&self) -> &#self_ty {
           self.0.get()
         }
       }
-      impl #impl_g ::core::ops::DerefMut for #handle #ty_g #copy_where {
+      impl #h_impl ::core::ops::DerefMut for #handle #h_ty #copy_where {
         fn deref_mut(&mut self) -> &mut #self_ty {
           self.0.get_mut()
         }

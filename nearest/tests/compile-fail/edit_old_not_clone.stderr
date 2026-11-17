@@ -1,5 +1,0 @@
-error[E0599]: no method named `clone` found for struct `Old<'a, T>` in the current scope
-  --> tests/compile-fail/edit_old_not_clone.rs:11:40
-   |
-11 |   r.edit().replace(|old| Expr::add(old.clone(), old));
-   |                                        ^^^^^ method not found in `Old<'_, Expr>`

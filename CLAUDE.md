@@ -30,7 +30,7 @@ uses unstable options) and by Miri. Generate trybuild `.stderr` files with the p
 **nearest** keeps a value and everything it points to in one buffer. Every pointer is a 4-byte
 offset relative to its own address, so `Clone` is a `memcpy` and reading is plain `&T`. Edits
 go through handles checked by the borrow checker; the only runtime checks are the 2 GiB size
-limit and index bounds. `DESIGN.md` is the specification.
+limit, index bounds and the check of loaded bytes. `DESIGN.md` is the specification.
 
 ### Workspace Crates
 
@@ -40,60 +40,72 @@ limit and index bounds. `DESIGN.md` is the specification.
 
 ### Public surface
 
-`#[flat]`, `trait Flat` (`type Edit`), `trait Emit<T>`, `type Edit<T>`, `Near<T>` (`new`,
-`from_iter`), `Region<T>` (`new`, `edit`, `to_bytes`, `from_bytes`, `byte_len`), `ListEdit<T>`
-(`push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`, `replace`),
-`OptionEdit<T>` (`as_mut`, `insert`, `set`, `replace`), `StrEdit` (`set`, `replace`),
-`Old<'a, T>` (`map`), plus the trait impls listed in `DESIGN.md`. Hidden plumbing for the macro:
-`nearest::__private::{Raw, Buf, Sink, fits, make, Variant}` and the hidden items of the two
-traits. Do not add public items.
+`#[flat]`, `trait Flat` (`type Edit<'e>`), `trait Emit<T>`, `type Edit<'e, T>`, `Near<T>` (`new`,
+`from_iter`), `Region<T>` (`new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`),
+`ListEdit<'e, T>` (`push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`,
+`replace`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`, `set`), `StrEdit<'e>` (`set`,
+`replace`), `Old<'e, T>` (no methods), `Invalid`, plus the trait impls listed in `DESIGN.md`.
+Hidden plumbing for the macro: `nearest::__private::{Raw, Buf, Sink, Check, fits, make,
+Variant}` and the hidden items of the two traits. Do not add public items.
 
 ### Files (nearest/src/)
 
 | File | Contents |
 |------|----------|
-| `lib.rs` | crate docs, exports, `Edit<T>`, `__private`, the size-limit unit test |
-| `flat.rs` | `Buf` (8-aligned, zero-filled growth), `Sink`, `Flat` + impls, `Emit` + impls, moves (`relocate`, `move_elems`), the list block `List`, `make` |
+| `lib.rs` | crate docs, exports, `Edit<'e, T>`, `__private`, the size-limit unit test |
+| `flat.rs` | `Buf` (8-aligned, zero-filled growth, `me`, compact mark), `Sink`, `Flat` + impls, `Emit` + impls, moves (`relocate`, `detach`, `move_elems`), the list block `List`, `make` |
 | `edit.rs` | `Raw` (the core of every handle, with `set`/`replace`), `Old`, `ListEdit`, `OptionEdit`, `StrEdit` |
+| `bytes.rs` | `Invalid`, the checker `Check` and its steps (`target`, `list`, `text`, `items`), `check` |
 | `near.rs` | `Near<T>`: three `Deref` impls (`T`, `[T]`, `str`), builders, trait impls |
-| `region.rs` | `Region<T>` |
+| `region.rs` | `Region<T>`, including `to_bytes`, `from_bytes`, `view` |
 
-`nearest-derive/src/lib.rs` generates, inside `const _: () = { .. }`: the `Flat` impl (`Edit`,
-`PLAIN`, `store`, `edit`, each checking `fits`), constructors (`new`, or one snake-case function
-per non-unit variant; a parameter for a field written `Near<X>` takes a builder of `X`), the
-handle `__NearestEdit` (`set`, `replace`, a method per struct field, `as_mut` for enums, `Deref`,
-`DerefMut` under `for<'a> X: Copy`), hidden `#[repr(C)]` mirror structs `(u8, fields..)` for
-variant field offsets, and for multi-field variants a payload handle named through
-`__private::Variant<I>`. `XMut<'a>` is emitted at module level with the visibility of `X`.
+`nearest-derive/src/lib.rs` generates, inside `const _: () = { .. }`: the `Flat` impl (`Edit<'e>`,
+`PLAIN`, `store`, `edit`, `check`, each checking `fits`), constructors (`new`, or one snake-case
+function per non-unit variant; a parameter for a field written `Near<X>` takes a builder of
+`X`), the handle `__NearestEdit<'e, ..>` (`set`, `replace`, a method per struct field, `as_mut`
+for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), hidden `#[repr(C)]` mirror structs
+`(u8, fields..)` for variant field offsets, and for multi-field variants a payload handle (a
+`Raw` of the mirror, so it has no `set`/`replace`) named through `__private::Variant<I>`.
+`XMut<'a, 'e>` is emitted at module level with the visibility of `X`.
 
 ### Mechanics
 
-- A handle is `&mut` to an unsized `#[repr(transparent)]` wrapper of `Raw<T>(PhantomData<T>,
-  [()])`: the address is the region's `Buf`, the slice length is the position. `Flat::edit(buf,
-  at)` builds it; for `Near<T>` it is the target's handle.
+- A handle is `&'a mut` to an unsized `#[repr(transparent)]` wrapper of `Raw<'e, T>`: the address
+  is the region's `Buf`, the slice length is the position. `Flat::edit(buf, at)` builds it; for
+  `Near<T>` it is the target's handle. `'e` is the edit, the borrow taken by `Region::edit`.
 - `Flat::store(&self, sink, at, shift)`: `None` deep-copies targets; `Some(d)` re-aims offsets
   for a move of `d` bytes and never dereferences a `Near` (moves call it on stack copies).
   `PLAIN` types are copied as bytes.
 - `Near<str>` points at `[len][bytes]`; `Near<[T]>` points at `len` in a block
-  `[cap][len][elements]`. Builders and deep copies write `cap == len`.
-- `replace` moves the old value to fresh memory, calls the closure with an `Old` at that
-  position, writes the result into the place, and moves the old value back if that unwinds.
-  `Old` written into its own region is a move, anywhere else a deep copy.
+  `[cap][len][elements]`. Deep copies and builders write `cap == len`; a builder whose iterator
+  did not match its size hint writes its real capacity and clears the compact mark.
+- `set` keeps the old bytes on the stack and restores them on unwind. `replace` moves the old
+  value to fresh bytes (`detach`), writes the new one (moving the old one back on unwind) and
+  returns an `Old`; `ListEdit::remove` and `OptionEdit::take` also return one. An `Old` written
+  into its own region (same `me`) is a move, anywhere else a deep copy.
+- Bytes: a region's compact image is what a deep copy writes. `Flat::check` (safe, generated)
+  walks an image in that order without recursion; each pointer must aim exactly where the copy
+  would have put its target. `to_bytes` borrows the buffer when the compact mark is set.
 
 ### Safety Model
 
 - `Near` has no constructor and is not `Clone`/`Copy`. No safe API yields `&mut T` for a `T`
   containing a `Near` (plain data means `T: Copy`).
 - One handle chain: a handle borrows its parent mutably, so no `&T` into the buffer is live
-  while a handle can allocate. `Old<'a, T>` keeps the handle borrowed for `'a`.
-- Tree Borrows discipline: a method takes its `*mut Buf` from the handle once and does
-  everything through it, each access a reborrow that ends with the statement; `Sink` holds the
-  raw pointer, never a `&mut Buf`. Allocate before taking references into the buffer.
+  while a handle can allocate. An `Old<'e, T>` keeps the region borrowed for the edit; bytes
+  no longer reachable are never written again (I5), so it stays intact.
+- One provenance per edit (I8): `Region::edit` stores `&raw mut self.buf` in `Buf::me`; a handle
+  reads `me` through its own reference, and every other access of the edit (handles, `Sink`,
+  `Old`) goes through that pointer, each access a reborrow that ends with the statement. Never
+  keep a `&mut Buf`/`&Buf` across a call that touches the buffer. Allocate before taking
+  references into the buffer.
 - Self-relative pointers are resolved from `&self` (Tree Borrows; Stacked Borrows is not
   supported). No integer-to-pointer casts. Miri runs with `-Zmiri-tree-borrows
   -Zmiri-strict-provenance`.
 - Panics leave every place unchanged or complete: list lengths are written after the element,
-  `retain` keeps unvisited elements, `replace` restores the old value.
+  `retain` keeps unvisited elements, `set` and `replace` restore the old value.
+- The checker is safe code that never panics (checked arithmetic, `get` instead of indexing);
+  the only unsafe step of `view`/`from_bytes` is the cast of checked bytes to `&T`.
 - `Buf` invariants hold also while unwinding: `len <= capacity <= MAX`; anything past the limit
   panics in `grow` before changing state. Unit tests use a 64 KiB limit.
 - Compile-time checks (`fits`): alignment at most 8, non-zero size, no drop glue.

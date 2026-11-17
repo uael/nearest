@@ -19,18 +19,25 @@ const fn num(e: &Expr) -> Option<i64> {
   if let Expr::Num(n) = e { Some(*n) } else { None }
 }
 
-/// Child `i` of a node (the node itself if it has none).
-fn kid(e: &Expr, i: usize) -> &Expr {
-  match e {
-    Expr::Neg(a) => a,
-    Expr::Add(a, b) | Expr::Mul(a, b) => {
+/// The handle of child `i` of a node that has children.
+fn kid<'a, 'e>(e: &'a mut Edit<'e, Expr>, i: usize) -> &'a mut Edit<'e, Expr> {
+  match e.as_mut() {
+    ExprMut::Neg(a) => a,
+    ExprMut::Add(args) => {
       if i == 0 {
-        a
+        args._0()
       } else {
-        b
+        args._1()
       }
     }
-    e => e,
+    ExprMut::Mul(args) => {
+      if i == 0 {
+        args._0()
+      } else {
+        args._1()
+      }
+    }
+    ExprMut::Num(_) | ExprMut::Var(_) => unreachable!("a leaf has no children"),
   }
 }
 
@@ -91,13 +98,23 @@ fn rule(e: &Expr) -> Option<Rule> {
   })
 }
 
-/// One rewriting pass over `e`; returns whether anything changed.
+/// One rewriting pass over `e`; returns whether anything changed. Subtrees move: `replace`
+/// takes a child out, `set` puts it where its parent was.
 fn rewrite(e: &mut Edit<Expr>) -> bool {
   match rule(e) {
     Some(Rule::Num(n)) => e.set(Expr::Num(n)),
-    Some(Rule::Hoist(i)) => e.replace(|old| old.map(|e| kid(e, i))),
-    Some(Rule::Hoist2(i, j)) => e.replace(|old| old.map(|e| kid(kid(e, i), j))),
-    Some(Rule::Swap(c)) => e.replace(|old| Expr::mul(old.map(|e| kid(e, 1)), Expr::Num(c))),
+    Some(Rule::Hoist(i)) => {
+      let child = kid(e, i).replace(Expr::Num(0));
+      e.set(child);
+    }
+    Some(Rule::Hoist2(i, j)) => {
+      let grandchild = kid(kid(e, i), j).replace(Expr::Num(0));
+      e.set(grandchild);
+    }
+    Some(Rule::Swap(c)) => {
+      let b = kid(e, 1).replace(Expr::Num(0));
+      e.set(Expr::mul(b, Expr::Num(c)));
+    }
     None => {
       return match e.as_mut() {
         ExprMut::Num(_) | ExprMut::Var(_) => false,

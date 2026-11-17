@@ -1,7 +1,7 @@
-error[E0596]: cannot borrow data in dereference of `ListEdit<Inst>` as mutable
+error[E0596]: cannot borrow data in dereference of `ListEdit<'_, Inst>` as mutable
   --> tests/compile-fail/list_slice_of_pointers_not_mut.rs:13:3
    |
 13 |   r.edit().insts().reverse();
    |   ^^^^^^^^^^^^^^^^ cannot borrow as mutable
    |
-   = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `ListEdit<Inst>`
+   = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `ListEdit<'_, Inst>`

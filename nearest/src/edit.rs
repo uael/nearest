@@ -1,28 +1,31 @@
 use core::{
   marker::PhantomData,
-  mem,
+  mem::{self, MaybeUninit},
   ops::{Deref, DerefMut},
   ptr, slice,
 };
 
 use crate::{
   Edit, Emit, Flat, Near,
-  flat::{Buf, List, Sink, fits, move_elems, put_moved, relocate, write_copy},
+  flat::{Buf, List, Sink, aim, detach, fits, move_elems, put_moved, relocate, write_copy},
 };
 
-/// The core of every handle: a `&mut Raw<T>` is a fat reference whose address is the region's
-/// `Buf` and whose length is the position of a `T` in it. It never holds an address inside the
-/// buffer, so it stays valid when the buffer grows.
+/// The core of every handle: a `&'a mut Raw<'e, T>` is a fat reference whose address is the
+/// region's `Buf` and whose length is the position of a `T` in it. It never holds an address
+/// inside the buffer, so it stays valid when the buffer grows. `'e` is the edit.
 #[doc(hidden)]
 #[repr(transparent)]
-pub struct Raw<T>(PhantomData<T>, [()]);
+pub struct Raw<'e, T>(PhantomData<(&'e mut (), T)>, [()]);
 
-impl<T> Raw<T> {
+impl<'e, T> Raw<'e, T> {
   /// The handle of the `T` at `at`.
   ///
   /// # Safety
   /// As for [`Flat::edit`].
-  pub const unsafe fn new<'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
+  pub const unsafe fn new<'a>(buf: *mut Buf, at: usize) -> &'a mut Self
+  where
+    'e: 'a,
+  {
     // SAFETY: `Raw` is zero-sized, so any address is valid for it; the length carries `at`.
     unsafe { &mut *(ptr::slice_from_raw_parts_mut(buf.cast::<()>(), at) as *mut Self) }
   }
@@ -31,29 +34,31 @@ impl<T> Raw<T> {
     self.1.len()
   }
 
-  /// The region's buffer. Every method takes it once and reaches the buffer only through it.
-  const fn buf(&mut self) -> *mut Buf {
-    ptr::from_mut(self).cast()
+  /// The `me` of the region's buffer, read through this handle. Every method reads it once and
+  /// reaches the buffer only through it (I8).
+  const fn buf(&self) -> *mut Buf {
+    let buf: *const Buf = ptr::from_ref(self).cast();
+    // SAFETY: a handle's address is the `Buf` of a region being edited.
+    unsafe { (*buf).me }
   }
 
   /// The handle of the `U` that is `off` bytes into the `T`.
   ///
   /// # Safety
   /// A `U` is at that offset whenever the `T` is valid.
-  pub unsafe fn field<U: Flat>(&mut self, off: usize) -> &mut U::Edit {
+  pub unsafe fn field<U: Flat>(&mut self, off: usize) -> &mut U::Edit<'e> {
     // SAFETY: per the caller; the field is reached only through the returned handle, which
     // borrows this one.
     unsafe { U::edit(self.buf(), self.at() + off) }
   }
 }
 
-impl<T: Flat> Raw<T> {
+impl<'e, T: Flat> Raw<'e, T> {
   /// The `T`.
   #[must_use]
   pub const fn get(&self) -> &T {
-    let buf: *const Buf = ptr::from_ref(self).cast();
     // SAFETY: a handle designates a valid `T` in a live buffer, and borrows it.
-    unsafe { &*(*buf).base().add(self.at()).cast::<T>() }
+    unsafe { &*(*self.buf()).base().add(self.at()).cast::<T>() }
   }
 
   /// The `T`, which has no pointers since it is `Copy`.
@@ -65,14 +70,40 @@ impl<T: Flat> Raw<T> {
     unsafe { &mut *(*self.buf()).ptr().add(self.at()).cast::<T>() }
   }
 
-  /// Replaces the `T` with `value`.
+  /// Writes `value` over the `T`. The old bytes wait on the stack and come back if writing
+  /// unwinds.
   pub fn set(&mut self, value: impl Emit<T>) {
-    self.replace(|_| value);
+    /// Puts the old bytes back.
+    struct Restore<T> {
+      buf: *mut Buf,
+      at: usize,
+      old: MaybeUninit<T>,
+    }
+    impl<T> Drop for Restore<T> {
+      fn drop(&mut self) {
+        // SAFETY: the place still holds a `T`'s room; the old bytes are a valid `T` there.
+        unsafe {
+          (*self.buf)
+            .ptr()
+            .add(self.at)
+            .cast::<MaybeUninit<T>>()
+            .write(ptr::read(&raw const self.old));
+        }
+      }
+    }
+    fits::<T>();
+    let (buf, at) = (self.buf(), self.at());
+    // SAFETY: the place holds a `T`.
+    let old = unsafe { (*buf).base().add(at).cast::<MaybeUninit<T>>().read() };
+    let restore = Restore { buf, at, old };
+    // SAFETY: `at` holds a `T`, which the new one replaces.
+    unsafe { value.emit(&mut Sink::new(buf), at) };
+    mem::forget(restore);
   }
 
-  /// Replaces the `T` with what `f` makes of the old one.
-  pub fn replace<'a, E: Emit<T>>(&'a mut self, f: impl FnOnce(Old<'a, T>) -> E) {
-    /// Moves the old value back if writing the new one unwinds.
+  /// Writes `value` over the `T` and returns the old one, moved to fresh bytes.
+  pub fn replace(&mut self, value: impl Emit<T>) -> Old<'e, T> {
+    /// Moves the old value back.
     struct Restore<T: Flat> {
       buf: *mut Buf,
       at: usize,
@@ -87,32 +118,23 @@ impl<T: Flat> Raw<T> {
     }
     fits::<T>();
     let (buf, at) = (self.buf(), self.at());
-    // SAFETY: the buffer is live and only reached through `buf` here. The old value moves to
-    // fresh memory first, so the place can be written directly and whatever `Old` designates
-    // stays intact.
-    let kept = unsafe { (*buf).alloc(size_of::<T>(), align_of::<T>()) };
-    // SAFETY: a `T` is at `at`, and `kept` was just allocated for one.
-    unsafe { relocate::<T>(buf, at, kept) };
+    // SAFETY: a `T` is at `at`.
+    let kept = unsafe { detach::<T>(buf, at) };
     let restore = Restore::<T> { buf, at, kept, _t: PhantomData };
-    let value = f(Old { src: Src::At(buf, kept), _borrow: PhantomData });
     // SAFETY: `at` holds a `T`; the old value is no longer reachable from it.
     unsafe { value.emit(&mut Sink::new(buf), at) };
     mem::forget(restore);
+    Old { buf, at: kept, _e: PhantomData }
   }
 }
 
-enum Src<'a, T> {
-  /// A position in a region's buffer.
-  At(*mut Buf, usize),
-  /// A value outside any region being edited.
-  Out(&'a T),
-}
-
-/// The value being replaced, in the closure given to `replace`.
+/// A value that left its place, during the edit `'e`: returned by `replace`,
+/// [`ListEdit::remove`] and [`OptionEdit::take`].
 ///
-/// Writing it into the new value moves it there, in O(1), without copying what it points to.
-/// It is neither `Copy` nor `Clone`, so it is used at most once; it keeps the handle it came
-/// from borrowed for `'a`. Written into another region, it is copied.
+/// It can only be written somewhere: into a place of the same region it moves there in O(1),
+/// whatever the size of what it points to; anywhere else (another region, `Region::new`) it is
+/// copied. It is neither `Copy` nor `Clone`, and it keeps the region borrowed while it lives.
+/// Dropped, it is garbage until the region is compacted.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -121,69 +143,35 @@ enum Src<'a, T> {
 /// enum Expr { Lit(i64), Neg(Near<Expr>) }
 ///
 /// let mut r = Region::new(Expr::Lit(3));
-/// r.edit().replace(|old| Expr::neg(old)); // wrap
+/// let e = r.edit();
+/// let old = e.replace(Expr::Lit(0)); // like `mem::replace`
+/// e.set(Expr::neg(old));              // wrap: the old value moves under the new one
 /// assert!(matches!(&*r, Expr::Neg(e) if matches!(**e, Expr::Lit(3))));
 /// ```
-pub struct Old<'a, T> {
-  src: Src<'a, T>,
-  _borrow: PhantomData<&'a mut T>,
+pub struct Old<'e, T> {
+  /// The `me` of its region's buffer.
+  buf: *mut Buf,
+  at: usize,
+  _e: PhantomData<(&'e mut (), T)>,
 }
 
-impl<'a, T: Flat> Old<'a, T> {
-  /// Narrows to a part of the old value, for example a child that takes its parent's place.
-  ///
-  /// A part that is not inside the old value (a `static`) is copied when written.
-  ///
-  /// ```
-  /// use nearest::{Near, Region, flat};
-  ///
-  /// #[flat]
-  /// enum Expr { Lit(i64), Neg(Near<Expr>) }
-  ///
-  /// let mut r = Region::new(Expr::neg(Expr::neg(Expr::Lit(3))));
-  /// // Unwrap: the grandchild moves up.
-  /// r.edit().replace(|old| {
-  ///   old.map(|e| match e {
-  ///     Expr::Neg(x) => match &**x { Expr::Neg(y) => &**y, x => x },
-  ///     e => e,
-  ///   })
-  /// });
-  /// assert!(matches!(*r, Expr::Lit(3)));
-  /// ```
-  pub fn map<U: Flat>(self, part: impl FnOnce(&T) -> &U) -> Old<'a, U> {
-    fits::<U>();
-    let src = match self.src {
-      Src::Out(r) => Src::Out(part(r)),
-      Src::At(buf, pos) => {
-        // SAFETY: the buffer is borrowed for `'a` and holds a valid `T` at `pos`.
-        let (base, len) = unsafe { ((*buf).base(), (*buf).len()) };
-        // SAFETY: as above; the reference is dropped below unless it is outside the buffer.
-        let u = part(unsafe { &*base.add(pos).cast::<T>() });
-        let off = ptr::from_ref(u).addr().wrapping_sub(base.addr());
-        if off < len { Src::At(buf, off) } else { Src::Out(u) }
-      }
-    };
-    Old { src, _borrow: PhantomData }
-  }
-}
-
-// SAFETY: in its own region the old value moves: its bytes are copied with re-aimed pointers,
-// and nothing else owns its targets. Anywhere else it is a deep copy, from a buffer that is
-// still borrowed and unchanged (I5).
+// SAFETY: in its own region the value moves: its bytes are copied with re-aimed pointers, and
+// nothing else owns its targets (I4, I5). Anywhere else it is a deep copy from its own region,
+// which is borrowed for `'e` and where nothing writes over it (I5).
 unsafe impl<T: Flat> Emit<T> for Old<'_, T> {
   unsafe fn emit(self, sink: &mut Sink, at: usize) {
     // SAFETY: `at` is allocated for a `T`; `buf` is live while `'_` is.
     unsafe {
-      match self.src {
-        Src::At(buf, pos) if ptr::eq(buf, sink.buf()) => relocate::<T>(buf, pos, at),
-        Src::At(buf, pos) => write_copy(&*(*buf).base().add(pos).cast::<T>(), sink, at),
-        Src::Out(r) => write_copy(r, sink, at),
+      if ptr::eq(self.buf, sink.buf()) {
+        relocate::<T>(self.buf, self.at, at);
+      } else {
+        write_copy(&*(*self.buf).base().add(self.at).cast::<T>(), sink, at);
       }
     }
   }
 }
 
-/// The handle of a list, `Edit<Near<[T]>>`.
+/// The handle of a list, `Edit<'e, Near<[T]>>`.
 ///
 /// It reads as `[T]` and, for plain `T`, writes as `[T]` too. The operations below move
 /// elements inside the list; a full list moves to a new block of twice the capacity.
@@ -201,16 +189,16 @@ unsafe impl<T: Flat> Emit<T> for Old<'_, T> {
 /// assert_eq!(r.items[..], [1, 2, 3, 4]);
 /// ```
 #[repr(transparent)]
-pub struct ListEdit<T>(Raw<Near<[T]>>);
+pub struct ListEdit<'e, T>(Raw<'e, Near<[T]>>);
 
-impl<T: Flat> ListEdit<T> {
-  pub(crate) const fn new(raw: &mut Raw<Near<[T]>>) -> &mut Self {
+impl<'e, T: Flat> ListEdit<'e, T> {
+  pub(crate) const fn new<'a>(raw: &'a mut Raw<'e, Near<[T]>>) -> &'a mut Self {
     // SAFETY: `ListEdit` is a transparent wrapper.
     unsafe { &mut *(ptr::from_mut(raw) as *mut Self) }
   }
 
   /// The buffer, and the list as it is now.
-  fn list(&mut self) -> (*mut Buf, List) {
+  fn list(&self) -> (*mut Buf, List) {
     let buf = self.0.buf();
     // SAFETY: the handle designates a `Near<[T]>`.
     (buf, unsafe { List::read(buf, self.0.at()) })
@@ -219,7 +207,7 @@ impl<T: Flat> ListEdit<T> {
   /// Writes `value` into the spare room after the elements, growing the list if it is full.
   fn stage(&mut self, value: impl Emit<T>) -> (*mut Buf, List) {
     let (buf, mut list) = self.list();
-    // SAFETY: `buf` is live, and only reached through it.
+    // SAFETY: `buf` is the edit's `me`.
     let mut sink = unsafe { Sink::new(buf) };
     if list.len == list.cap {
       // SAFETY: `list` is the list the handle points to; then the handle's pointer is aimed at
@@ -257,7 +245,7 @@ impl<T: Flat> ListEdit<T> {
   /// r.edit().insts().push(Inst::new(1, ())).args().push(10);
   /// assert_eq!((r.insts[0].op, &r.insts[0].args[..]), (1, &[10][..]));
   /// ```
-  pub fn push(&mut self, value: impl Emit<T>) -> &mut Edit<T> {
+  pub fn push(&mut self, value: impl Emit<T>) -> &mut Edit<'e, T> {
     let (buf, list) = self.stage(value);
     let at = list.elem::<T>(list.len);
     // SAFETY: the element is complete; the new handle borrows this one.
@@ -283,7 +271,7 @@ impl<T: Flat> ListEdit<T> {
   /// r.edit().names().insert(1, "b");
   /// assert_eq!(r.names.iter().map(|s| &**s).collect::<Vec<_>>(), ["a", "b", "c"]);
   /// ```
-  pub fn insert(&mut self, index: usize, value: impl Emit<T>) -> &mut Edit<T> {
+  pub fn insert(&mut self, index: usize, value: impl Emit<T>) -> &mut Edit<'e, T> {
     let len = self.len();
     assert!(index <= len, "insertion index (is {index}) should be <= len (is {len})");
     let (buf, list) = self.stage(value);
@@ -300,7 +288,7 @@ impl<T: Flat> ListEdit<T> {
     }
   }
 
-  /// Removes the element at `index`, moving the later elements down.
+  /// Removes the element at `index` and returns it, moving the later elements down.
   ///
   /// # Panics
   /// If `index >= len`.
@@ -309,20 +297,25 @@ impl<T: Flat> ListEdit<T> {
   /// use nearest::{Near, Region, flat};
   ///
   /// #[flat]
-  /// struct Stack { items: Near<[u32]> }
+  /// struct Lists { a: Near<[Near<str>]>, b: Near<[Near<str>]> }
   ///
-  /// let mut r = Region::new(Stack::new([1, 2, 3]));
-  /// r.edit().items().remove(0);
-  /// assert_eq!(r.items[..], [2, 3]);
+  /// let mut r = Region::new(Lists::new(("x", "y"), ()));
+  /// let lists = r.edit();
+  /// let x = lists.a().remove(0); // like `Vec::remove`
+  /// lists.b().push(x);           // the string moves to the other list
+  /// assert_eq!((r.a.len(), &*r.b[0]), (1, "x"));
   /// ```
-  pub fn remove(&mut self, index: usize) {
+  pub fn remove(&mut self, index: usize) -> Old<'e, T> {
     let (buf, list) = self.list();
     let len = list.len;
     assert!(index < len, "removal index (is {index}) should be < len (is {len})");
-    // SAFETY: the later elements move down over the removed one; then the length shrinks.
+    // SAFETY: the element moves out to fresh bytes; the later elements move down over its
+    // slot; then the length shrinks.
     unsafe {
+      let kept = detach::<T>(buf, list.elem::<T>(index));
       move_elems::<T>(buf, list.elem::<T>(index + 1), list.elem::<T>(index), len - index - 1);
       Self::set_len(buf, &list, len - 1);
+      Old { buf, at: kept, _e: PhantomData }
     }
   }
 
@@ -446,7 +439,7 @@ impl<T: Flat> ListEdit<T> {
   /// inst.args().push(11);
   /// assert_eq!((r.insts[0].op, &r.insts[0].args[..]), (2, &[10, 11][..]));
   /// ```
-  pub fn at(&mut self, index: usize) -> &mut Edit<T> {
+  pub fn at(&mut self, index: usize) -> &mut Edit<'e, T> {
     let (buf, list) = self.list();
     let len = list.len;
     assert!(index < len, "index out of bounds: the len is {len} but the index is {index}");
@@ -470,7 +463,7 @@ impl<T: Flat> ListEdit<T> {
     self.0.set(value);
   }
 
-  /// Replaces the list with what `f` makes of the old one.
+  /// Replaces the list with `value` and returns the old list.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -478,24 +471,26 @@ impl<T: Flat> ListEdit<T> {
   /// #[flat]
   /// struct Pair { a: Near<[u32]>, b: Near<[u32]> }
   ///
-  /// let mut r = Region::new(Pair::new([1], [2]));
-  /// // Each element of the new list moves from the old one.
-  /// r.edit().a().replace(|old| (old.map(|l| &l[0]), 3));
-  /// assert_eq!(r.a[..], [1, 3]);
+  /// let mut r = Region::new(Pair::new([1, 2], [3]));
+  /// let p = r.edit();
+  /// let a = p.a().replace(());   // the whole list moves out
+  /// let b = p.b().replace(a);    // and into `b`
+  /// p.a().set(b);
+  /// assert_eq!((&r.a[..], &r.b[..]), (&[3][..], &[1, 2][..]));
   /// ```
-  pub fn replace<'a, E: Emit<Near<[T]>>>(&'a mut self, f: impl FnOnce(Old<'a, Near<[T]>>) -> E) {
-    self.0.replace(f);
+  pub fn replace(&mut self, value: impl Emit<Near<[T]>>) -> Old<'e, Near<[T]>> {
+    self.0.replace(value)
   }
 }
 
-impl<T: Flat> Deref for ListEdit<T> {
+impl<T: Flat> Deref for ListEdit<'_, T> {
   type Target = [T];
   fn deref(&self) -> &[T] {
     self.0.get()
   }
 }
 
-impl<T: Flat + Copy> DerefMut for ListEdit<T> {
+impl<T: Flat + Copy> DerefMut for ListEdit<'_, T> {
   fn deref_mut(&mut self) -> &mut [T] {
     let (buf, list) = self.list();
     // SAFETY: the `len` elements are valid, have no pointers since `T: Copy`, and are borrowed
@@ -504,7 +499,7 @@ impl<T: Flat + Copy> DerefMut for ListEdit<T> {
   }
 }
 
-/// The handle of an optional pointer, `Edit<Option<Near<T>>>`.
+/// The handle of an optional pointer, `Edit<'e, Option<Near<T>>>`.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -521,10 +516,10 @@ impl<T: Flat + Copy> DerefMut for ListEdit<T> {
 /// assert_eq!(r.next.as_ref().map(|n| n.value), Some(3));
 /// ```
 #[repr(transparent)]
-pub struct OptionEdit<T>(Raw<Option<Near<T>>>);
+pub struct OptionEdit<'e, T>(Raw<'e, Option<Near<T>>>);
 
-impl<T: Flat> OptionEdit<T> {
-  pub(crate) const fn new(raw: &mut Raw<Option<Near<T>>>) -> &mut Self {
+impl<'e, T: Flat> OptionEdit<'e, T> {
+  pub(crate) const fn new<'a>(raw: &'a mut Raw<'e, Option<Near<T>>>) -> &'a mut Self {
     // SAFETY: `OptionEdit` is a transparent wrapper.
     unsafe { &mut *(ptr::from_mut(raw) as *mut Self) }
   }
@@ -544,7 +539,7 @@ impl<T: Flat> OptionEdit<T> {
   /// }
   /// assert_eq!(r.next.as_ref().unwrap().value, 20);
   /// ```
-  pub fn as_mut(&mut self) -> Option<&mut Edit<T>> {
+  pub fn as_mut(&mut self) -> Option<&mut Edit<'e, T>> {
     // SAFETY: a `Some` holds a `Near<T>` at offset 0.
     self.0.get().is_some().then(|| unsafe { self.0.field::<Near<T>>(0) })
   }
@@ -562,11 +557,11 @@ impl<T: Flat> OptionEdit<T> {
   /// r.edit().next().insert(Node::new(2, None)).next().insert(Node::new(3, None));
   /// assert_eq!(r.next.as_ref().unwrap().next.as_ref().unwrap().value, 3);
   /// ```
-  pub fn insert(&mut self, value: impl Emit<T>) -> &mut Edit<T> {
+  pub fn insert(&mut self, value: impl Emit<T>) -> &mut Edit<'e, T> {
     fits::<T>();
     let (buf, at) = (self.0.buf(), self.0.at());
-    // SAFETY: `buf` is live and only reached through it; the target is complete before the
-    // pointer is written, and the new handle borrows this one.
+    // SAFETY: `buf` is the edit's `me`; the target is complete before the pointer is written,
+    // and the new handle borrows this one.
     unsafe {
       let mut sink = Sink::new(buf);
       let t = sink.alloc(size_of::<T>(), align_of::<T>());
@@ -574,6 +569,33 @@ impl<T: Flat> OptionEdit<T> {
       sink.link(at, t);
       T::edit(buf, t)
     }
+  }
+
+  /// Takes the target out, leaving `None`, like [`Option::take`].
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Node { value: u32, next: Option<Near<Node>> }
+  ///
+  /// let mut r = Region::new(Node::new(1, Near::new(Node::new(2, None))));
+  /// let n = r.edit();
+  /// let next = n.next().take().unwrap();
+  /// n.next().insert(Node::new(3, Near::new(next))); // put a node in front
+  /// let next = r.next.as_ref().unwrap();
+  /// assert_eq!((next.value, next.next.as_ref().unwrap().value), (3, 2));
+  /// ```
+  pub fn take(&mut self) -> Option<Old<'e, T>> {
+    let (buf, at) = (self.0.buf(), self.0.at());
+    self.0.get().is_some().then(|| {
+      // SAFETY: the place holds a pointer to a `T`, which nothing reaches once it is cleared.
+      unsafe {
+        let target = aim(buf, at);
+        Sink::new(buf).write(at, 0i32);
+        Old { buf, at: target, _e: PhantomData }
+      }
+    })
   }
 
   /// Replaces the pointer with `value`: `None`, or `Near::new(..)`.
@@ -591,37 +613,16 @@ impl<T: Flat> OptionEdit<T> {
   pub fn set(&mut self, value: impl Emit<Option<Near<T>>>) {
     self.0.set(value);
   }
-
-  /// Replaces the pointer with what `f` makes of the old one.
-  ///
-  /// ```
-  /// use nearest::{Near, Region, flat};
-  ///
-  /// #[flat]
-  /// struct Node { value: u32, next: Option<Near<Node>> }
-  ///
-  /// let mut r = Region::new(Node::new(1, Near::new(Node::new(2, None))));
-  /// // Push a node in front of the old one, which moves.
-  /// r.edit().next().replace(|old| Near::new(Node::new(3, old)));
-  /// let next = r.next.as_ref().unwrap();
-  /// assert_eq!((next.value, next.next.as_ref().unwrap().value), (3, 2));
-  /// ```
-  pub fn replace<'a, E: Emit<Option<Near<T>>>>(
-    &'a mut self,
-    f: impl FnOnce(Old<'a, Option<Near<T>>>) -> E,
-  ) {
-    self.0.replace(f);
-  }
 }
 
-impl<T: Flat> Deref for OptionEdit<T> {
+impl<T: Flat> Deref for OptionEdit<'_, T> {
   type Target = Option<Near<T>>;
   fn deref(&self) -> &Option<Near<T>> {
     self.0.get()
   }
 }
 
-/// The handle of a string, `Edit<Near<str>>`.
+/// The handle of a string, `Edit<'e, Near<str>>`.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -636,10 +637,10 @@ impl<T: Flat> Deref for OptionEdit<T> {
 /// assert_eq!(&*r.name, "g");
 /// ```
 #[repr(transparent)]
-pub struct StrEdit(Raw<Near<str>>);
+pub struct StrEdit<'e>(Raw<'e, Near<str>>);
 
-impl StrEdit {
-  pub(crate) const fn new(raw: &mut Raw<Near<str>>) -> &mut Self {
+impl<'e> StrEdit<'e> {
+  pub(crate) const fn new<'a>(raw: &'a mut Raw<'e, Near<str>>) -> &'a mut Self {
     // SAFETY: `StrEdit` is a transparent wrapper.
     unsafe { &mut *(ptr::from_mut(raw) as *mut Self) }
   }
@@ -660,25 +661,26 @@ impl StrEdit {
     self.0.set(value);
   }
 
-  /// Replaces the string with what `f` makes of the old one.
+  /// Replaces the string with `value` and returns the old one.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
   ///
   /// #[flat]
-  /// struct Func { name: Near<str> }
+  /// struct Func { name: Near<str>, alias: Near<str> }
   ///
-  /// let mut r = Region::new(Func::new("f"));
-  /// let upper = r.name.to_uppercase();
-  /// r.edit().name().replace(|_| upper.as_str());
-  /// assert_eq!(&*r.name, "F");
+  /// let mut r = Region::new(Func::new("f", "g"));
+  /// let f = r.edit();
+  /// let name = f.name().replace("main");
+  /// f.alias().set(name);
+  /// assert_eq!((&*r.name, &*r.alias), ("main", "f"));
   /// ```
-  pub fn replace<'a, E: Emit<Near<str>>>(&'a mut self, f: impl FnOnce(Old<'a, Near<str>>) -> E) {
-    self.0.replace(f);
+  pub fn replace(&mut self, value: impl Emit<Near<str>>) -> Old<'e, Near<str>> {
+    self.0.replace(value)
   }
 }
 
-impl Deref for StrEdit {
+impl Deref for StrEdit<'_> {
   type Target = str;
   fn deref(&self) -> &str {
     self.0.get()

@@ -32,21 +32,29 @@ let b = r.edit();
 b.insts().push(Inst::new(9, [1, 2])).args().push(3);   // `push` returns the new element
 b.insts().at(0).args()[1] = 21;                         // plain data is a real slice
 b.insts().retain(|inst| inst.op != 2);
-b.next().insert(Block::new(1, (), None)).insts().push(Inst::new(4, ()));
-b.next().set(None);
+
+// Move. A value that leaves its place can be written anywhere else in the region, in O(1).
+let inst = b.insts().remove(0);                                 // like `Vec::remove`
+b.next().insert(Block::new(1, (), None)).insts().push(inst);    // the instruction changes block
+let tail = b.next().take();                                     // like `Option::take`
+drop(tail);
 
 // Compact. A copy into a new region keeps only what is reachable.
 r = Region::new(&*r);
+
+// Save and load. Loading checks the bytes.
+let bytes = r.to_bytes();
+let copy = Region::<Block>::from_bytes(&bytes)?;
+// A memory-mapped file, or any 8-aligned slice, is read in place.
+let block: &Block = Region::view(map)?;
 ```
 
-Enums get a view of their variant, and `replace` hands over the old value, which moves into
-the new one instead of being copied:
+Enums get a view of their variant, and `replace` returns the old value, like `mem::replace`;
+written somewhere else in the region, it moves there:
 
 ```rust
 #[flat]
 enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
-
-fn inner(e: &Expr) -> &Expr { match e { Expr::Neg(x) => x, e => e } }
 
 /// `--x` becomes `x`, bottom up.
 fn simplify(e: &mut Edit<Expr>) {
@@ -55,14 +63,22 @@ fn simplify(e: &mut Edit<Expr>) {
     ExprMut::Neg(x) => simplify(x),
     ExprMut::Add(args) => { simplify(args._0()); simplify(args._1()); }
   }
-  if let Expr::Neg(x) = &**e && let Expr::Neg(_) = &**x {
-    e.replace(|old| old.map(|e| inner(inner(e))));   // the inner value moves up, O(1)
+  if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Neg(y) = x.as_mut() {
+    let inner = y.replace(Expr::Lit(0));     // like `mem::replace`: the old value comes back
+    e.set(inner);                            // and moves up, O(1)
   }
 }
 
 let mut r = Region::new(Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2))));
-simplify(r.edit());
-r.edit().replace(|old| Expr::neg(old));              // wrap: the old value moves, O(1)
+let e = r.edit();
+simplify(e);
+let old = e.replace(Expr::Lit(0));
+e.set(Expr::neg(old));                       // wrap: the old value moves, O(1)
+if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
+  let a = args._0().replace(Expr::Lit(0));   // swap two children: three moves
+  let b = args._1().replace(a);
+  args._0().set(b);
+}
 ```
 
 ## The API
@@ -70,13 +86,14 @@ r.edit().replace(|old| Expr::neg(old));              // wrap: the old value move
 | Item | |
 |---|---|
 | `#[flat]` | makes a struct or enum storable; generates constructors and the handle |
-| `Region<T>` | the buffer: `new`, `edit`, `to_bytes`, `from_bytes` (unsafe), `byte_len` |
+| `Region<T>` | the buffer: `new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len` |
 | `Near<T>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)` |
-| `Edit<T>` | the handle of a place holding a `T`, always behind `&mut` |
-| `ListEdit<T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`, `replace` |
-| `OptionEdit<T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `set`, `replace` |
-| `StrEdit` | the handle of a `Near<str>`: `set`, `replace` |
-| `Old<'a, T>` | the value being replaced: write it to move it, `map` it to a part |
+| `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
+| `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`, `replace` |
+| `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set` |
+| `StrEdit<'e>` | the handle of a `Near<str>`: `set`, `replace` |
+| `Old<'e, T>` | a value that left its place: write it anywhere to move it there |
+| `Invalid` | the error of `from_bytes` and `view` |
 | `Flat`, `Emit<T>` | "may live in a region", "can be written as a `T`" |
 
 Anything that can be written as a `T` is accepted wherever a `T` is built: a value, a copy
@@ -87,7 +104,20 @@ where one is expected (optional pointers, lists of pointers).
 
 Handles reach every place in a region. Plain data (`T: Copy`) is a real `&mut T` or `&mut [T]`.
 A handle borrows its parent handle, so one handle is usable at a time, and no reference into
-the buffer outlives a change that may grow it.
+the buffer outlives a change that may grow it. Every handle has `set` (assign) and `replace`
+(assign and return the old value); `ListEdit::remove` and `OptionEdit::take` also return the
+value that left. Such an `Old` keeps the region borrowed for the whole edit and can be written
+into any place of it in O(1): wrapping, hoisting, swapping and moving elements between lists
+are ordinary statements.
+
+## Bytes
+
+`to_bytes` returns the compact image of a region, the bytes a deep copy writes; it borrows the
+buffer when the region has not been edited since it was built or loaded. `from_bytes` copies
+bytes into a new region and checks them; `view` checks an 8-aligned slice, such as a
+memory-mapped file, and reads it in place. Checking accepts exactly the compact images of valid
+values, in one pass, in safe code, without recursion or panics. The bytes hold native-endian
+integers and the layout of the target.
 
 ## Safety model
 
@@ -95,8 +125,10 @@ the buffer outlives a change that may grow it.
 - No safe API gives a `&mut T` for a `T` that contains a `Near`; such places are reached
   through handles, which are unsized, so they cannot be swapped or assigned through.
 - A region is a tree: builders make fresh targets, `&T` copies, and the only moves are `Old`
-  (used at most once) and list operations.
-- A handle holds a position, not an address, so it stays valid when the buffer grows.
+  (used at most once) and list operations. Bytes that are no longer reachable are never
+  written again, so an `Old` stays intact for as long as the edit lasts.
+- A handle holds a position, not an address, so it stays valid when the buffer grows. Every
+  access of an edit goes through one pointer stored in the region's buffer.
 - A panic leaves every place either unchanged or holding its complete new value.
 - No pointer is made from an integer. Miri runs the tests with Tree Borrows and strict
   provenance.
