@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4](https://github.com/uael/nearest/compare/v0.5.3...v0.5.4) - 2026-11-17
+
+### Added
+
+- *(derive)* #[flat(rename = "..")] on variants ([#42](https://github.com/uael/nearest/pull/42))
+
+## [0.5.3](https://github.com/uael/nearest/compare/v0.5.2...v0.5.3) - 2026-11-17
+
+### Added
+
+- Heap::with_capacity ([#41](https://github.com/uael/nearest/pull/41))
+
+## [0.5.2](https://github.com/uael/nearest/compare/v0.5.1...v0.5.2) - 2026-11-17
+
+### Added
+
+- Display for Region and Near ([#40](https://github.com/uael/nearest/pull/40))
+
+## [0.5.1](https://github.com/uael/nearest/compare/v0.5.0...v0.5.1) - 2026-11-17
+
+### Added
+
+- custom storage, and no_std without alloc ([#39](https://github.com/uael/nearest/pull/39))
+
 ## [0.5.0](https://github.com/uael/nearest/compare/v0.4.5...v0.5.0) - 2026-11-17
 
 ### Added
