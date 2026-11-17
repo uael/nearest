@@ -363,8 +363,23 @@ fn inst_expr() -> Region<Expr> {
   Region::new(Expr::neg(Expr::Lit(2)))
 }
 
+type Bytes = [u8];
+type Text = str;
+type Sub = Expr;
+
+/// The target of a pointer field may be written through an alias.
+#[flat]
+struct ViaAlias {
+  bytes: Near<Bytes>,
+  text: Near<Text>,
+  expr: Near<Sub>,
+}
+
 #[test]
 fn constructors_box_pointer_fields() {
+  let a = Region::new(ViaAlias::new([1, 2], "t", Expr::neg(Expr::Lit(3))));
+  assert_eq!((&a.bytes[..], &*a.text, show(&a.expr)), (&[1, 2][..], "t", "-3".to_owned()));
+
   // A `Near<X>` field takes a builder of `X`: a value, a copy, a constructor, or an `Old`.
   let r = Region::new(Expr::add(Expr::Lit(1), Expr::neg(Expr::add(Expr::Lit(2), &*inst_expr()))));
   assert_eq!(show(&r), "(1 + -(2 + -2))");

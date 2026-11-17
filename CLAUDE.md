@@ -46,7 +46,7 @@ limit, index bounds and the check of loaded bytes. `DESIGN.md` is the specificat
 `replace`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`, `set`), `StrEdit<'e>` (`set`,
 `replace`), `Old<'e, T>` (no methods), `Invalid`, plus the trait impls listed in `DESIGN.md`.
 Hidden plumbing for the macro: `nearest::__private::{Raw, Buf, Sink, Check, fits, make,
-Variant}` and the hidden items of the two traits. Do not add public items.
+Variant, Pointer}` and the hidden items of the two traits. Do not add public items.
 
 ### Files (nearest/src/)
 
@@ -61,8 +61,8 @@ Variant}` and the hidden items of the two traits. Do not add public items.
 
 `nearest-derive/src/lib.rs` generates, inside `const _: () = { .. }`: the `Flat` impl (`Edit<'e>`,
 `PLAIN`, `ANY`, `store`, `edit`, `check`, each checking `fits`), constructors (`new`, or one snake-case
-function per non-unit variant; a parameter for a field written `Near<X>` takes a builder of
-`X`), the handle `__NearestEdit<'e, ..>` (`set`, `replace`, a method per struct field, `as_mut`
+function per non-unit variant; a parameter for a field written `Near<..>` takes
+`<FieldType as __private::Pointer>::Arg`: a builder of `X` for `Near<X>`), the handle `__NearestEdit<'e, ..>` (`set`, `replace`, a method per struct field, `as_mut`
 for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), hidden `#[repr(C)]` mirror structs
 `(u8, fields..)` for variant field offsets, and for multi-field variants a payload handle (a
 `Raw` of the mirror, so it has no `set`/`replace`) named through `__private::Variant<I>`.

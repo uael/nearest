@@ -54,6 +54,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   }
   let (impl_g, ty_g, where_c) = generics.split_for_impl();
   let self_ty = quote!(#name #ty_g);
+  let type_params: Vec<_> = input.generics.type_params().map(|p| &p.ident).collect();
   // `'a`: the borrow of a handle; `'e`: the edit.
   let [lt, e] = ["'a", "'e"].map(|name| Lifetime::new(name, Span::call_site()));
   let mut handle_g = generics.clone();
@@ -65,7 +66,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let handle = format_ident!("__NearestEdit");
 
   // A constructor: `make` around one `emit` per field, after an optional tag. A field written
-  // `Near<X>` takes a builder of `X` and allocates the target.
+  // `Near<..>` takes what `Pointer` says: for `Near<X>` a builder of `X`, whose target the
+  // constructor allocates.
   let ctor =
     |fname: Ident, doc: String, fields: &Fields, tag: TokenStream, offs: Vec<TokenStream>| {
       let params: Vec<_> = (fields.iter().enumerate())
@@ -75,12 +77,21 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         .collect();
       let (mut ptys, mut vals) = (Vec::new(), Vec::new());
       for (f, p) in fields.iter().zip(&params) {
-        if let Some(x) = near_target(&f.ty) {
-          ptys.push(x.to_token_stream());
-          vals.push(quote!(::nearest::Near::<#x>::new(#p)));
-        } else {
-          ptys.push(f.ty.to_token_stream());
-          vals.push(p.to_token_stream());
+        let ty = &f.ty;
+        match near_target(ty) {
+          // A type parameter is a sized target; naming it lets the argument infer it.
+          Some(Type::Path(x)) if type_params.iter().any(|t| x.path.is_ident(*t)) => {
+            ptys.push(x.to_token_stream());
+            vals.push(quote!(::nearest::Near::<#x>::new(#p)));
+          }
+          Some(_) => {
+            ptys.push(quote!(<#ty as #np::Pointer>::Arg));
+            vals.push(quote!(<#ty as #np::Pointer>::wrap(#p)));
+          }
+          None => {
+            ptys.push(ty.to_token_stream());
+            vals.push(p.to_token_stream());
+          }
         }
       }
       let tys = fields.iter().map(|f| &f.ty);
@@ -362,8 +373,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   })
 }
 
-/// `X` if `ty` is written `Near<X>` (any path ending in `Near` with one type argument) and `X`
-/// is not a slice or `str`.
+/// `X` if `ty` is written `Near<X>`: any path ending in `Near` with one type argument.
 fn near_target(ty: &Type) -> Option<&Type> {
   let ty = match ty {
     Type::Group(g) => &*g.elem,
@@ -372,15 +382,14 @@ fn near_target(ty: &Type) -> Option<&Type> {
   };
   let Type::Path(p) = ty else { return None };
   let last = p.path.segments.last()?;
-  let PathArguments::AngleBracketed(args) = &last.arguments else { return None };
-  if last.ident != "Near" || args.args.len() != 1 {
-    return None;
-  }
-  let Some(GenericArgument::Type(x)) = args.args.first() else { return None };
-  match x {
-    Type::Slice(_) => None,
-    Type::Path(s) if s.qself.is_none() && s.path.is_ident("str") => None,
-    x => Some(x),
+  match &last.arguments {
+    PathArguments::AngleBracketed(a) if last.ident == "Near" && a.args.len() == 1 => {
+      match a.args.first() {
+        Some(GenericArgument::Type(x)) => Some(x),
+        _ => None,
+      }
+    }
+    _ => None,
   }
 }
 

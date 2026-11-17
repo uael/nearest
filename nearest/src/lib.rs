@@ -172,9 +172,8 @@ pub use near::Near;
 ///
 /// - constructors whose parameters take anything that can be written as the field's type
 ///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
-///   named after it in snake case. A parameter for a field written `Near<X>` (with `X` not a
-///   slice or `str`) takes a builder of `X` and allocates the target. Write list and string
-///   pointers as `Near<[T]>` and `Near<str>`, not through an alias of the slice or of `str`;
+///   named after it in snake case. A parameter for a field written `Near<X>` takes a builder
+///   of `X` and allocates the target (a list or string builder if `X` is a slice or `str`);
 /// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign) and `replace` (assign and return
 ///   the old value as an [`Old`]), and for structs one method per field (`_0`, `_1`, .. for
 ///   tuple fields; `set_` and `replace_` for fields named `set` and `replace`) returning the
@@ -249,6 +248,7 @@ pub type Edit<'e, T> = <T as Flat>::Edit<'e>;
 /// Plumbing for the code [`#[flat]`](flat) generates. Not public API.
 #[doc(hidden)]
 pub mod __private {
+  use crate::{Emit, Flat, Near};
   pub use crate::{
     bytes::Check,
     edit::Raw,
@@ -259,6 +259,36 @@ pub mod __private {
   pub trait Variant<const I: u8> {
     /// The handle, during the edit `'e`.
     type Edit<'e>: ?Sized;
+  }
+
+  /// What a constructor takes for a field written `Near<..>`: for `Near<T>` a builder of the
+  /// target, which it allocates; for a list or a string, a builder of the pointer itself.
+  pub trait Pointer: Flat {
+    /// What the parameter builds.
+    type Arg: Flat;
+    /// The builder of the field.
+    fn wrap(arg: impl Emit<Self::Arg>) -> impl Emit<Self>;
+  }
+
+  impl<T: Flat> Pointer for Near<T> {
+    type Arg = T;
+    fn wrap(arg: impl Emit<T>) -> impl Emit<Self> {
+      Self::new(arg)
+    }
+  }
+
+  impl<T: Flat> Pointer for Near<[T]> {
+    type Arg = Self;
+    fn wrap(arg: impl Emit<Self>) -> impl Emit<Self> {
+      arg
+    }
+  }
+
+  impl Pointer for Near<str> {
+    type Arg = Self;
+    fn wrap(arg: impl Emit<Self>) -> impl Emit<Self> {
+      arg
+    }
   }
 }
 
