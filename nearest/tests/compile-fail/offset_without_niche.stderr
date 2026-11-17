@@ -1,0 +1,30 @@
+error[E0080]: evaluation panicked: `Option` of the `NonZero` of an `Offset` has the size of the `Offset`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: evaluation of `nearest::near::offset::<Wide>::{constant#0}` failed here
+  |
+ ::: src/near.rs
+  |
+  | /     assert!(
+  | |       size_of::<Option<O::NonZero>>() == w,
+  | |       "`Option` of the `NonZero` of an `Offset` has the size of the `Offset`"
+  | |     );
+  | |_____- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/near.rs
+  |
+  | /   const {
+  | |     let w = size_of::<O>();
+  | |     assert!(w == 2 || w == 4 || w == 8, "an `Offset` is 2, 4 or 8 bytes");
+  | |     assert!(
+... |
+  | |     );
+  | |   };
+  | |___^
+
+note: the above error was encountered while instantiating `fn nearest::near::offset::<Wide>`
+ --> src/flat.rs
+  |
+  |     offset::<O>();
+  |     ^^^^^^^^^^^^^

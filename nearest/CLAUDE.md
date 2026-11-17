@@ -21,10 +21,11 @@ lifetimes, moves and the tree shape are enforced by types; see Runtime checks fo
   holding a `T`.
 - `Near<T, O: Offset = i32>`: builders `new`, `from_iter`; pinned view `as_pin_mut`,
   `iter_pin_mut`.
-- `trait Offset`: the integer of a `Near`, implemented for `i16`, `i32`, `i64` only (sealed by a
-  private supertrait); all its items hidden (`NonZero`, `LIMIT`, `from_isize`, `to_isize`,
-  `read`). Its supertraits `Flat + Copy + Debug + Eq + Ord + Hash` let a type generic over the
-  width be `#[flat]` (which bounds every type parameter by `Flat`) and derive the usual traits.
+- `unsafe trait Offset`: the integer of a `Near`, implemented for `i16`, `i32`, `i64`, and open
+  to the user's (an integer of a fixed byte order, say): `type NonZero`, `LIMIT` (defaulted from
+  the size), `from_isize`, `to_isize`; its `# Safety` is the contract (see Offsets). Its
+  supertraits `Flat + Copy + Debug + Eq + Ord + Hash` let a type generic over the width be
+  `#[flat]` (which bounds every type parameter by `Flat`) and derive the usual traits.
 - `Region<T, S: Storage = Heap>`: `new`, `new_in`, `edit`, `as_bytes`, `from_bytes`,
   `from_bytes_with`, `byte_len`; `unsafe` `from_bytes_unchecked`.
 - Functions `view::<T>(bytes)`, `view_with::<T>(bytes, scratch)`; `unsafe`
@@ -50,7 +51,7 @@ the target. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, `
 
 Hidden: `nearest::__private::{Raw, Buf, Sink, Check, fits, make, Variant, Pointer}` (and `unpin`
 with `nightly`), the plumbing of the macro; the hidden items of `Flat` (`PLAIN`, `ANY`, `REACH`,
-`store`, `edit`, `check`; `UNPIN` with `nightly`), `Emit` (`emit`, `plain`) and `Offset`.
+`store`, `edit`, `check`; `UNPIN` with `nightly`) and `Emit` (`emit`, `plain`).
 Nothing else is public; do not add public items.
 
 Features:
@@ -107,6 +108,32 @@ so it is safe to hand out as `&mut T`.
   going down, so every distance and length in the region fits its `O`. `REACH` and `LIMIT` are
   `u64` so the rule is the same on every target (an `i64` pointer to an `i32` one is rejected on
   32-bit targets too, where both reach 2 GiB).
+
+## Offsets
+
+An `O: Offset` is how a region reads and writes the distances of its pointers and the lengths and
+capacities of its lists and strings: only through `O::from_isize` and `O::to_isize`, and by
+reading stored bytes as `O` (`near::read`, `read_unaligned`) or as `O::NonZero` (the field of a
+`Near`). So the byte order of those integers is the offset's: `i16`, `i32`, `i64` are
+native-endian; a user's offset can fix one for every target. The contract (the trait's
+`# Safety`, keep both the same):
+
+- every bit pattern of `size_of::<O>()` bytes is a valid `O`, which has no padding;
+- `from_isize(n).to_isize() == n` for `|n| <= LIMIT`;
+- `from_isize(0)` is all zero bytes, and the only `O` whose `to_isize()` is 0: zeroed memory
+  reads as 0 (null, an empty list), and a `None` is never read as a `Near`;
+- `O::NonZero` is `O` without zero: same size and alignment, valid for every pattern but zero,
+  `Option<O::NonZero>` of `O`'s size with `None` zero, `Into<O>` keeping the bytes;
+- `from_isize` and `to_isize` depend only on their argument, never panic for those values (a
+  panic between allocating and linking would leave a zero `Near`, I7), and do nothing else.
+
+`near::offset::<O>()`, a `const` block, checks the layout half at compile time (2, 4 or 8
+bytes; `NonZero` and `Option<NonZero>` of that size, `NonZero` of that alignment; `LIMIT` a
+multiple of 8 that the integers of that size reach). Every function that reads or writes the
+bytes of an `O` calls it: `fits_behind`, `aim`, `read_len`, `Sink::link`, `Sink::write_len`,
+`Near::target`, `Near::target_mut`, `moved`, the `None` of `Option<Near>`, and `near::read`, which
+the checker reads offsets with. `LIMIT` defaults to `2^(8 * size - 1) - 8`, the largest multiple
+of 8 of a signed integer of that size (`iN::MAX & !7` for the three integers).
 
 ## Runtime checks
 
@@ -470,8 +497,9 @@ no gaps. Values are checked on the way: `bool`, `char`, `NonZero`, enum tags, UT
 - Elements with `Flat::ANY` (no pointers, every bit pattern valid: lists and arrays of numbers)
   are not walked, so checking costs pointers, text and values that can be invalid, not bulk
   numbers: a large mapped table is ready at once.
-- The bytes hold native-endian integers and the layout of the target; no header, no version. A
-  build with the same layout reads back what `as_bytes` gave.
+- The bytes hold the layout of the target, its values in the byte order of their types, and
+  distances and lengths as their `Offset` writes them (native-endian for `i16`, `i32`, `i64`);
+  no header, no version. A build with the same layout reads back what `as_bytes` gave.
 - With `serde`, a region serializes as its bytes (`serialize_bytes` of `as_bytes`, or of a
   compact copy, `Region::new(&*r)`, if it was edited), and deserializes through `from_bytes`
   (any storage with `Default`); its `Error` becomes `de::Error::custom`. The visitor takes bytes
@@ -492,7 +520,7 @@ Files of `src/`:
 - `bytes.rs`: `Error`, `Pending`, `Stack`, the checker `Check` and its steps (`target`, `list`,
   `text`, `items`), `check`, `view`, `view_with`, `view_unchecked`.
 - `near.rs`: `Near<T, O>`: `Deref` for `T`, `[T]` and `str`, builders, trait impls; `Offset`,
-  sealed, and its three impls (`offsets!`).
+  its three impls (`offsets!`), `offset` (its layout, checked) and `read`.
 - `region.rs`: `Region<T, S>`: `attach`, `base`, `copy_of`, constructors, `edit`, `as_bytes`,
   `from_bytes*`, trait impls, `serde` impls.
 - `storage.rs`: `Storage` and its contract, `Heap`, `Inline<N>`.

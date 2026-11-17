@@ -90,7 +90,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `view`, `view_with` | functions: the value whose image is an 8-aligned slice, checked and read in place; `unsafe` `view_unchecked` |
 | `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap (`Heap::with_capacity`), `N` bytes inside the region |
 | `Near<T, O = i32>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
-| `Offset` | the integer a `Near` keeps its distance in: `i16`, `i32` or `i64` |
+| `Offset` | the integer a `Near` keeps its distance in: `i16`, `i32`, `i64`, or a type of yours (an `unsafe` trait) |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
 | `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
 | `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `update` |
@@ -182,7 +182,9 @@ keeps the pointers still to visit in memory that grows with the nesting of the d
 `Error::ScratchFull` if it runs out: `bytes.len() / 4` entries are always enough (`/ 2` with
 2-byte pointers). For bytes you
 trust, `from_bytes_unchecked` and `view_unchecked` skip the check and are `unsafe`. The bytes
-hold native-endian integers and the layout of the target.
+hold the layout of the target, its values in the byte order of their types, and distances and
+lengths as their `Offset` writes them: native-endian for `i16`, `i32` and `i64`, or a byte order
+of your choice with an `Offset` of yours (an `unsafe` trait).
 
 ## Storage
 

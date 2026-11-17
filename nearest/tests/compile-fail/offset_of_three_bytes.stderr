@@ -1,0 +1,27 @@
+error[E0080]: evaluation panicked: an `Offset` is 2, 4 or 8 bytes
+ --> $RUST/core/src/panic.rs
+  |
+  = note: evaluation of `nearest::near::offset::<Three>::{constant#0}` failed here
+  |
+ ::: src/near.rs
+  |
+  |     assert!(w == 2 || w == 4 || w == 8, "an `Offset` is 2, 4 or 8 bytes");
+  |     --------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/near.rs
+  |
+  | /   const {
+  | |     let w = size_of::<O>();
+  | |     assert!(w == 2 || w == 4 || w == 8, "an `Offset` is 2, 4 or 8 bytes");
+  | |     assert!(
+... |
+  | |     );
+  | |   };
+  | |___^
+
+note: the above error was encountered while instantiating `fn nearest::near::offset::<Three>`
+ --> src/flat.rs
+  |
+  |     offset::<O>();
+  |     ^^^^^^^^^^^^^

@@ -1,7 +1,11 @@
-//! Pointers of every width, `Near<T, O>` with `O` = `i16`, `i32` (the default) or `i64`: the
-//! same tests for each, on types generic over the width; the limit a width sets; mixed widths.
+//! Pointers of every width, `Near<T, O>` with `O` = `i16`, `i32` (the default) or `i64`, and
+//! offsets of the user's of each width in both byte orders: the same tests for each, on types
+//! generic over the width; the limit a width sets; mixed widths; byte orders.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::{
+  num::NonZero,
+  panic::{AssertUnwindSafe, catch_unwind},
+};
 
 use nearest::{Edit, Error, Heap, Inline, Near, Offset, Pending, Region, flat};
 
@@ -136,28 +140,24 @@ fn helpers<O: Offset>() {
 }
 
 /// The `O` at `at`, which is not negative: a distance forward or a length.
-fn pos<O>(bytes: &[u8], at: usize) -> usize {
+fn pos<O: Offset>(bytes: &[u8], at: usize) -> usize {
   usize::try_from(int::<O>(bytes, at)).unwrap()
 }
 
 /// The `O` at `at`.
-fn int<O>(bytes: &[u8], at: usize) -> i64 {
-  let b = &bytes[at..];
-  match size_of::<O>() {
-    2 => i16::from_ne_bytes(b[..2].try_into().unwrap()).into(),
-    4 => i32::from_ne_bytes(b[..4].try_into().unwrap()).into(),
-    _ => i64::from_ne_bytes(b[..8].try_into().unwrap()),
-  }
+fn int<O: Offset>(bytes: &[u8], at: usize) -> i64 {
+  let b = &bytes[at..at + size_of::<O>()];
+  // SAFETY: `size_of::<O>()` initialized bytes, which make an `O` whatever they are (`Offset`).
+  let o = unsafe { b.as_ptr().cast::<O>().read_unaligned() };
+  o.to_isize() as i64
 }
 
 /// Writes `v` as the `O` at `at`.
-fn put<O>(bytes: &mut [u8], at: usize, v: i64) {
-  let b = &mut bytes[at..];
-  match size_of::<O>() {
-    2 => b[..2].copy_from_slice(&i16::try_from(v).unwrap().to_ne_bytes()),
-    4 => b[..4].copy_from_slice(&i32::try_from(v).unwrap().to_ne_bytes()),
-    _ => b[..8].copy_from_slice(&v.to_ne_bytes()),
-  }
+fn put<O: Offset>(bytes: &mut [u8], at: usize, v: i64) {
+  let b = &mut bytes[at..at + size_of::<O>()];
+  let o = O::from_isize(isize::try_from(v).unwrap());
+  // SAFETY: `size_of::<O>()` bytes, written unaligned.
+  unsafe { b.as_mut_ptr().cast::<O>().write_unaligned(o) };
 }
 
 /// The layout: an `O` pointer, list headers of two `O`s before elements aligned for their type,
@@ -214,9 +214,83 @@ macro_rules! widths {
     mod w16 { $(#[test] fn $test() { super::$test::<i16>() })* }
     mod w32 { $(#[test] fn $test() { super::$test::<i32>() })* }
     mod w64 { $(#[test] fn $test() { super::$test::<i64>() })* }
+    mod le16 { $(#[test] fn $test() { super::$test::<super::Le16>() })* }
+    mod le32 { $(#[test] fn $test() { super::$test::<super::Le32>() })* }
+    mod le64 { $(#[test] fn $test() { super::$test::<super::Le64>() })* }
+    mod be16 { $(#[test] fn $test() { super::$test::<super::Be16>() })* }
+    mod be32 { $(#[test] fn $test() { super::$test::<super::Be32>() })* }
+    mod be64 { $(#[test] fn $test() { super::$test::<super::Be64>() })* }
   };
 }
 widths!(sizes, build_and_read, edit, helpers, layout, bytes);
+
+// ---------------------------------------------------------------------------------------------
+// Offsets of the user's: the byte order of a region's own integers
+
+/// An integer of a given byte order, whatever the target's, and the same without zero.
+macro_rules! offsets {
+  ($($name:ident $non_zero:ident: $int:ty, $to:ident, $from:ident;)*) => {$(
+    #[flat]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[repr(transparent)]
+    struct $name($int);
+
+    #[derive(Clone, Copy)]
+    #[repr(transparent)]
+    struct $non_zero(NonZero<$int>);
+
+    impl From<$non_zero> for $name {
+      fn from(n: $non_zero) -> Self {
+        Self(n.0.get())
+      }
+    }
+
+    // SAFETY: an integer whose bytes are those of the integer in the given byte order: any
+    // bit pattern, a round trip within its range, zero is the zero bytes (swapping keeps it);
+    // `$non_zero` is the same bytes without zero, a `#[repr(transparent)]` `NonZero`, so
+    // `Option` of it is its size with `None` zero; `From` keeps the bytes.
+    #[expect(clippy::cast_possible_truncation, reason = "values within a region fit both")]
+    unsafe impl Offset for $name {
+      type NonZero = $non_zero;
+      fn from_isize(n: isize) -> Self {
+        Self((n as $int).$to())
+      }
+      fn to_isize(self) -> isize {
+        <$int>::$from(self.0) as isize
+      }
+    }
+  )*};
+}
+offsets! {
+  Le16 NonZeroLe16: i16, to_le, from_le;
+  Le32 NonZeroLe32: i32, to_le, from_le;
+  Le64 NonZeroLe64: i64, to_le, from_le;
+  Be16 NonZeroBe16: i16, to_be, from_be;
+  Be32 NonZeroBe32: i32, to_be, from_be;
+  Be64 NonZeroBe64: i64, to_be, from_be;
+}
+
+/// The bytes of a region are the same on every target with offsets of a fixed byte order: a
+/// pointer to a length, the length, the text.
+#[test]
+fn byte_orders() {
+  let le = Region::<Near<str, Le32>>::new("hi");
+  assert_eq!(le.as_bytes().unwrap(), [4, 0, 0, 0, 2, 0, 0, 0, b'h', b'i']);
+  let be = Region::<Near<str, Be32>>::new("hi");
+  assert_eq!(be.as_bytes().unwrap(), [0, 0, 0, 4, 0, 0, 0, 2, b'h', b'i']);
+  let be = Region::<Near<[u8], Be16>>::new(Near::from_iter([7u8]));
+  // A pointer to the length, the capacity and the length, the element.
+  assert_eq!(be.as_bytes().unwrap(), [0, 4, 0, 1, 0, 1, 7]);
+  // Loaded with the byte order it was written with, and only that one.
+  let image = Region::<Near<str, Be32>>::new("hello").as_bytes().unwrap().to_vec();
+  assert_eq!(&**Region::<Near<str, Be32>>::from_bytes(&image).unwrap(), "hello");
+  assert!(Region::<Near<str, Le32>>::from_bytes(&image).is_err());
+  // A region built with one byte order is read and edited the same as with any other.
+  let (mut be, mut native) = (tree::<Be32>(), tree::<i32>());
+  be.edit().kids().push(leaf(6, "pushed"));
+  native.edit().kids().push(leaf(6, "pushed"));
+  assert_eq!(ids(&be), ids(&native));
+}
 
 // ---------------------------------------------------------------------------------------------
 // The limit a width sets

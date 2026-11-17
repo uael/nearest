@@ -4,6 +4,7 @@ use crate::{
   Error, Near, Offset, Storage,
   bytes::{Check, list, target, text},
   edit::{ListEdit, OptionEdit, Raw, StrEdit},
+  near::offset,
 };
 
 /// The largest region with a `T` at its root, a multiple of 8: what the pointers of the root
@@ -39,6 +40,7 @@ pub const fn fits<T>() {
 /// so pointers may only get wider going down.
 pub const fn fits_behind<T: Flat, O: Offset>() {
   fits::<T>();
+  offset::<O>();
   const {
     assert!(T::REACH >= O::LIMIT, "a `Near` cannot lead to a type holding a narrower `Near`");
   };
@@ -275,6 +277,7 @@ impl Sink {
   /// `at` holds a pointer field of `O`.
   #[inline]
   pub(crate) unsafe fn link<O: Offset>(&mut self, at: usize, target: usize) {
+    offset::<O>();
     // SAFETY: forwarded; the distance fits `O` because the region is within its limit.
     unsafe { self.write(at, O::from_isize(distance(at, target))) }
   }
@@ -285,6 +288,7 @@ impl Sink {
   /// `at + size_of::<O>()` is within the allocated bytes.
   #[inline]
   pub(crate) unsafe fn write_len<O: Offset>(&mut self, at: usize, len: usize) {
+    offset::<O>();
     // SAFETY: forwarded; a length within the region fits `O`.
     unsafe { self.write(at, O::from_isize(len.cast_signed())) }
   }
@@ -295,6 +299,7 @@ impl Sink {
 /// # Safety
 /// `at` holds a non-null pointer of `O` in `buf`.
 pub unsafe fn aim<O: Offset>(buf: *mut Buf, at: usize) -> usize {
+  offset::<O>();
   // SAFETY: per the caller.
   let off = unsafe { (*buf).base().add(at).cast::<O>().read_unaligned() };
   at.wrapping_add_signed(off.to_isize())
@@ -305,6 +310,7 @@ pub unsafe fn aim<O: Offset>(buf: *mut Buf, at: usize) -> usize {
 /// # Safety
 /// `at` holds that length in `buf`.
 unsafe fn read_len<O: Offset>(buf: *mut Buf, at: usize) -> usize {
+  offset::<O>();
   // SAFETY: per the caller.
   unsafe { (*buf).base().add(at).cast::<O>().read_unaligned().to_isize().cast_unsigned() }
 }
@@ -570,6 +576,7 @@ impl<T: ?Sized, O: Offset> Near<T, O> {
   /// # Safety
   /// `at` is allocated in the sink for a `Near`, and the target is within the region from there.
   unsafe fn moved(&self, sink: &mut Sink, at: usize, d: isize) {
+    offset::<O>();
     let off: O = self.off.into();
     // SAFETY: per the caller; the new distance fits, while the sum may wrap on the way.
     unsafe { sink.write(at, O::from_isize(off.to_isize().wrapping_add(d))) }
@@ -670,6 +677,7 @@ unsafe impl<T: Flat, O: Offset> Flat for Option<Near<T, O>> {
   #[cfg(feature = "nightly")]
   const UNPIN: bool = false;
   unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<isize>) {
+    offset::<O>();
     // SAFETY: the caller allocated `at` for a `Near`.
     unsafe {
       match self {
