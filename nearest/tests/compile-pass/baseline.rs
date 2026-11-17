@@ -54,4 +54,9 @@ fn main() {
   b.edit().insts().push(Inst::new(5, ()));
   let _ = Region::new(A::new(1));
   let _ = Region::new(S::new(Near::new(1)));
+
+  let mut inline = Region::new_in(nearest::Inline::<256>::default(), Block::new(0, (), None));
+  inline.edit().insts().push(Inst::new(1, ()));
+  let moved = inline;
+  let _ = moved.insts.len();
 }

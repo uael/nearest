@@ -86,14 +86,16 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | Item | |
 |---|---|
 | `#[flat]` | makes a struct or enum storable; generates constructors and the handle |
-| `Region<T>` | the buffer: `new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`; `unsafe` `from_bytes_unchecked`, `view_unchecked` |
+| `Region<T, S = Heap>` | the buffer, in a storage: `new`, `new_in`, `edit`, `as_bytes`, `to_bytes`, `from_bytes`, `from_bytes_with`, `view`, `view_with`, `byte_len`; `unsafe` `from_bytes_unchecked`, `view_unchecked` |
+| `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap, `N` bytes inside the region |
 | `Near<T>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
 | `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
 | `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `update` |
 | `StrEdit<'e>` | the handle of a `Near<str>`: `set`, `replace`, `update` |
 | `Old<'e, T>` | a value that left its place: write it anywhere to move it there |
-| `Invalid` | the error of `from_bytes` and `view` |
+| `Invalid` | the error of `from_bytes` and `view`: `offset` |
+| `Pending` | an entry of the memory that `from_bytes_with` and `view_with` check bytes with |
 | `Flat`, `Emit<T>` | "may live in a region", "can be written as a `T`" |
 
 Anything that can be written as a `T` is accepted wherever a `T` is built: a value, a copy
@@ -148,12 +150,32 @@ rejects a `#[pin_v2]` written on the type.
 ## Bytes
 
 `to_bytes` returns the compact image of a region, the bytes a deep copy writes; it borrows the
-buffer when the region has not been edited since it was built or loaded. `from_bytes` checks
+buffer when the region has not been edited since it was built or loaded, and `as_bytes` returns
+the image only then, without allocating. `from_bytes` checks
 bytes and copies them into a new region; `view` checks an 8-aligned slice, such as a
 memory-mapped file, and reads it in place. Checking accepts exactly the compact images of valid
-values, in one pass, in safe code, without recursion or panics. For bytes you trust,
-`from_bytes_unchecked` and `view_unchecked` skip the check and are `unsafe`. The bytes hold
-native-endian integers and the layout of the target.
+values, in one pass, in safe code, without recursion or panics. `Invalid::offset` says where
+the bytes went wrong, or is `None` for a valid image larger than the storage, which
+`from_bytes` returns as an error too. Checking keeps the pointers still to visit in memory that
+grows with the nesting of the data; `from_bytes_with` and `view_with` take it from the caller,
+as `&mut [Pending]`, and return `None` if it runs out: `bytes.len() / 4` entries are always
+enough. For bytes you trust, `from_bytes_unchecked` and `view_unchecked` skip the check and are
+`unsafe`. The bytes hold native-endian integers and the layout of the target.
+
+## Storage
+
+A region keeps its buffer in a storage. `Region<T>` is on the `Heap`, where it grows as
+needed; `Inline<N>` keeps it in `N` bytes inside the `Region` value, with no heap, and growing
+past them panics (`from_bytes` returns an error). Other memory, an arena or a memory-mapped
+file, is a storage of your own: the `unsafe` trait `Storage` asks for two accessors to its
+memory, and `grow` if it grows. A region in any storage is built with `new_in`, or with
+`from_bytes`; everything else is the same.
+
+```rust
+let mut r = Region::new_in(Inline::<256>::default(), Block::new(0, (), None));
+r.edit().insts().push(Inst::new(1, ()));
+let moved = r;                                       // the bytes move with it
+```
 
 ## Safety model
 
@@ -171,17 +193,24 @@ native-endian integers and the layout of the target.
   provenance.
 
 Stored types must have alignment at most 8, non-zero size and no drop glue (checked at compile
-time). A region holds at most 2 GiB. [`DESIGN.md`](DESIGN.md) is the specification.
+time). A region holds at most 2 GiB, or what its storage gives. [`DESIGN.md`](DESIGN.md) is the
+specification.
 
 ## Getting started
 
-Stable Rust (1.95 or later), `#![no_std]` + `alloc`, no dependencies besides the macro.
+Stable Rust (1.95 or later), `#![no_std]`, no dependencies besides the macro.
 
 ```sh
 cargo add nearest
 ```
 
-The one cargo feature, `nightly`, needs a nightly compiler for the whole build: `#[flat]` then
+The default feature `alloc` provides the heap. Without it (`default-features = false`) the
+crate needs no allocator: regions live in other storage, and `Region<T>`, `to_bytes`,
+`from_bytes` and `view` are not available. `as_bytes` is, and so are `from_bytes_with` and
+`view_with`, which check loaded bytes with memory from the caller: a slice of `Pending`, of
+which `bytes.len() / 4` entries are always enough.
+
+The opt-in feature `nightly` needs a nightly compiler for the whole build: `#[flat]` then
 marks every type `#[pin_v2]`. It uses `specialization` and `allow_internal_unstable` inside
 `nearest` and `nearest-derive`; crates that use `#[flat]` need no `#![feature]` for it, only
 code that writes a pattern on a pinned value needs `pin_ergonomics`. Under it, an `Unpin`

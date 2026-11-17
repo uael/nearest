@@ -1,12 +1,7 @@
-use alloc::vec::Vec;
-use core::{
-  mem::{MaybeUninit, needs_drop},
-  num::NonZero,
-  ptr, slice,
-};
+use core::{marker::PhantomData, mem::needs_drop, num::NonZero, ptr, slice};
 
 use crate::{
-  Invalid, Near,
+  Invalid, Near, Storage,
   bytes::{Check, list, target, text},
   edit::{ListEdit, OptionEdit, Raw, StrEdit},
 };
@@ -34,13 +29,31 @@ pub const fn fits<T>() {
   };
 }
 
-/// 8-aligned bytes, zero-filled when they grow.
+/// The bytes of a region: the memory of its storage, of which the first `len` are in use.
 ///
-/// Invariants, also while unwinding: `len <= words.len() * 8 <= MAX`, so every position fits
-/// an `i32`.
+/// A storage may move with its region, so every use of the region through `&mut` attaches the
+/// storage first; the buffer then has its address, and grows it through `regrow`.
+///
+/// The region zeroes the memory itself, as it uses it, so a storage may hand out memory of any
+/// content: `cap` is the zeroed prefix, which `alloc` hands out without a call, and `mem` the
+/// whole memory.
+///
+/// Invariants, also while unwinding: `len <= cap <= mem <= MAX`, so every position fits an
+/// `i32`; the bytes in `[len, cap)` are zero, and those in `[cap, mem)` anything. While
+/// attached, `ptr` is valid for `mem` bytes, and `store` is the storage, of the type `regrow`
+/// was made for.
 pub struct Buf {
-  words: Vec<MaybeUninit<u64>>,
+  /// Byte 0.
+  ptr: *mut u8,
+  /// Bytes in use or zero: `alloc` grows nothing below it.
+  cap: usize,
   len: usize,
+  /// Bytes of memory at `ptr`, at most `MAX`.
+  mem: usize,
+  /// The storage.
+  store: *mut (),
+  /// Grows the storage to a number of words, and attaches it again.
+  regrow: unsafe fn(&mut Buf, usize),
   /// The address of this `Buf`, written by `Region::edit`. Every access of an edit goes
   /// through it, so that all of them have the same provenance (I8).
   pub(crate) me: *mut Buf,
@@ -48,15 +61,64 @@ pub struct Buf {
   pub(crate) compact: bool,
 }
 
-// SAFETY: `me` is only the address of the `Buf` itself, used during an edit, which borrows the
-// `Buf` mutably; otherwise a `Buf` is a vector of bytes.
+// SAFETY: `ptr` and `store` are the region's own storage and `me` the address of the `Buf`
+// itself, all used while the region is borrowed mutably; a region is `Send` or `Sync` as its
+// storage is.
 unsafe impl Send for Buf {}
 // SAFETY: as above; nothing is written through a shared `Buf`.
 unsafe impl Sync for Buf {}
 
+/// `regrow` of a buffer that has no storage yet: nothing grows.
+const fn unattached(_: &mut Buf, _: usize) {}
+
+/// Grows the storage of `buf`, an `S`, to at least `words` words, and attaches it again: also
+/// if growing unwinds, since the storage was borrowed anew and pointers into it are stale.
+///
+/// # Safety
+/// `buf` is attached to an `S`.
+unsafe fn regrow<S: Storage>(buf: &mut Buf, words: usize) {
+  /// Attaches the storage again.
+  struct Again<'b, S: Storage>(&'b mut Buf, PhantomData<S>);
+  impl<S: Storage> Drop for Again<'_, S> {
+    fn drop(&mut self) {
+      // SAFETY: the buffer is still attached to the same storage, which is where it was.
+      unsafe { self.0.attach(self.0.store.cast::<S>()) }
+    }
+  }
+  let store = buf.store.cast::<S>();
+  let _again = Again::<S>(buf, PhantomData);
+  // SAFETY: per the caller; this borrow of the storage ends with the statement.
+  unsafe { (*store).grow(words) };
+}
+
 impl Buf {
+  /// An empty buffer, attached to no storage.
   pub(crate) const fn new() -> Self {
-    Self { words: Vec::new(), len: 0, me: ptr::null_mut(), compact: true }
+    Self {
+      ptr: ptr::null_mut(),
+      cap: 0,
+      len: 0,
+      mem: 0,
+      store: ptr::null_mut(),
+      regrow: unattached,
+      me: ptr::null_mut(),
+      compact: true,
+    }
+  }
+
+  /// Attaches the storage at `store`, where it is now. `cap` and `len` are lengths, so they
+  /// stay as they are when the storage moves.
+  ///
+  /// # Safety
+  /// `store` is valid, its memory holds this buffer's `cap` bytes, and it is reached only
+  /// through this buffer, and stays where it is, while the buffer is used.
+  pub(crate) unsafe fn attach<S: Storage>(&mut self, store: *mut S) {
+    // SAFETY: per the caller; this borrow of the storage ends with the statement.
+    let memory = unsafe { (*store).memory_mut() };
+    self.ptr = memory.as_mut_ptr().cast();
+    self.mem = memory.len().saturating_mul(8).min(MAX);
+    self.store = store.cast();
+    self.regrow = regrow::<S>;
   }
 
   /// Bytes in use.
@@ -65,50 +127,80 @@ impl Buf {
   }
 
   /// Byte 0, for writing.
-  pub(crate) const fn ptr(&mut self) -> *mut u8 {
-    self.words.as_mut_ptr().cast()
+  pub(crate) const fn ptr(&self) -> *mut u8 {
+    self.ptr
   }
 
   /// Byte 0, for reading.
   pub(crate) const fn base(&self) -> *const u8 {
-    self.words.as_ptr().cast()
-  }
-
-  /// The bytes in use.
-  ///
-  /// # Safety
-  /// They are initialized, which is true of a compact buffer.
-  pub(crate) const unsafe fn bytes(&self) -> &[u8] {
-    // SAFETY: per the caller; `len` bytes are allocated.
-    unsafe { slice::from_raw_parts(self.base(), self.len) }
+    self.ptr
   }
 
   /// `size` zeroed bytes aligned to `align` (bytes past `len` are never written); returns their
   /// position.
+  ///
+  /// # Safety
+  /// The buffer is attached, and its storage is where it was then.
   #[inline]
-  pub(crate) fn alloc(&mut self, size: usize, align: usize) -> usize {
+  pub(crate) unsafe fn alloc(&mut self, size: usize, align: usize) -> usize {
     let at = align_up(self.len, align);
     let end = at.saturating_add(size);
-    if end > self.words.len() * 8 {
-      self.grow(end);
+    if end > self.cap {
+      // SAFETY: forwarded.
+      unsafe { self.grow(end) };
     }
     self.len = end;
     at
   }
 
-  /// Grows to hold `end` bytes, keeping `words.len() * 8 <= MAX`: anything past the limit comes
-  /// here and panics, before changing anything.
+  /// Makes `end` bytes available: zeroes the memory past `cap`, twice as much as is in use and at
+  /// least 64 bytes, asking the storage for more memory first if it is shorter than `end`.
+  /// Anything past the limit, or past what the storage gives, comes here and panics, before
+  /// anything changes.
+  ///
+  /// # Safety
+  /// As for [`alloc`](Self::alloc).
   #[cold]
-  fn grow(&mut self, end: usize) {
+  unsafe fn grow(&mut self, end: usize) {
     assert!(end <= MAX, "region exceeds 2 GiB");
-    let words = end.div_ceil(8).max(self.words.len() * 2).clamp(8, MAX / 8);
-    self.words.resize(words, MaybeUninit::zeroed());
+    let want = end.max(self.cap.saturating_mul(2)).clamp(64, MAX);
+    // SAFETY: forwarded.
+    assert!(unsafe { self.room(end, want) }, "region exceeds its storage");
+    let to = want.min(self.mem);
+    // SAFETY: `cap <= to <= mem`, and the buffer is attached.
+    unsafe { self.ptr.add(self.cap).write_bytes(0, to - self.cap) };
+    self.cap = to;
   }
 
-  /// A copy of the bytes in use.
-  pub(crate) fn to_vec(&self) -> Self {
-    let words = self.words[..self.len.div_ceil(8)].to_vec();
-    Self { words, len: self.len, me: ptr::null_mut(), compact: self.compact }
+  /// Whether the memory holds `end` bytes, asking the storage for `want` if it does not.
+  ///
+  /// # Safety
+  /// As for [`alloc`](Self::alloc).
+  unsafe fn room(&mut self, end: usize, want: usize) -> bool {
+    if end > self.mem && end <= MAX {
+      // SAFETY: forwarded.
+      unsafe { (self.regrow)(self, want.div_ceil(8)) };
+    }
+    end <= self.mem
+  }
+
+  /// Copies `len` bytes from `src` into the empty buffer, asking the storage for room first:
+  /// whether it had it. Nothing is written if not.
+  ///
+  /// # Safety
+  /// As for [`alloc`](Self::alloc); the buffer is empty, and `src` valid for reading `len` bytes
+  /// outside it.
+  pub(crate) unsafe fn load(&mut self, src: *const u8, len: usize) -> bool {
+    // SAFETY: forwarded; the memory holds `len` bytes once there is room.
+    unsafe {
+      if !self.room(len, len.min(MAX)) {
+        return false;
+      }
+      ptr::copy_nonoverlapping(src, self.ptr, len);
+    }
+    // What was zero past `len` still is.
+    (self.len, self.cap) = (len, self.cap.max(len));
+    true
   }
 }
 
@@ -120,8 +212,8 @@ pub struct Sink {
 
 impl Sink {
   /// # Safety
-  /// `buf` points to a live `Buf` while the sink is used, and every access to that `Buf` meanwhile
-  /// goes through `buf` (its `me` during an edit).
+  /// `buf` points to a live, attached `Buf` while the sink is used, and every access to that
+  /// `Buf` meanwhile goes through `buf` (its `me` during an edit).
   pub(crate) const unsafe fn new(buf: *mut Buf) -> Self {
     Self { buf }
   }
@@ -133,7 +225,7 @@ impl Sink {
   /// `size` bytes aligned to `align`; returns their position.
   #[inline]
   pub(crate) fn alloc(&mut self, size: usize, align: usize) -> usize {
-    // SAFETY: `buf` is live per `new`, and this reborrow ends with the statement.
+    // SAFETY: `buf` is live and attached per `new`, and this reborrow ends with the statement.
     unsafe { (*self.buf).alloc(size, align) }
   }
 
@@ -458,8 +550,7 @@ unsafe impl<T: Flat> Flat for Near<T> {
     unsafe { T::edit(buf, aim(buf, at)) }
   }
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
-    ck.push(at, 0, target::<T>);
-    Ok(())
+    ck.push(at, 0, target::<T>)
   }
 }
 
@@ -485,8 +576,7 @@ unsafe impl<T: Flat> Flat for Near<[T]> {
     unsafe { ListEdit::new(Raw::new(buf, at)) }
   }
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
-    ck.push(at, 0, list::<T>);
-    Ok(())
+    ck.push(at, 0, list::<T>)
   }
 }
 
@@ -511,8 +601,7 @@ unsafe impl Flat for Near<str> {
     unsafe { StrEdit::new(Raw::new(buf, at)) }
   }
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
-    ck.push(at, 0, text);
-    Ok(())
+    ck.push(at, 0, text)
   }
 }
 
@@ -538,10 +627,7 @@ unsafe impl<T: Flat> Flat for Option<Near<T>> {
     unsafe { OptionEdit::new(Raw::new(buf, at)) }
   }
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
-    if i32::from_ne_bytes(ck.get(at)?) != 0 {
-      ck.push(at, 0, target::<T>);
-    }
-    Ok(())
+    if i32::from_ne_bytes(ck.get(at)?) == 0 { Ok(()) } else { ck.push(at, 0, target::<T>) }
   }
 }
 
