@@ -273,7 +273,8 @@ pub use near::Near;
 ///
 /// - constructors whose parameters take anything that can be written as the field's type
 ///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
-///   named after it in snake case (`project_` for a variant called `Project`). A parameter
+///   named after it in snake case (`project_` for a variant called `Project`), or as
+///   `#[flat(rename = "name")]` on the variant says. A parameter
 ///   for a field written `Near<X>` takes a builder of `X` and allocates the target (a list or
 ///   string builder if `X` is a slice or `str`);
 /// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign), `replace` (assign and return the
@@ -292,8 +293,10 @@ pub use near::Near;
 ///
 /// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
 /// `repr`s other than `u8`, explicit discriminants, empty enums, enums of more than 256
-/// variants, variants whose constructors would have the same name and, without the `nightly`
-/// feature, `#[pin_v2]` are rejected.
+/// variants, variants whose constructors would have the same name (`rename` one) and, without
+/// the `nightly` feature, `#[pin_v2]` are rejected. `#[flat(..)]` on a variant is read and
+/// removed; it takes `rename = "name"`, a new name for the constructor of a variant with
+/// fields, which no other constructor and not `project` may have.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -319,6 +322,22 @@ pub use near::Near;
 /// let Json::Obj(fields) = &*doc else { unreachable!() };
 /// assert_eq!((&*fields[0].key, &fields[0].value), ("b", &Json::Null));
 /// assert_eq!(fields[1].value, *Region::new(Json::arr((Json::Null, Json::str("x")))));
+/// ```
+///
+/// A variant's constructor can be given another name:
+///
+/// ```
+/// use nearest::{Near, Region, flat};
+///
+/// #[flat]
+/// enum Value {
+///   Int(i64),
+///   #[flat(rename = "text")]
+///   Str(Near<str>),
+/// }
+///
+/// let r = Region::new(Value::text("hi"));
+/// assert!(matches!(&*r, Value::Str(s) if &**s == "hi"));
 /// ```
 pub use nearest_derive::flat;
 pub use region::Region;

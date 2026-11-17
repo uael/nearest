@@ -1,0 +1,5 @@
+error: `rename` names the constructor of an enum variant: write it there
+ --> tests/compile-fail/flat_rename_on_struct.rs:5:8
+  |
+5 | #[flat(rename = "make")]
+  |        ^^^^^^

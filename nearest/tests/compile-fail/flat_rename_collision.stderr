@@ -1,0 +1,5 @@
+error: another variant already has the constructor `two`: name one with `#[flat(rename = "..")]`
+ --> tests/compile-fail/flat_rename_collision.rs:5:43
+  |
+5 | enum E { #[flat(rename = "two")] One(u8), Two(u16) }
+  |                                           ^^^

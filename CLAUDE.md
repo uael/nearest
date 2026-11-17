@@ -101,6 +101,9 @@ tests are on `nearest/src/unpin.rs`, including the compiler's rule in a crate wi
 `pin_ergonomics`. The trybuild test runs on stable only.
 Names the generated code keeps: a field called `set`, `replace`, `pin` or `update` gets a
 trailing underscore, and a variant called `Project` gets the constructor `project_`.
+`#[flat(rename = "name")]` on a variant with fields names its constructor (not `project`, not
+another constructor's name). `#[flat]` reads and strips every `#[flat(..)]` on the type, its
+variants and fields (`take_args`), and rejects unknown or misplaced arguments.
 
 ### Files (nearest/src/)
 

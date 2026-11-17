@@ -1,0 +1,5 @@
+error: a unit variant has no constructor to rename
+ --> tests/compile-fail/flat_rename_unit_variant.rs:5:33
+  |
+5 | enum E { A(u8), #[flat(rename = "nothing")] B }
+  |                                 ^^^^^^^^^

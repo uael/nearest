@@ -7,11 +7,14 @@
   expect(internal_features, reason = "`allow_internal_unstable(pin_ergonomics)` on `flat`")
 )]
 
+use std::mem;
+
 use proc_macro2::{Group, Ident, Literal, Span, TokenStream, TokenTree};
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-  Data, DeriveInput, Error, Field, Fields, GenericArgument, GenericParam, Index, Lifetime, Member,
-  PathArguments, Type, parse_macro_input, parse_quote,
+  Attribute, Data, DeriveInput, Error, Field, Fields, GenericArgument, GenericParam, Index,
+  Lifetime, LitStr, Member, PathArguments, Type, ext::IdentExt, meta::ParseNestedMeta,
+  parse::Parser, parse_macro_input, parse_quote,
 };
 
 /// Makes a struct or enum storable in a `nearest` region. See `nearest::flat`.
@@ -26,9 +29,27 @@ pub fn flat(
 }
 
 fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream> {
-  if !attr.is_empty() {
-    return Err(Error::new_spanned(attr, "`#[flat]` takes no arguments"));
-  }
+  // `#[flat(..)]` is read here and left out of the output: on the type it says nothing, on a
+  // variant it may rename the constructor.
+  syn::meta::parser(read_args(&mut Args::default(), Place::Type)).parse2(attr)?;
+  take_args(&mut input.attrs, Place::Type)?;
+  let renames = match &mut input.data {
+    Data::Enum(e) => (e.variants.iter_mut())
+      .map(|v| {
+        for f in &mut v.fields {
+          take_args(&mut f.attrs, Place::Field)?;
+        }
+        Ok(take_args(&mut v.attrs, Place::Variant)?.rename)
+      })
+      .collect::<syn::Result<Vec<_>>>()?,
+    Data::Struct(s) => {
+      for f in &mut s.fields {
+        take_args(&mut f.attrs, Place::Field)?;
+      }
+      vec![]
+    }
+    Data::Union(_) => vec![],
+  };
   // Patterns project a pinned value only if its type is `#[pin_v2]`, and such a type cannot have
   // the bounded `Unpin` impl written below. Only the `nightly` feature, whose guard replaces
   // that impl, may go without it, so a `#[pin_v2]` seen without the feature is an error. One
@@ -260,6 +281,9 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         pin_variants.push(quote!(#[doc = #vdoc] #vname #pin_decl));
         pin_arms.push(quote!(Self::#vname #pat => #pin_name::#vname #pin_make));
         if matches!(v.fields, Fields::Unit) {
+          if let Some(r) = &renames[i] {
+            return Err(Error::new_spanned(r, "a unit variant has no constructor to rename"));
+          }
           check_arms.push(quote!(#tag_pat => {}));
           arms.push(quote!(Self::#vname => { #tag_store }));
           views.push(quote!(#[doc = #vdoc] #vname));
@@ -287,10 +311,18 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         check_arms.push(quote!(#tag_pat => { #checks }));
         let doc = format!("Builds `{name}::{vname}` from its fields, in declaration order.");
         let tag_emit = quote!(::nearest::Emit::<u8>::emit(#tag, #sink, #at););
-        let cname = snake(vname);
-        if ctor_names.contains(&cname) {
-          let msg = format!("another variant already has the constructor `{cname}`: rename one");
-          return Err(Error::new_spanned(vname, msg));
+        let cname = renames[i].clone().unwrap_or_else(|| snake(vname));
+        let at = renames[i].as_ref().unwrap_or(vname);
+        if cname.unraw() == "project" {
+          let msg = "`project` is the method `#[flat]` generates for pinned values";
+          return Err(Error::new_spanned(at, msg));
+        }
+        if ctor_names.iter().any(|c: &Ident| c.unraw() == cname.unraw()) {
+          let msg = format!(
+            "another variant already has the constructor `{cname}`: name one with \
+             `#[flat(rename = \"..\")]`"
+          );
+          return Err(Error::new_spanned(at, msg));
         }
         ctor_names.push(cname.clone());
         ctors.push(ctor(cname, doc, &v.fields, tag_emit, offs.clone()));
@@ -515,6 +547,55 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       #(#extra)*
     };
   })
+}
+
+/// Where `#[flat(..)]` is written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+  Type,
+  Variant,
+  Field,
+}
+
+/// What `#[flat(..)]` says: on a variant, the name of its constructor.
+#[derive(Default)]
+struct Args {
+  rename: Option<Ident>,
+}
+
+/// Reads one argument of `#[flat(..)]` at `place` into `args`, rejecting what does not belong
+/// there.
+fn read_args(args: &mut Args, place: Place) -> impl FnMut(ParseNestedMeta) -> syn::Result<()> {
+  move |meta| {
+    if !meta.path.is_ident("rename") {
+      return Err(meta.error(match place {
+        Place::Type => "`#[flat]` takes no arguments",
+        Place::Variant => "unknown argument: a variant takes `#[flat(rename = \"name\")]`",
+        Place::Field => "a field takes no `#[flat(..)]` arguments",
+      }));
+    }
+    if place != Place::Variant {
+      return Err(meta.error("`rename` names the constructor of an enum variant: write it there"));
+    }
+    if args.rename.is_some() {
+      return Err(meta.error("`rename` is given twice"));
+    }
+    let name: LitStr = meta.value()?.parse()?;
+    let msg = "`rename` takes the name of a function";
+    args.rename = Some(name.parse().map_err(|_| Error::new(name.span(), msg))?);
+    Ok(())
+  }
+}
+
+/// Takes the `#[flat(..)]` attributes out of `attrs` and reads them.
+fn take_args(attrs: &mut Vec<Attribute>, place: Place) -> syn::Result<Args> {
+  let mut args = Args::default();
+  let (ours, others) = mem::take(attrs).into_iter().partition(|a| a.path().is_ident("flat"));
+  *attrs = others;
+  for a in ours {
+    a.parse_nested_meta(read_args(&mut args, place))?;
+  }
+  Ok(args)
 }
 
 /// `X` if `ty` is written `Near<X>`: any path ending in `Near` with one type argument.
