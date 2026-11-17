@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- [**breaking**] v2 — one buffer, plain `&mut` handles, O(1) moves, checked bytes, stable Rust ([#35](https://github.com/uael/nearest/pull/35)) ([#36](https://github.com/uael/nearest/pull/36))
+- [**breaking**] one buffer, plain `&mut` handles, O(1) moves, checked bytes, stable Rust ([#35](https://github.com/uael/nearest/pull/35)) ([#36](https://github.com/uael/nearest/pull/36))
 
 ## [0.4.5](https://github.com/uael/nearest/compare/v0.4.4...v0.4.5) - 2026-03-09
 
