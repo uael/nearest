@@ -276,7 +276,8 @@ pub use near::Near;
 ///   named after it in snake case (`project_` for a variant called `Project`), or as
 ///   `#[flat(rename = "name")]` on the variant says. A parameter
 ///   for a field written `Near<X>` takes a builder of `X` and allocates the target (a list or
-///   string builder if `X` is a slice or `str`);
+///   string builder if `X` is a slice or `str`); one for a field of plain data marked
+///   `#[flat(into)]` takes `impl Into<FieldType>`;
 /// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign), `replace` (assign and return the
 ///   old value as an [`Old`]), `update` (build the new value from the old one) and `pin` (a
 ///   pinned view), and for structs one method per field
@@ -294,9 +295,10 @@ pub use near::Near;
 /// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
 /// `repr`s other than `u8`, explicit discriminants, empty enums, enums of more than 256
 /// variants, variants whose constructors would have the same name (`rename` one) and, without
-/// the `nightly` feature, `#[pin_v2]` are rejected. `#[flat(..)]` on a variant is read and
-/// removed; it takes `rename = "name"`, a new name for the constructor of a variant with
-/// fields, which no other constructor and not `project` may have.
+/// the `nightly` feature, `#[pin_v2]` are rejected. `#[flat(..)]` on a variant or a field is
+/// read and removed. A variant with fields takes `rename = "name"`, a new name for its
+/// constructor, which no other constructor and not `project` may have; a field takes `into`,
+/// unless it is written as a pointer (`Near<..>`, `Option<Near<..>>`).
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -324,18 +326,21 @@ pub use near::Near;
 /// assert_eq!(fields[1].value, *Region::new(Json::arr((Json::Null, Json::str("x")))));
 /// ```
 ///
-/// A variant's constructor can be given another name:
+/// A variant's constructor can be given another name, and a parameter of plain data can take
+/// anything that converts to it:
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
 ///
 /// #[flat]
 /// enum Value {
-///   Int(i64),
+///   Int(#[flat(into)] i64),
 ///   #[flat(rename = "text")]
 ///   Str(Near<str>),
 /// }
 ///
+/// let r = Region::new(Value::int(7u8));
+/// assert!(matches!(&*r, Value::Int(7)));
 /// let r = Region::new(Value::text("hi"));
 /// assert!(matches!(&*r, Value::Str(s) if &**s == "hi"));
 /// ```

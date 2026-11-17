@@ -261,7 +261,10 @@ trailing underscore: a field called `set`, `replace`, `pin` or `update`, and the
 of a variant called `Project`. Two variants whose constructors would have the same name are
 an error, until `#[flat(rename = "name")]` on one of them names its constructor; a new name may
 not be another constructor's or `project`, and a unit variant, a field or the type take no
-`rename`. `#[flat(..)]` attributes are read by `#[flat]` and left out of its output. Next to a
+`rename`. `#[flat(into)]` on a field of plain data makes its constructor parameter `impl Into<FieldType>`;
+it is rejected on a field written as a pointer (`Near<..>`, `Option<Near<..>>`), whose
+parameter takes a builder. `#[flat(..)]` attributes are read by `#[flat]` and left out of its
+output; unknown, repeated or misplaced arguments are errors. Next to a
 type `X`, `#[flat]` defines `XPin` and, for an enum
 with fields, `XMut`; an item of your own with one of those names is a duplicate definition.
 
@@ -395,7 +398,8 @@ its closure panics.
 | `#[flat]` types | the generated constructors |
 
 Constructors return `impl Emit<Self>` and are lazy: nothing is written until the builder
-reaches a region. Types without pointers can also be built with a plain literal.
+reaches a region. A parameter marked `#[flat(into)]` takes `impl Into<FieldType>` instead, and
+is converted then. Types without pointers can also be built with a plain literal.
 
 Pointers are transparent where that is unambiguous. A constructor parameter for a field
 written `Near<X>` takes a builder of `X` and allocates the target, so trees read as

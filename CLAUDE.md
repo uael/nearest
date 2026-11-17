@@ -102,8 +102,10 @@ tests are on `nearest/src/unpin.rs`, including the compiler's rule in a crate wi
 Names the generated code keeps: a field called `set`, `replace`, `pin` or `update` gets a
 trailing underscore, and a variant called `Project` gets the constructor `project_`.
 `#[flat(rename = "name")]` on a variant with fields names its constructor (not `project`, not
-another constructor's name). `#[flat]` reads and strips every `#[flat(..)]` on the type, its
-variants and fields (`take_args`), and rejects unknown or misplaced arguments.
+another constructor's name); `#[flat(into)]` on a field of plain data (not written `Near<..>`
+or `Option<Near<..>>`) makes its parameter `impl Into<FieldType>`. `#[flat]` reads and strips
+every `#[flat(..)]` on the type, its variants and fields (`take_args`), and rejects unknown,
+repeated or misplaced arguments.
 
 ### Files (nearest/src/)
 

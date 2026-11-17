@@ -369,6 +369,48 @@ type Bytes = [u8];
 type Text = str;
 type Sub = Expr;
 
+/// Fields of plain data marked `#[flat(into)]`: their parameters take `impl Into<..>`.
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Sample {
+  #[flat(into)]
+  id: u64,
+  #[flat(into)]
+  ratio: f64,
+  #[flat(into)]
+  count: NonZero<u32>,
+  name: Near<str>,
+}
+
+/// `into` with `rename`.
+#[flat]
+#[derive(Debug, PartialEq)]
+enum Figure {
+  #[flat(rename = "disc")]
+  Circle(#[flat(into)] u32),
+  Rect {
+    #[flat(into)]
+    w: u64,
+    h: u64,
+    next: Option<Near<Figure>>,
+  },
+}
+
+#[test]
+fn into_parameters() {
+  let one = NonZero::new(1u8).unwrap();
+  let s = Region::new_in(Store::default(), Sample::new(7u8, 1.5f32, one, "s"));
+  assert_eq!((s.id, s.ratio, s.count.get(), &*s.name), (7, 1.5, 1, "s"));
+  let r = Region::new_in(Store::default(), Figure::rect(2u16, 3, Near::new(Figure::disc(4u8))));
+  assert!(matches!(&*r, Figure::Rect { w: 2, h: 3, next: Some(n) } if **n == Figure::Circle(4)));
+  // The values themselves, a copy and handles work as before.
+  let mut l = Region::new_in(Store::default(), Lst::<Sample>::new([Sample::new(1u64, 2.0, NonZero::<u32>::MIN, "x")]));
+  let items = l.edit().items();
+  items.push(&*s);
+  items.at(0).set(Sample::new(3u32, 4.0f32, one, "y"));
+  assert_eq!((l.items[0].id, &*l.items[0].name, &l.items[1]), (3, "y", &*s));
+}
+
 /// The target of a pointer field may be written through an alias.
 #[flat]
 struct ViaAlias {
