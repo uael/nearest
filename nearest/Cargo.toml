@@ -1,6 +1,6 @@
 [package]
 name = "nearest"
-version = "0.5.0"
+version = "0.6.0"
 edition.workspace = true
 rust-version = "1.95"
 license = "Apache-2.0 OR MIT"
@@ -10,10 +10,12 @@ documentation = "https://docs.rs/nearest"
 readme = "../README.md"
 keywords = ["self-relative", "pointer", "region", "allocation", "arena"]
 categories = ["data-structures", "memory-management"]
+# The specification, for contributors: not shipped.
+exclude = ["CLAUDE.md"]
 
 [features]
 default = ["alloc"]
-# The heap: `Region<T>`, its default storage, `to_bytes`, and `from_bytes` and `view`, whose
+# The heap: `Region<T>`, its default storage, and `from_bytes` and `view`, whose
 # check takes memory from the heap. Without it, regions live in other storage
 # (`Region<T, Inline<N>>`), and loaded bytes are checked with memory from the caller
 # (`from_bytes_with`, `view_with`).
@@ -23,7 +25,7 @@ alloc = []
 nightly = ["nearest-derive/nightly"]
 
 [dependencies]
-nearest-derive = { version = "=0.5.0", path = "../nearest-derive" }
+nearest-derive = { version = "=0.6.0", path = "../nearest-derive" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

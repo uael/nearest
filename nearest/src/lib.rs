@@ -39,14 +39,14 @@
 //! assert_eq!((r.id, r.insts.len(), &r.insts[0].args[..]), (7, 1, &[1, 2, 3][..]));
 //! assert!(r.next.is_none());
 //!
-//! // Save and load. Loading checks the bytes.
-//! let bytes = r.to_bytes();
-//! let copy = Region::<Block>::from_bytes(&bytes)?;
+//! // Save and load. A compact region is its own image; loading checks the bytes.
+//! let bytes = r.as_bytes().unwrap();
+//! let copy = Region::<Block>::from_bytes(bytes)?;
 //! assert_eq!(copy.insts[0].op, 9);
 //! // A memory-mapped file, or any 8-aligned slice, is read in place.
-//! let block: &Block = Region::view(&bytes)?;
+//! let block: &Block = nearest::view(bytes)?;
 //! assert_eq!(block.id, 7);
-//! # Ok::<(), nearest::Invalid>(())
+//! # Ok::<(), nearest::Error>(())
 //! ```
 //!
 //! Enums get a view of their variant, and `replace` returns the old value, like
@@ -180,24 +180,23 @@
 //!
 //! # Bytes
 //!
-//! [`Region::to_bytes`] returns the compact image: the bytes a deep copy writes, borrowed from the
-//! region when it has not been edited since it was built; [`Region::as_bytes`] returns it only
-//! then, and never allocates. [`Region::from_bytes`] checks and
-//! copies bytes; [`Region::view`] checks an 8-aligned slice and reads it in place. Checking
-//! accepts exactly the compact images of valid values, in one pass, without recursion or
-//! panics; an error, [`Invalid`], says where the bytes went wrong, or that a valid image does
-//! not fit the storage. Checking keeps the pointers still to visit in memory that grows with
-//! the nesting of the data: [`Region::view_with`] and [`Region::from_bytes_with`] take it from
-//! the caller, as a slice of [`Pending`] (`bytes.len() / 4` entries are always enough), and
-//! return `None` if it runs out. For bytes that are trusted, [`Region::from_bytes_unchecked`]
-//! and [`Region::view_unchecked`] skip the check and are `unsafe`. The bytes hold
-//! native-endian integers and the layout of the target.
+//! [`Region::as_bytes`] returns the compact image, borrowed: the bytes a deep copy writes, which
+//! a region is until it is edited. Save an edited region by copying it first:
+//! `Region::new(&*r).as_bytes()`. [`Region::from_bytes`] checks and copies bytes; [`view`]
+//! checks an 8-aligned slice and reads it in place. Checking accepts exactly the compact images
+//! of valid values, in one pass, without recursion or panics; an [`Error`] says where the
+//! bytes went wrong, or that a valid image does not fit the storage. Checking keeps the
+//! pointers still to visit in memory that grows with the nesting of the data: [`view_with`] and
+//! [`Region::from_bytes_with`] take it from the caller, as a slice of [`Pending`]
+//! (`bytes.len() / 4` entries are always enough), and say if it runs out. For bytes that are
+//! trusted, [`Region::from_bytes_unchecked`] and [`view_unchecked`] skip the check and are
+//! `unsafe`. The bytes hold native-endian integers and the layout of the target.
 //!
 //! # Storage
 //!
 //! A region keeps its buffer in a [`Storage`]: `Region<T>` is `Region<T, Heap>`, on the
-//! [`Heap`], which grows as needed. [`Inline<N>`] keeps it in `N` bytes inside the `Region`
-//! value, with no heap; growing past them panics, as growing past 2 GiB does. A storage of
+//! [`Heap`], which grows as needed ([`Heap::with_capacity`] makes room up front).
+//! [`Inline<N>`] keeps it in `N` bytes inside the `Region` value, with no heap; growing past them panics, as growing past 2 GiB does. A storage of
 //! your own, such as an arena or a memory-mapped file, implements the `unsafe` trait
 //! [`Storage`]: two accessors to its memory, the second of which grows it if it can. A region in
 //! any storage is built with [`Region::new_in`], or with [`Region::from_bytes`] when the storage
@@ -218,10 +217,10 @@
 //! assert_eq!(*Region::new(&*moved), *moved); // the same value, on the heap
 //! ```
 //!
-//! The default feature `alloc` makes the heap a storage. Without it the crate needs no
-//! allocator: a `Region<T>` cannot be built, and `to_bytes`, `from_bytes` and `view` are not
-//! available, while [`Region::as_bytes`], [`Region::from_bytes_with`] and
-//! [`Region::view_with`], which take the memory for checking from the caller, are.
+//! The default feature `alloc` provides the [`Heap`]. Without it the crate needs no allocator:
+//! a region names its storage (`Region<T, Inline<N>>`), and `from_bytes` and [`view`] are not
+//! available, while [`Region::as_bytes`], [`Region::from_bytes_with`] and [`view_with`], which
+//! take the memory for checking from the caller, are.
 //!
 //! # Safety model
 //!
@@ -262,7 +261,9 @@ mod storage;
 #[cfg(feature = "nightly")]
 mod unpin;
 
-pub use bytes::{Invalid, Pending};
+#[cfg(feature = "alloc")]
+pub use bytes::view;
+pub use bytes::{Error, Pending, view_unchecked, view_with};
 pub use edit::{ListEdit, Old, OptionEdit, StrEdit};
 pub use flat::{Emit, Flat};
 pub use near::Near;
@@ -273,9 +274,11 @@ pub use near::Near;
 ///
 /// - constructors whose parameters take anything that can be written as the field's type
 ///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
-///   named after it in snake case (`project_` for a variant called `Project`). A parameter
+///   named after it in snake case (`project_` for a variant called `Project`), or as
+///   `#[flat(rename = "name")]` on the variant says. A parameter
 ///   for a field written `Near<X>` takes a builder of `X` and allocates the target (a list or
-///   string builder if `X` is a slice or `str`);
+///   string builder if `X` is a slice or `str`); one for a field of plain data marked
+///   `#[flat(into)]` takes `impl Into<FieldType>`;
 /// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign), `replace` (assign and return the
 ///   old value as an [`Old`]), `update` (build the new value from the old one) and `pin` (a
 ///   pinned view), and for structs one method per field
@@ -292,8 +295,11 @@ pub use near::Near;
 ///
 /// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
 /// `repr`s other than `u8`, explicit discriminants, empty enums, enums of more than 256
-/// variants, variants whose constructors would have the same name and, without the `nightly`
-/// feature, `#[pin_v2]` are rejected.
+/// variants, variants whose constructors would have the same name (`rename` one) and, without
+/// the `nightly` feature, `#[pin_v2]` are rejected. `#[flat(..)]` on a variant or a field is
+/// read and removed. A variant with fields takes `rename = "name"`, a new name for its
+/// constructor, which no other constructor and not `project` may have; a field takes `into`,
+/// unless it is written as a pointer (`Near<..>`, `Option<Near<..>>`).
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -320,9 +326,30 @@ pub use near::Near;
 /// assert_eq!((&*fields[0].key, &fields[0].value), ("b", &Json::Null));
 /// assert_eq!(fields[1].value, *Region::new(Json::arr((Json::Null, Json::str("x")))));
 /// ```
+///
+/// A variant's constructor can be given another name, and a parameter of plain data can take
+/// anything that converts to it:
+///
+/// ```
+/// use nearest::{Near, Region, flat};
+///
+/// #[flat]
+/// enum Value {
+///   Int(#[flat(into)] i64),
+///   #[flat(rename = "text")]
+///   Str(Near<str>),
+/// }
+///
+/// let r = Region::new(Value::int(7u8));
+/// assert!(matches!(&*r, Value::Int(7)));
+/// let r = Region::new(Value::text("hi"));
+/// assert!(matches!(&*r, Value::Str(s) if &**s == "hi"));
+/// ```
 pub use nearest_derive::flat;
 pub use region::Region;
-pub use storage::{Heap, Inline, Storage};
+#[cfg(feature = "alloc")]
+pub use storage::Heap;
+pub use storage::{Inline, Storage};
 
 /// The handle of a place holding a `T`, during the edit `'e`: `&mut Edit<'e, T>` is what
 /// [`Region::edit`], field methods and [`ListEdit::at`] return.
@@ -436,5 +463,17 @@ mod tests {
     let compact = Region::new(&*r);
     assert_eq!(compact.byte_len(), 4 + 4 + 4 + 4 * before.len());
     assert_eq!(compact[..], r[..]);
+  }
+
+  /// Memory past the size limit is there, but not used.
+  #[test]
+  fn capacity_past_the_size_limit_is_not_used() {
+    let mut r = Region::new_in(crate::Heap::with_capacity((1 << 16) + 64), Near::from_iter([0u32]));
+    let full = catch_unwind(AssertUnwindSafe(|| {
+      for i in 0..1 << 15 {
+        r.edit().push(i);
+      }
+    }));
+    assert!(full.is_err() && r.byte_len() <= 1 << 16);
   }
 }

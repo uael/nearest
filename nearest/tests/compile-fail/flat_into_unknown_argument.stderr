@@ -1,0 +1,5 @@
+error: unknown argument: a field takes `#[flat(into)]`
+ --> tests/compile-fail/flat_into_unknown_argument.rs:5:19
+  |
+5 | struct S { #[flat(from)] a: u8 }
+  |                   ^^^^

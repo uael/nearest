@@ -1,0 +1,5 @@
+error: `project` is the method `#[flat]` generates for pinned values
+ --> tests/compile-fail/flat_rename_project.rs:5:26
+  |
+5 | enum E { #[flat(rename = "project")] A(u8) }
+  |                          ^^^^^^^^^

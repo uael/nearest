@@ -1,0 +1,5 @@
+error: `rename` is given twice
+ --> tests/compile-fail/flat_rename_twice.rs:5:31
+  |
+5 | enum E { #[flat(rename = "a", rename = "b")] A(u8) }
+  |                               ^^^^^^

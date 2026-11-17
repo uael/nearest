@@ -45,15 +45,14 @@ fn a_region_moves_with_its_storage() {
   assert_eq!((r.insts.len(), &other.items[0].args[..]), (0, &[10, 11][..]));
   // Bytes: borrowed while compact, read in place, loaded, and moved again.
   let c = Region::new_in(Store::default(), &*r);
-  let bytes = c.to_bytes();
-  assert!(matches!(bytes, Cow::Borrowed(_)));
-  assert_eq!(nearest::Region::<Block>::view(&bytes), Ok(&*r));
-  let loaded = Box::new(Region::<Block>::from_bytes(&bytes).unwrap());
+  let bytes = c.as_bytes().unwrap();
+  assert_eq!(nearest::view::<Block>(bytes), Ok(&*r));
+  let loaded = Box::new(Region::<Block>::from_bytes(bytes).unwrap());
   assert_eq!(**loaded, *r);
   let mut edited = *loaded;
   edited.edit().insts().push(Inst::new(3, ()));
-  assert!(matches!(edited.to_bytes(), Cow::Owned(_)));
-  assert_eq!(Region::<Block>::from_bytes(&edited.to_bytes()).unwrap(), edited);
+  assert!(edited.as_bytes().is_none());
+  assert_eq!(Region::<Block>::from_bytes(&compact_bytes(&edited)).unwrap(), edited);
 }
 
 /// Inline storage does not grow: past it, building and editing panic, and a region is left as it
@@ -79,8 +78,9 @@ fn full_inline_storage() {
   let big = nearest::Region::new(Lst::new(Near::from_iter(0..16u64)));
   assert!(catch_unwind(|| Small::new_in(Store64::default(), &*big)).is_err());
   // Loading does not panic: the image is valid, and larger than the storage.
-  assert_eq!(Small::from_bytes(&big.to_bytes()).err().unwrap().offset(), None);
-  // SAFETY: the bytes come from `to_bytes` for the same type.
-  assert!(catch_unwind(|| unsafe { Small::from_bytes_unchecked(&big.to_bytes()) }).is_err());
-  assert_eq!(*Big::from_bytes(&big.to_bytes()).unwrap(), *big);
+  let bytes = big.as_bytes().unwrap();
+  assert_eq!(Small::from_bytes(bytes).err(), Some(nearest::Error::StorageFull));
+  // SAFETY: the bytes come from `as_bytes` for the same type.
+  assert!(catch_unwind(|| unsafe { Small::from_bytes_unchecked(bytes) }).is_err());
+  assert_eq!(*Big::from_bytes(bytes).unwrap(), *big);
 }

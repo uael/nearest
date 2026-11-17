@@ -7,11 +7,14 @@
   expect(internal_features, reason = "`allow_internal_unstable(pin_ergonomics)` on `flat`")
 )]
 
+use std::mem;
+
 use proc_macro2::{Group, Ident, Literal, Span, TokenStream, TokenTree};
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-  Data, DeriveInput, Error, Field, Fields, GenericArgument, GenericParam, Index, Lifetime, Member,
-  PathArguments, Type, parse_macro_input, parse_quote,
+  Attribute, Data, DeriveInput, Error, Field, Fields, GenericArgument, GenericParam, Index,
+  Lifetime, LitStr, Member, PathArguments, Type, ext::IdentExt, meta::ParseNestedMeta,
+  parse::Parser, parse_macro_input, parse_quote, spanned::Spanned,
 };
 
 /// Makes a struct or enum storable in a `nearest` region. See `nearest::flat`.
@@ -26,8 +29,34 @@ pub fn flat(
 }
 
 fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream> {
-  if !attr.is_empty() {
-    return Err(Error::new_spanned(attr, "`#[flat]` takes no arguments"));
+  // `#[flat(..)]` is read here and left out of the output: on the type it says nothing, on a
+  // variant it may rename the constructor, on a field it may make its parameter `impl Into`.
+  syn::meta::parser(read_args(&mut Args::default(), Place::Type)).parse2(attr)?;
+  take_args(&mut input.attrs, Place::Type)?;
+  let intos = |fields: &mut Fields| -> syn::Result<Vec<bool>> {
+    (fields.iter_mut())
+      .map(|f| match take_args(&mut f.attrs, Place::Field)?.into {
+        Some(span) if is_pointer(&f.ty) => {
+          let msg = "`into` is for plain data: the parameter of a pointer takes a builder of \
+                     its target";
+          Err(Error::new(span, msg))
+        }
+        into => Ok(into.is_some()),
+      })
+      .collect()
+  };
+  // Per variant (one entry for a struct): the new name of the constructor, and which of its
+  // parameters take `impl Into`.
+  let (mut renames, mut into) = (vec![], vec![]);
+  match &mut input.data {
+    Data::Enum(e) => {
+      for v in &mut e.variants {
+        into.push(intos(&mut v.fields)?);
+        renames.push(take_args(&mut v.attrs, Place::Variant)?.rename);
+      }
+    }
+    Data::Struct(s) => into.push(intos(&mut s.fields)?),
+    Data::Union(_) => {}
   }
   // Patterns project a pinned value only if its type is `#[pin_v2]`, and such a type cannot have
   // the bounded `Unpin` impl written below. Only the `nightly` feature, whose guard replaces
@@ -92,49 +121,58 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // A constructor: `make` around one `emit` per field, after an optional tag. A field written
   // `Near<..>` takes what `Pointer` says: for `Near<X>` a builder of `X`, whose target the
   // constructor allocates.
-  let ctor =
-    |fname: Ident, doc: String, fields: &Fields, tag: TokenStream, offs: Vec<TokenStream>| {
-      let params: Vec<_> = (fields.iter().enumerate())
-        .map(|(i, f)| {
-          f.ident.clone().unwrap_or_else(|| Ident::new(&format!("f{i}"), Span::mixed_site()))
-        })
-        .collect();
-      let (mut ptys, mut vals) = (Vec::new(), Vec::new());
-      for (f, p) in fields.iter().zip(&params) {
-        let ty = &f.ty;
-        match near_target(ty) {
-          // A type parameter is a sized target; naming it lets the argument infer it.
-          Some(Type::Path(x)) if type_params.iter().any(|t| x.path.is_ident(*t)) => {
-            ptys.push(x.to_token_stream());
-            vals.push(quote!(::nearest::Near::<#x>::new(#p)));
-          }
-          Some(_) => {
-            ptys.push(quote!(<#ty as #np::Pointer>::Arg));
-            vals.push(quote!(<#ty as #np::Pointer>::wrap(#p)));
-          }
-          None => {
-            ptys.push(ty.to_token_stream());
-            vals.push(p.to_token_stream());
-          }
+  // A field marked `#[flat(into)]` takes `impl Into<FieldType>`.
+  let ctor = |fname: Ident,
+              doc: String,
+              fields: &Fields,
+              into: &[bool],
+              tag: TokenStream,
+              offs: Vec<TokenStream>| {
+    let params: Vec<_> = (fields.iter().enumerate())
+      .map(|(i, f)| {
+        f.ident.clone().unwrap_or_else(|| Ident::new(&format!("f{i}"), Span::mixed_site()))
+      })
+      .collect();
+    let (mut ptys, mut vals) = (Vec::new(), Vec::new());
+    for ((f, p), into) in fields.iter().zip(&params).zip(into) {
+      let ty = &f.ty;
+      match near_target(ty) {
+        _ if *into => {
+          ptys.push(quote!(impl ::core::convert::Into<#ty>));
+          vals.push(quote!(::core::convert::Into::<#ty>::into(#p)));
+        }
+        // A type parameter is a sized target; naming it lets the argument infer it.
+        Some(Type::Path(x)) if type_params.iter().any(|t| x.path.is_ident(*t)) => {
+          ptys.push(quote!(impl ::nearest::Emit<#x>));
+          vals.push(quote!(::nearest::Near::<#x>::new(#p)));
+        }
+        Some(_) => {
+          ptys.push(quote!(impl ::nearest::Emit<<#ty as #np::Pointer>::Arg>));
+          vals.push(quote!(<#ty as #np::Pointer>::wrap(#p)));
+        }
+        None => {
+          ptys.push(quote!(impl ::nearest::Emit<#ty>));
+          vals.push(p.to_token_stream());
         }
       }
-      let tys = fields.iter().map(|f| &f.ty);
-      // One parameter per field is the point of a constructor.
-      let lint = (params.len() > 7).then(|| quote!(#[allow(clippy::too_many_arguments)]));
-      quote! {
-        #[doc = #doc]
-        #lint
-        #vis fn #fname(#(#params: impl ::nearest::Emit<#ptys>),*) -> impl ::nearest::Emit<Self> {
-          #np::fits::<Self>();
-          unsafe {
-            #np::make(move |#sink: &mut #np::Sink, #at: usize| {
-              #tag
-              #(::nearest::Emit::<#tys>::emit(#vals, #sink, #at + #offs);)*
-            })
-          }
+    }
+    let tys = fields.iter().map(|f| &f.ty);
+    // One parameter per field is the point of a constructor.
+    let lint = (params.len() > 7).then(|| quote!(#[allow(clippy::too_many_arguments)]));
+    quote! {
+      #[doc = #doc]
+      #lint
+      #vis fn #fname(#(#params: #ptys),*) -> impl ::nearest::Emit<Self> {
+        #np::fits::<Self>();
+        unsafe {
+          #np::make(move |#sink: &mut #np::Sink, #at: usize| {
+            #tag
+            #(::nearest::Emit::<#tys>::emit(#vals, #sink, #at + #offs);)*
+          })
         }
       }
-    };
+    }
+  };
   let store = |field: TokenStream, off: &TokenStream| quote!(::nearest::Flat::store(#field, #sink, #at + #off, #shift););
   let check = |tys: &[TokenStream], offs: &[TokenStream]| quote!(#(<#tys as ::nearest::Flat>::check(#ck, #at + #offs)?;)*);
   // A method of a handle whose `.0` is the `Raw` of the value, returning a field's handle.
@@ -174,7 +212,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         members.iter().map(|m| quote!(::core::mem::offset_of!(Self, #m))).collect();
       if !s.fields.is_empty() {
         let doc = format!("Builds a `{name}` from its fields, in declaration order.");
-        ctors.push(ctor(format_ident!("new"), doc, &s.fields, quote!(), offs.clone()));
+        ctors.push(ctor(format_ident!("new"), doc, &s.fields, &into[0], quote!(), offs.clone()));
       }
       for (i, (f, m)) in s.fields.iter().zip(&members).enumerate() {
         let off = quote!(::core::mem::offset_of!(#self_ty, #m));
@@ -260,6 +298,9 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         pin_variants.push(quote!(#[doc = #vdoc] #vname #pin_decl));
         pin_arms.push(quote!(Self::#vname #pat => #pin_name::#vname #pin_make));
         if matches!(v.fields, Fields::Unit) {
+          if let Some(r) = &renames[i] {
+            return Err(Error::new_spanned(r, "a unit variant has no constructor to rename"));
+          }
           check_arms.push(quote!(#tag_pat => {}));
           arms.push(quote!(Self::#vname => { #tag_store }));
           views.push(quote!(#[doc = #vdoc] #vname));
@@ -287,13 +328,21 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         check_arms.push(quote!(#tag_pat => { #checks }));
         let doc = format!("Builds `{name}::{vname}` from its fields, in declaration order.");
         let tag_emit = quote!(::nearest::Emit::<u8>::emit(#tag, #sink, #at););
-        let cname = snake(vname);
-        if ctor_names.contains(&cname) {
-          let msg = format!("another variant already has the constructor `{cname}`: rename one");
-          return Err(Error::new_spanned(vname, msg));
+        let cname = renames[i].clone().unwrap_or_else(|| snake(vname));
+        let at = renames[i].as_ref().unwrap_or(vname);
+        if cname.unraw() == "project" {
+          let msg = "`project` is the method `#[flat]` generates for pinned values";
+          return Err(Error::new_spanned(at, msg));
+        }
+        if ctor_names.iter().any(|c: &Ident| c.unraw() == cname.unraw()) {
+          let msg = format!(
+            "another variant already has the constructor `{cname}`: name one with \
+             `#[flat(rename = \"..\")]`"
+          );
+          return Err(Error::new_spanned(at, msg));
         }
         ctor_names.push(cname.clone());
-        ctors.push(ctor(cname, doc, &v.fields, tag_emit, offs.clone()));
+        ctors.push(ctor(cname, doc, &v.fields, &into[i], tag_emit, offs.clone()));
         let stores = binds.iter().zip(&offs).map(|(b, off)| store(quote!(#b), off));
         arms.push(quote!(Self::#vname #pat => { #tag_store #(#stores)* }));
         // Tells the dead-code lint that the variant is built, by the constructor.
@@ -468,7 +517,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         fn check(
           #ck: &mut #np::Check<'_>,
           #at: usize,
-        ) -> ::core::result::Result<(), ::nearest::Invalid> {
+        ) -> ::core::result::Result<(), ::nearest::Error> {
           #np::fits::<Self>();
           #checks
           ::core::result::Result::Ok(())
@@ -517,8 +566,83 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   })
 }
 
+/// Where `#[flat(..)]` is written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+  Type,
+  Variant,
+  Field,
+}
+
+/// What `#[flat(..)]` says: on a variant, the name of its constructor; on a field, that its
+/// parameter takes `impl Into<..>` (where `into` is written).
+#[derive(Default)]
+struct Args {
+  rename: Option<Ident>,
+  into: Option<Span>,
+}
+
+/// Reads one argument of `#[flat(..)]` at `place` into `args`, rejecting what does not belong
+/// there.
+fn read_args(args: &mut Args, place: Place) -> impl FnMut(ParseNestedMeta) -> syn::Result<()> {
+  move |meta| {
+    if meta.path.is_ident("into") {
+      if place != Place::Field {
+        return Err(meta.error("`into` is for the parameter of a field: write it there"));
+      }
+      if args.into.is_some() {
+        return Err(meta.error("`into` is given twice"));
+      }
+      if !meta.input.is_empty() && !meta.input.peek(syn::Token![,]) {
+        return Err(meta.error("`into` takes no value"));
+      }
+      args.into = Some(meta.path.span());
+      return Ok(());
+    }
+    if !meta.path.is_ident("rename") {
+      return Err(meta.error(match place {
+        Place::Type => "`#[flat]` takes no arguments",
+        Place::Variant => "unknown argument: a variant takes `#[flat(rename = \"name\")]`",
+        Place::Field => "unknown argument: a field takes `#[flat(into)]`",
+      }));
+    }
+    if place != Place::Variant {
+      return Err(meta.error("`rename` names the constructor of an enum variant: write it there"));
+    }
+    if args.rename.is_some() {
+      return Err(meta.error("`rename` is given twice"));
+    }
+    let name: LitStr = meta.value()?.parse()?;
+    let msg = "`rename` takes the name of a function";
+    args.rename = Some(name.parse().map_err(|_| Error::new(name.span(), msg))?);
+    Ok(())
+  }
+}
+
+/// Takes the `#[flat(..)]` attributes out of `attrs` and reads them.
+fn take_args(attrs: &mut Vec<Attribute>, place: Place) -> syn::Result<Args> {
+  let mut args = Args::default();
+  let (ours, others) = mem::take(attrs).into_iter().partition(|a| a.path().is_ident("flat"));
+  *attrs = others;
+  for a in ours {
+    a.parse_nested_meta(read_args(&mut args, place))?;
+  }
+  Ok(args)
+}
+
 /// `X` if `ty` is written `Near<X>`: any path ending in `Near` with one type argument.
 fn near_target(ty: &Type) -> Option<&Type> {
+  type_arg(ty, "Near")
+}
+
+/// Whether `ty` is written as a pointer, `Near<..>` (a list and a string too) or
+/// `Option<Near<..>>`.
+fn is_pointer(ty: &Type) -> bool {
+  near_target(ty).or_else(|| type_arg(ty, "Option").and_then(near_target)).is_some()
+}
+
+/// `X` if `ty` is written `name<X>`: any path ending in `name` with one type argument.
+fn type_arg<'t>(ty: &'t Type, name: &str) -> Option<&'t Type> {
   let ty = match ty {
     Type::Group(g) => &*g.elem,
     Type::Paren(p) => &*p.elem,
@@ -527,7 +651,7 @@ fn near_target(ty: &Type) -> Option<&Type> {
   let Type::Path(p) = ty else { return None };
   let last = p.path.segments.last()?;
   match &last.arguments {
-    PathArguments::AngleBracketed(a) if last.ident == "Near" && a.args.len() == 1 => {
+    PathArguments::AngleBracketed(a) if last.ident == name && a.args.len() == 1 => {
       match a.args.first() {
         Some(GenericArgument::Type(x)) => Some(x),
         _ => None,

@@ -1,0 +1,5 @@
+error: `into` is for the parameter of a field: write it there
+ --> tests/compile-fail/flat_into_on_variant.rs:5:17
+  |
+5 | enum E { #[flat(into)] A(u64) }
+  |                 ^^^^

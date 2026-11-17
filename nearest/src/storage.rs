@@ -5,10 +5,9 @@ use core::{mem::MaybeUninit, slice};
 /// Where a [`Region`](crate::Region) keeps its bytes: memory of 8-byte words, which the region
 /// asks to grow, through [`memory_mut`](Self::memory_mut), as it needs.
 ///
-/// Two are provided: [`Heap`], the default, and [`Inline<N>`], `N` bytes inside the `Region`
-/// value. Write your own for other memory, such as an arena or a memory-mapped file: the
-/// region needs nothing else, and a storage that does not grow ignores the length it is
-/// asked for.
+/// Two are provided: [`Heap`], the default (with `alloc`), and [`Inline<N>`], `N` bytes inside the
+/// `Region` value. Write your own for other memory, such as an arena or a memory-mapped file: the
+/// region needs nothing else, and a storage that does not grow ignores the length it is asked for.
 ///
 /// ```
 /// use core::mem::MaybeUninit;
@@ -70,14 +69,37 @@ pub unsafe trait Storage {
   fn memory_mut(&mut self, words: usize) -> &mut [MaybeUninit<u64>];
 }
 
-/// The heap, the default storage: memory that grows as the region needs, up to 2 GiB. It is a
-/// storage with the `alloc` feature; without it, `Region<T>` only names [`view_with`] and
-/// [`view_unchecked`].
-///
-/// [`view_with`]: crate::Region::view_with
-/// [`view_unchecked`]: crate::Region::view_unchecked
+/// The heap, the default storage: memory that grows as the region needs, up to 2 GiB. It needs
+/// the `alloc` feature.
+#[cfg(feature = "alloc")]
 #[derive(Default)]
-pub struct Heap(#[cfg(feature = "alloc")] Vec<MaybeUninit<u64>>);
+pub struct Heap(Vec<MaybeUninit<u64>>);
+
+#[cfg(feature = "alloc")]
+impl Heap {
+  /// A heap with room for `bytes` bytes from the start: a region in it does not reallocate
+  /// until it holds more. Nothing is written; the region zeroes what it uses, and uses at most
+  /// 2 GiB.
+  ///
+  /// ```
+  /// use nearest::{Heap, Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Log { entries: Near<[u64]> }
+  ///
+  /// let mut r = Region::new_in(Heap::with_capacity(4096), Log::new(()));
+  /// for i in 0..100 {
+  ///   r.edit().entries().push(i);
+  /// }
+  /// assert_eq!(r.entries.len(), 100);
+  /// ```
+  #[must_use]
+  pub fn with_capacity(bytes: usize) -> Self {
+    let mut words = Vec::new();
+    words.resize(bytes.div_ceil(8), MaybeUninit::uninit());
+    Self(words)
+  }
+}
 
 // SAFETY: a vector of words, reached only through `&self` and `&mut self`; `resize` keeps the
 // words, and panics only before changing anything.
