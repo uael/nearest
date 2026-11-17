@@ -10,6 +10,8 @@ documentation = "https://docs.rs/nearest"
 readme = "../README.md"
 keywords = ["self-relative", "pointer", "region", "allocation", "arena"]
 categories = ["data-structures", "memory-management"]
+# The specification, for contributors: not shipped.
+exclude = ["CLAUDE.md"]
 
 [features]
 default = ["alloc"]
