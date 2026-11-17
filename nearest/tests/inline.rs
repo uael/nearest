@@ -46,7 +46,7 @@ fn a_region_moves_with_its_storage() {
   // Bytes: borrowed while compact, read in place, loaded, and moved again.
   let c = Region::new_in(Store::default(), &*r);
   let bytes = c.as_bytes().unwrap();
-  assert_eq!(nearest::Region::<Block>::view(bytes), Ok(&*r));
+  assert_eq!(nearest::view::<Block>(bytes), Ok(&*r));
   let loaded = Box::new(Region::<Block>::from_bytes(bytes).unwrap());
   assert_eq!(**loaded, *r);
   let mut edited = *loaded;

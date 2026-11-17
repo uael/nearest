@@ -16,10 +16,10 @@ use crate::{
 /// changes it in place; [`as_bytes`](Self::as_bytes) and [`from_bytes`](Self::from_bytes) save
 /// and load it.
 ///
-/// `S` is the [`Storage`] of the buffer: by default the [`Heap`](crate::Heap), which grows as
-/// needed up to 2 GiB; [`Inline<N>`](crate::Inline) keeps it in `N` bytes inside the `Region`
-/// value, with no heap; and a storage of your own puts it anywhere else. A region in another
-/// storage is built with [`new_in`](Self::new_in) or [`from_bytes`](Self::from_bytes);
+/// `S` is the [`Storage`] of the buffer: by default, with `alloc`, the [`Heap`](crate::Heap), which
+/// grows as needed up to 2 GiB; [`Inline<N>`](crate::Inline) keeps it in `N` bytes inside the
+/// `Region` value, with no heap; and a storage of your own puts it anywhere else. A region in
+/// another storage is built with [`new_in`](Self::new_in) or [`from_bytes`](Self::from_bytes);
 /// everything else is the same for all.
 ///
 /// ```
@@ -34,7 +34,7 @@ use crate::{
 /// assert_eq!(copy.children.iter().map(|c| c.value).sum::<u32>(), 5);
 /// assert_eq!(copy, r);
 /// ```
-pub struct Region<T, S = crate::Heap> {
+pub struct Region<T, #[cfg(feature = "alloc")] S = Heap, #[cfg(not(feature = "alloc"))] S> {
   buf: Buf,
   store: S,
   _t: PhantomData<T>,
@@ -169,7 +169,7 @@ impl<T: Flat, S: Storage> Region<T, S> {
   ///
   /// let mut r = Region::new(Msg::new(1, "hi"));
   /// let image = r.as_bytes().unwrap();
-  /// assert_eq!(&*Region::<Msg>::view(image)?.body, "hi"); // the buffer is 8-aligned
+  /// assert_eq!(&*nearest::view::<Msg>(image)?.body, "hi"); // the buffer is 8-aligned
   /// r.edit().body().set("hello");
   /// assert!(r.as_bytes().is_none());
   /// let copy = Region::new(&*r);
@@ -187,7 +187,7 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// The region whose image is `bytes`, which may have any alignment, in a new storage. The
   /// bytes are checked, then copied: they must be exactly what [`as_bytes`](Self::as_bytes)
   /// returns for a `T`. For a storage that has no `Default`, copy from a view instead:
-  /// `Region::new_in(storage, Region::<T>::view(bytes)?)`. It needs `alloc`: checking takes
+  /// `Region::new_in(storage, nearest::view::<T>(bytes)?)`. It needs `alloc`: checking takes
   /// memory that grows with the nesting of the data, which
   /// [`from_bytes_with`](Self::from_bytes_with) takes from the caller.
   ///
@@ -300,98 +300,6 @@ impl<T, S> Region<T, S> {
   #[must_use]
   pub const fn byte_len(&self) -> usize {
     self.buf.len()
-  }
-}
-
-impl<T: Flat> Region<T> {
-  /// The value whose image is `bytes`, read in place, for example from a memory-mapped file.
-  /// The slice must be 8-aligned; the bytes are checked as by [`from_bytes`](Self::from_bytes).
-  /// It needs `alloc`; [`view_with`](Self::view_with) does not.
-  ///
-  /// ```
-  /// use nearest::{Near, Region, flat};
-  ///
-  /// #[flat]
-  /// struct Msg { id: u8, body: Near<str> }
-  ///
-  /// let r = Region::new(Msg::new(1, "hi"));
-  /// let bytes = r.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
-  /// let msg: &Msg = Region::view(bytes)?;
-  /// assert_eq!(&*msg.body, "hi");
-  /// # Ok::<(), nearest::Error>(())
-  /// ```
-  ///
-  /// # Errors
-  /// [`Error::Invalid`] if the bytes are not the compact image of a valid `T`, or the slice is
-  /// not 8-aligned (at offset 0).
-  #[cfg(feature = "alloc")]
-  pub fn view(bytes: &[u8]) -> Result<&T, Error> {
-    Self::read(bytes, Stack::Heap(Vec::new()))
-  }
-
-  /// [`view`](Self::view), checking with `scratch` for memory. `bytes.len() / 4` entries are
-  /// always enough (see [`Pending`]). It needs no `alloc`.
-  ///
-  /// ```
-  /// use nearest::{Error, Near, Pending, Region, flat};
-  ///
-  /// #[flat]
-  /// #[derive(Debug, PartialEq)]
-  /// enum Expr { Lit(i64), Add(Near<Expr>, Near<Expr>) }
-  ///
-  /// let mut r = Region::new(Expr::Lit(0));
-  /// for i in 1..=20 {
-  ///   r.edit().update(|sum| Expr::add(sum, Expr::Lit(i))); // deep on the left
-  /// }
-  /// let compact = Region::new(&*r);
-  /// let bytes = compact.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
-  /// let mut scratch = vec![Pending::default(); bytes.len() / 4];
-  /// assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch), Ok(&*r));
-  /// assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch[..10]), Err(Error::ScratchFull));
-  /// ```
-  ///
-  /// # Errors
-  /// As [`view`](Self::view), and [`Error::ScratchFull`] if `scratch` ran out before the check
-  /// finished, which says nothing about the bytes.
-  pub fn view_with<'b>(bytes: &'b [u8], scratch: &mut [Pending]) -> Result<&'b T, Error> {
-    Self::read(bytes, Stack::Scratch(scratch, 0))
-  }
-
-  /// `view`, checking with `todo`.
-  fn read<'b>(bytes: &'b [u8], todo: Stack<'_>) -> Result<&'b T, Error> {
-    if !bytes.as_ptr().addr().is_multiple_of(8) {
-      return Err(Error::Invalid(0));
-    }
-    check::<T>(bytes, todo)?;
-    // SAFETY: just checked.
-    Ok(unsafe { Self::view_unchecked(bytes) })
-  }
-
-  /// [`view`](Self::view) without the check, for bytes that are trusted: nothing is read
-  /// before the value is used.
-  ///
-  /// ```
-  /// use nearest::{Near, Region, flat};
-  ///
-  /// #[flat]
-  /// struct Msg { id: u8, body: Near<str> }
-  ///
-  /// let r = Region::new(Msg::new(1, "hi"));
-  /// let bytes = r.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
-  /// // SAFETY: the bytes come from `as_bytes` for the same type, in this build.
-  /// let msg: &Msg = unsafe { Region::view_unchecked(bytes) };
-  /// assert_eq!(&*msg.body, "hi");
-  /// ```
-  ///
-  /// # Safety
-  /// `bytes` is 8-aligned and holds what [`as_bytes`](Self::as_bytes) returned for a region
-  /// of `T`, in a build with the same layout of `T`.
-  #[must_use]
-  pub const unsafe fn view_unchecked(bytes: &[u8]) -> &T {
-    fits::<T>();
-    // SAFETY: per the caller, the bytes are 8-aligned and the image of a valid `T`, whose
-    // pointers all aim inside them.
-    unsafe { &*bytes.as_ptr().cast::<T>() }
   }
 }
 

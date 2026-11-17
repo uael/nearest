@@ -72,8 +72,7 @@ fn a_borrowed_arena() {
   drop(moved);
   let image = copy.as_bytes().unwrap(); // 8-aligned, as the memory of a storage is
   let mut again = vec![MaybeUninit::uninit(); 32];
-  let loaded =
-    nearest::Region::new_in(Arena(&mut again), nearest::Region::<Block>::view(image).unwrap());
+  let loaded = nearest::Region::new_in(Arena(&mut again), nearest::view::<Block>(image).unwrap());
   assert_eq!(loaded.as_bytes(), Some(image));
 }
 

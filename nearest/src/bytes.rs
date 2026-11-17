@@ -7,8 +7,7 @@ use crate::{
   flat::{MAX, fits},
 };
 
-/// Why bytes could not be loaded: the error of every loader ([`Region::view`](crate::Region::view),
-/// [`Region::view_with`](crate::Region::view_with),
+/// Why bytes could not be loaded: the error of every loader ([`view`], [`view_with`],
 /// [`Region::from_bytes`](crate::Region::from_bytes),
 /// [`Region::from_bytes_with`](crate::Region::from_bytes_with)).
 ///
@@ -58,8 +57,8 @@ type Step = fn(&mut Check<'_>, usize, usize) -> Result<(), Error>;
 
 /// One entry of scratch memory for checking bytes: a pointer, or the rest of a list, to check.
 ///
-/// [`Region::view_with`](crate::Region::view_with) and
-/// [`Region::from_bytes_with`](crate::Region::from_bytes_with) take a slice of them.
+/// [`view_with`] and [`Region::from_bytes_with`](crate::Region::from_bytes_with) take a slice of
+/// them.
 ///
 /// `bytes.len() / 4` entries are enough for any bytes: each entry waits for its own 4 bytes of
 /// the image (a pointer, or the start of the next element of a list), so an image that fits a
@@ -258,6 +257,97 @@ pub fn check<T: Flat>(bytes: &[u8], todo: Stack<'_>) -> Result<(), Error> {
     return Err(Error::Invalid(0));
   }
   walk::<T>(&mut Check { bytes, next: size_of::<T>(), todo })
+}
+
+/// The value whose image is `bytes`, read in place, for example from a memory-mapped file.
+///
+/// The slice must be 8-aligned; the bytes are checked as by
+/// [`Region::from_bytes`](crate::Region::from_bytes). It needs `alloc`; [`view_with`] does not.
+///
+/// ```
+/// use nearest::{Near, Region, flat};
+///
+/// #[flat]
+/// struct Msg { id: u8, body: Near<str> }
+///
+/// let r = Region::new(Msg::new(1, "hi"));
+/// let bytes = r.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
+/// let msg: &Msg = nearest::view(bytes)?;
+/// assert_eq!(&*msg.body, "hi");
+/// # Ok::<(), nearest::Error>(())
+/// ```
+///
+/// # Errors
+/// [`Error::Invalid`] if the bytes are not the compact image of a valid `T`, or the slice is
+/// not 8-aligned (at offset 0).
+#[cfg(feature = "alloc")]
+pub fn view<T: Flat>(bytes: &[u8]) -> Result<&T, Error> {
+  read(bytes, Stack::Heap(Vec::new()))
+}
+
+/// [`view`], checking with `scratch` for memory. `bytes.len() / 4` entries are always enough
+/// (see [`Pending`]). It needs no `alloc`.
+///
+/// ```
+/// use nearest::{Error, Near, Pending, Region, flat};
+///
+/// #[flat]
+/// #[derive(Debug, PartialEq)]
+/// enum Expr { Lit(i64), Add(Near<Expr>, Near<Expr>) }
+///
+/// let mut r = Region::new(Expr::Lit(0));
+/// for i in 1..=20 {
+///   r.edit().update(|sum| Expr::add(sum, Expr::Lit(i))); // deep on the left
+/// }
+/// let compact = Region::new(&*r);
+/// let bytes = compact.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
+/// let mut scratch = vec![Pending::default(); bytes.len() / 4];
+/// assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch), Ok(&*r));
+/// assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch[..10]), Err(Error::ScratchFull));
+/// ```
+///
+/// # Errors
+/// As [`view`], and [`Error::ScratchFull`] if `scratch` ran out before the check finished,
+/// which says nothing about the bytes.
+pub fn view_with<'b, T: Flat>(bytes: &'b [u8], scratch: &mut [Pending]) -> Result<&'b T, Error> {
+  read(bytes, Stack::Scratch(scratch, 0))
+}
+
+/// `view`, checking with `todo`.
+fn read<'b, T: Flat>(bytes: &'b [u8], todo: Stack<'_>) -> Result<&'b T, Error> {
+  if !bytes.as_ptr().addr().is_multiple_of(8) {
+    return Err(Error::Invalid(0));
+  }
+  check::<T>(bytes, todo)?;
+  // SAFETY: just checked.
+  Ok(unsafe { view_unchecked(bytes) })
+}
+
+/// [`view`] without the check, for bytes that are trusted: nothing is read before the value is
+/// used.
+///
+/// ```
+/// use nearest::{Near, Region, flat};
+///
+/// #[flat]
+/// struct Msg { id: u8, body: Near<str> }
+///
+/// let r = Region::new(Msg::new(1, "hi"));
+/// let bytes = r.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
+/// // SAFETY: the bytes come from `as_bytes` for the same type, in this build.
+/// let msg: &Msg = unsafe { nearest::view_unchecked(bytes) };
+/// assert_eq!(&*msg.body, "hi");
+/// ```
+///
+/// # Safety
+/// `bytes` is 8-aligned and holds what [`Region::as_bytes`](crate::Region::as_bytes) returned
+/// for a region of `T`, in a build with the same layout of `T`.
+#[must_use]
+pub const unsafe fn view_unchecked<T: Flat>(bytes: &[u8]) -> &T {
+  fits::<T>();
+  // SAFETY: per the caller, the bytes are 8-aligned and the image of a valid `T`, whose
+  // pointers all aim inside them.
+  unsafe { &*bytes.as_ptr().cast::<T>() }
 }
 
 /// The root, then everything it points to.

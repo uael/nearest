@@ -1068,12 +1068,12 @@ fn compact_bytes<T: Flat>(r: &Region<T>) -> Vec<u8> {
   Region::new_in(Store::default(), &**r).as_bytes().unwrap().to_vec()
 }
 
-/// `nearest::Region::view` of `bytes`, copied to an 8-aligned address.
+/// `nearest::view` of `bytes`, copied to an 8-aligned address.
 fn view<T: Flat, R>(bytes: &[u8], f: impl FnOnce(&T) -> R) -> Result<R, nearest::Error> {
   let words = aligned(bytes);
   // SAFETY: `words` holds at least `bytes.len()` initialized bytes.
   let slice = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), bytes.len()) };
-  nearest::Region::<T>::view(slice).map(f)
+  nearest::view::<T>(slice).map(f)
 }
 
 #[flat]
@@ -1122,7 +1122,7 @@ fn bytes_round_trip() {
   assert_eq!(image.len(), r.byte_len());
   assert_eq!(view::<Rec, _>(&image, |v| format!("{v:?}")), Ok(format!("{:?}", *r)));
   // In place, from the region's own (8-aligned) buffer.
-  assert_eq!(nearest::Region::<Rec>::view(r.as_bytes().unwrap()).map(|v| v.letter), Ok('é'));
+  assert_eq!(nearest::view::<Rec>(r.as_bytes().unwrap()).map(|v| v.letter), Ok('é'));
   // Any alignment of the input.
   let mut shifted = vec![0u8];
   shifted.extend_from_slice(&image);
@@ -1135,13 +1135,13 @@ fn bytes_round_trip() {
   assert_eq!((&*trusted, trusted.byte_len()), (&*r, image.len()));
   let own = trusted.as_bytes().unwrap();
   // SAFETY: as above, and a region's own buffer is 8-aligned.
-  assert_eq!(unsafe { nearest::Region::<Rec>::view_unchecked(own) }, &*r);
+  assert_eq!(unsafe { nearest::view_unchecked::<Rec>(own) }, &*r);
   // `view` needs an 8-aligned slice.
   let words = aligned(&shifted);
   // SAFETY: `words` holds `shifted.len()` initialized bytes.
   let misaligned =
     unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), shifted.len()) };
-  assert!(nearest::Region::<Rec>::view(&misaligned[1..]).is_err());
+  assert!(nearest::view::<Rec>(&misaligned[1..]).is_err());
   // An edited region has no image of its own; a copy has one, and only what is reachable.
   let e = r.edit();
   let kid = e.kids().remove(0);

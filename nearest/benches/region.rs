@@ -192,7 +192,7 @@ fn bytes(c: &mut Criterion) {
   // The region's own buffer is 8-aligned.
   let aligned = f.as_bytes().unwrap();
   g.bench_function("view 100 blocks x 100 insts", |b| {
-    b.iter(|| Region::<Func>::view(black_box(aligned)).unwrap().blocks.len());
+    b.iter(|| nearest::view::<Func>(black_box(aligned)).unwrap().blocks.len());
   });
   g.finish();
 }

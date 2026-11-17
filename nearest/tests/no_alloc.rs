@@ -35,7 +35,7 @@ fn build_edit_move_and_load() {
   let compact = Region::new_in(Inline::<128>::default(), &*moved);
   let bytes = compact.as_bytes().unwrap();
   let mut scratch = [Pending::default(); 128 / 4];
-  assert_eq!(Region::<Msg>::view_with(bytes, &mut scratch), Ok(&*moved));
+  assert_eq!(nearest::view_with::<Msg>(bytes, &mut scratch), Ok(&*moved));
   let loaded = Region::<Msg, Inline<64>>::from_bytes_with(bytes, &mut scratch);
   assert_eq!(*loaded.unwrap(), *moved);
   // A valid image larger than the storage is an error, not a panic.
@@ -67,24 +67,24 @@ fn checking_takes_scratch_memory_from_the_caller() {
   let mut scratch = [Pending::default(); SIZE / 4];
   let shallow = sum(50);
   let bytes = shallow.as_bytes().unwrap();
-  assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch[..64]), Ok(&*shallow));
+  assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch[..64]), Ok(&*shallow));
   let deep = sum(500);
   let bytes = deep.as_bytes().unwrap();
   assert!(bytes.len() > 16_000);
-  assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch), Ok(&*deep));
+  assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch), Ok(&*deep));
   assert_eq!(*Big::from_bytes_with(bytes, &mut scratch).unwrap(), *deep);
   // Too little: the check could not finish.
-  assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch[..400]), Err(Error::ScratchFull));
+  assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch[..400]), Err(Error::ScratchFull));
   assert_eq!(Big::from_bytes_with(bytes, &mut scratch[..400]).err(), Some(Error::ScratchFull));
   // Invalid bytes are invalid, given enough.
   let cut = &bytes[..bytes.len() - 16];
-  assert!(matches!(Region::<Expr>::view_with(cut, &mut scratch), Err(Error::Invalid(_))));
+  assert!(matches!(nearest::view_with::<Expr>(cut, &mut scratch), Err(Error::Invalid(_))));
   assert!(matches!(Big::from_bytes_with(&bytes[1..], &mut scratch), Err(Error::Invalid(_))));
   // With `alloc`, the checker's own memory grows as needed.
   #[cfg(feature = "alloc")]
   {
-    assert_eq!(Region::<Expr>::view(bytes), Ok(&*deep));
+    assert_eq!(nearest::view::<Expr>(bytes), Ok(&*deep));
     assert_eq!(*Big::from_bytes(bytes).unwrap(), *deep);
-    assert!(matches!(Region::<Expr>::view(cut), Err(Error::Invalid(_))));
+    assert!(matches!(nearest::view::<Expr>(cut), Err(Error::Invalid(_))));
   }
 }
