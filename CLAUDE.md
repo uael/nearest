@@ -59,7 +59,7 @@ bytes. `DESIGN.md` is the specification.
 `from_iter`, `as_pin_mut`, `iter_pin_mut`), `Region<T, S = Heap>` (`new`, `new_in`, `edit`, `as_bytes`, `to_bytes`,
 `from_bytes`, `view` (both with `alloc`), `from_bytes_with`, `view_with`, `byte_len`, and the
 `unsafe` `from_bytes_unchecked`, `view_unchecked`),
-`unsafe trait Storage` (`memory`, `memory_mut(words)`), `Heap`, `Inline<N>`,
+`unsafe trait Storage` (`memory`, `memory_mut(words)`), `Heap` (`with_capacity`), `Inline<N>`,
 `ListEdit<'e, T>` (`push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`,
 `set`, `replace`, `update`, `iter_pin_mut`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`,
 `set`, `update`), `StrEdit<'e>` (`set`, `replace`, `update`), `Old<'e, T>` (no methods),

@@ -79,6 +79,32 @@ pub unsafe trait Storage {
 #[derive(Default)]
 pub struct Heap(#[cfg(feature = "alloc")] Vec<MaybeUninit<u64>>);
 
+#[cfg(feature = "alloc")]
+impl Heap {
+  /// A heap with room for `bytes` bytes from the start: a region in it does not reallocate
+  /// until it holds more. Nothing is written; the region zeroes what it uses, and uses at most
+  /// 2 GiB.
+  ///
+  /// ```
+  /// use nearest::{Heap, Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Log { entries: Near<[u64]> }
+  ///
+  /// let mut r = Region::new_in(Heap::with_capacity(4096), Log::new(()));
+  /// for i in 0..100 {
+  ///   r.edit().entries().push(i);
+  /// }
+  /// assert_eq!(r.entries.len(), 100);
+  /// ```
+  #[must_use]
+  pub fn with_capacity(bytes: usize) -> Self {
+    let mut words = Vec::new();
+    words.resize(bytes.div_ceil(8), MaybeUninit::uninit());
+    Self(words)
+  }
+}
+
 // SAFETY: a vector of words, reached only through `&self` and `&mut self`; `resize` keeps the
 // words, and panics only before changing anything.
 #[cfg(feature = "alloc")]
