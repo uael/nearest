@@ -2,8 +2,10 @@
 git_tag_enable = true
 git_release_enable = true
 
+# The two crates are released under one version: the higher of their next versions.
 [[package]]
 name = "nearest"
+version_group = "nearest"
 changelog_path = "CHANGELOG.md"
 changelog_include = ["nearest-derive"]
 git_tag_name = "v{{ version }}"
@@ -11,6 +13,7 @@ git_release_name = "v{{ version }}"
 
 [[package]]
 name = "nearest-derive"
+version_group = "nearest"
 changelog_update = false
 git_tag_enable = false
 git_release_enable = false
