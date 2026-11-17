@@ -1,0 +1,5 @@
+error: `into` is given twice
+ --> tests/compile-fail/flat_into_twice.rs:7:10
+  |
+7 |   #[flat(into)]
+  |          ^^^^

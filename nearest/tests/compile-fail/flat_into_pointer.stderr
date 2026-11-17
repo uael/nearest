@@ -1,0 +1,5 @@
+error: `into` is for plain data: the parameter of a pointer takes a builder of its target
+ --> tests/compile-fail/flat_into_pointer.rs:5:19
+  |
+5 | struct S { #[flat(into)] p: nearest::Near<u32> }
+  |                   ^^^^

@@ -14,7 +14,7 @@ use quote::{ToTokens, format_ident, quote};
 use syn::{
   Attribute, Data, DeriveInput, Error, Field, Fields, GenericArgument, GenericParam, Index,
   Lifetime, LitStr, Member, PathArguments, Type, ext::IdentExt, meta::ParseNestedMeta,
-  parse::Parser, parse_macro_input, parse_quote,
+  parse::Parser, parse_macro_input, parse_quote, spanned::Spanned,
 };
 
 /// Makes a struct or enum storable in a `nearest` region. See `nearest::flat`.
@@ -30,26 +30,34 @@ pub fn flat(
 
 fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream> {
   // `#[flat(..)]` is read here and left out of the output: on the type it says nothing, on a
-  // variant it may rename the constructor.
+  // variant it may rename the constructor, on a field it may make its parameter `impl Into`.
   syn::meta::parser(read_args(&mut Args::default(), Place::Type)).parse2(attr)?;
   take_args(&mut input.attrs, Place::Type)?;
-  let renames = match &mut input.data {
-    Data::Enum(e) => (e.variants.iter_mut())
-      .map(|v| {
-        for f in &mut v.fields {
-          take_args(&mut f.attrs, Place::Field)?;
+  let intos = |fields: &mut Fields| -> syn::Result<Vec<bool>> {
+    (fields.iter_mut())
+      .map(|f| match take_args(&mut f.attrs, Place::Field)?.into {
+        Some(span) if is_pointer(&f.ty) => {
+          let msg = "`into` is for plain data: the parameter of a pointer takes a builder of \
+                     its target";
+          Err(Error::new(span, msg))
         }
-        Ok(take_args(&mut v.attrs, Place::Variant)?.rename)
+        into => Ok(into.is_some()),
       })
-      .collect::<syn::Result<Vec<_>>>()?,
-    Data::Struct(s) => {
-      for f in &mut s.fields {
-        take_args(&mut f.attrs, Place::Field)?;
-      }
-      vec![]
-    }
-    Data::Union(_) => vec![],
+      .collect()
   };
+  // Per variant (one entry for a struct): the new name of the constructor, and which of its
+  // parameters take `impl Into`.
+  let (mut renames, mut into) = (vec![], vec![]);
+  match &mut input.data {
+    Data::Enum(e) => {
+      for v in &mut e.variants {
+        into.push(intos(&mut v.fields)?);
+        renames.push(take_args(&mut v.attrs, Place::Variant)?.rename);
+      }
+    }
+    Data::Struct(s) => into.push(intos(&mut s.fields)?),
+    Data::Union(_) => {}
+  }
   // Patterns project a pinned value only if its type is `#[pin_v2]`, and such a type cannot have
   // the bounded `Unpin` impl written below. Only the `nightly` feature, whose guard replaces
   // that impl, may go without it, so a `#[pin_v2]` seen without the feature is an error. One
@@ -113,49 +121,58 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // A constructor: `make` around one `emit` per field, after an optional tag. A field written
   // `Near<..>` takes what `Pointer` says: for `Near<X>` a builder of `X`, whose target the
   // constructor allocates.
-  let ctor =
-    |fname: Ident, doc: String, fields: &Fields, tag: TokenStream, offs: Vec<TokenStream>| {
-      let params: Vec<_> = (fields.iter().enumerate())
-        .map(|(i, f)| {
-          f.ident.clone().unwrap_or_else(|| Ident::new(&format!("f{i}"), Span::mixed_site()))
-        })
-        .collect();
-      let (mut ptys, mut vals) = (Vec::new(), Vec::new());
-      for (f, p) in fields.iter().zip(&params) {
-        let ty = &f.ty;
-        match near_target(ty) {
-          // A type parameter is a sized target; naming it lets the argument infer it.
-          Some(Type::Path(x)) if type_params.iter().any(|t| x.path.is_ident(*t)) => {
-            ptys.push(x.to_token_stream());
-            vals.push(quote!(::nearest::Near::<#x>::new(#p)));
-          }
-          Some(_) => {
-            ptys.push(quote!(<#ty as #np::Pointer>::Arg));
-            vals.push(quote!(<#ty as #np::Pointer>::wrap(#p)));
-          }
-          None => {
-            ptys.push(ty.to_token_stream());
-            vals.push(p.to_token_stream());
-          }
+  // A field marked `#[flat(into)]` takes `impl Into<FieldType>`.
+  let ctor = |fname: Ident,
+              doc: String,
+              fields: &Fields,
+              into: &[bool],
+              tag: TokenStream,
+              offs: Vec<TokenStream>| {
+    let params: Vec<_> = (fields.iter().enumerate())
+      .map(|(i, f)| {
+        f.ident.clone().unwrap_or_else(|| Ident::new(&format!("f{i}"), Span::mixed_site()))
+      })
+      .collect();
+    let (mut ptys, mut vals) = (Vec::new(), Vec::new());
+    for ((f, p), into) in fields.iter().zip(&params).zip(into) {
+      let ty = &f.ty;
+      match near_target(ty) {
+        _ if *into => {
+          ptys.push(quote!(impl ::core::convert::Into<#ty>));
+          vals.push(quote!(::core::convert::Into::<#ty>::into(#p)));
+        }
+        // A type parameter is a sized target; naming it lets the argument infer it.
+        Some(Type::Path(x)) if type_params.iter().any(|t| x.path.is_ident(*t)) => {
+          ptys.push(quote!(impl ::nearest::Emit<#x>));
+          vals.push(quote!(::nearest::Near::<#x>::new(#p)));
+        }
+        Some(_) => {
+          ptys.push(quote!(impl ::nearest::Emit<<#ty as #np::Pointer>::Arg>));
+          vals.push(quote!(<#ty as #np::Pointer>::wrap(#p)));
+        }
+        None => {
+          ptys.push(quote!(impl ::nearest::Emit<#ty>));
+          vals.push(p.to_token_stream());
         }
       }
-      let tys = fields.iter().map(|f| &f.ty);
-      // One parameter per field is the point of a constructor.
-      let lint = (params.len() > 7).then(|| quote!(#[allow(clippy::too_many_arguments)]));
-      quote! {
-        #[doc = #doc]
-        #lint
-        #vis fn #fname(#(#params: impl ::nearest::Emit<#ptys>),*) -> impl ::nearest::Emit<Self> {
-          #np::fits::<Self>();
-          unsafe {
-            #np::make(move |#sink: &mut #np::Sink, #at: usize| {
-              #tag
-              #(::nearest::Emit::<#tys>::emit(#vals, #sink, #at + #offs);)*
-            })
-          }
+    }
+    let tys = fields.iter().map(|f| &f.ty);
+    // One parameter per field is the point of a constructor.
+    let lint = (params.len() > 7).then(|| quote!(#[allow(clippy::too_many_arguments)]));
+    quote! {
+      #[doc = #doc]
+      #lint
+      #vis fn #fname(#(#params: #ptys),*) -> impl ::nearest::Emit<Self> {
+        #np::fits::<Self>();
+        unsafe {
+          #np::make(move |#sink: &mut #np::Sink, #at: usize| {
+            #tag
+            #(::nearest::Emit::<#tys>::emit(#vals, #sink, #at + #offs);)*
+          })
         }
       }
-    };
+    }
+  };
   let store = |field: TokenStream, off: &TokenStream| quote!(::nearest::Flat::store(#field, #sink, #at + #off, #shift););
   let check = |tys: &[TokenStream], offs: &[TokenStream]| quote!(#(<#tys as ::nearest::Flat>::check(#ck, #at + #offs)?;)*);
   // A method of a handle whose `.0` is the `Raw` of the value, returning a field's handle.
@@ -195,7 +212,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         members.iter().map(|m| quote!(::core::mem::offset_of!(Self, #m))).collect();
       if !s.fields.is_empty() {
         let doc = format!("Builds a `{name}` from its fields, in declaration order.");
-        ctors.push(ctor(format_ident!("new"), doc, &s.fields, quote!(), offs.clone()));
+        ctors.push(ctor(format_ident!("new"), doc, &s.fields, &into[0], quote!(), offs.clone()));
       }
       for (i, (f, m)) in s.fields.iter().zip(&members).enumerate() {
         let off = quote!(::core::mem::offset_of!(#self_ty, #m));
@@ -325,7 +342,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           return Err(Error::new_spanned(at, msg));
         }
         ctor_names.push(cname.clone());
-        ctors.push(ctor(cname, doc, &v.fields, tag_emit, offs.clone()));
+        ctors.push(ctor(cname, doc, &v.fields, &into[i], tag_emit, offs.clone()));
         let stores = binds.iter().zip(&offs).map(|(b, off)| store(quote!(#b), off));
         arms.push(quote!(Self::#vname #pat => { #tag_store #(#stores)* }));
         // Tells the dead-code lint that the variant is built, by the constructor.
@@ -557,21 +574,36 @@ enum Place {
   Field,
 }
 
-/// What `#[flat(..)]` says: on a variant, the name of its constructor.
+/// What `#[flat(..)]` says: on a variant, the name of its constructor; on a field, that its
+/// parameter takes `impl Into<..>` (where `into` is written).
 #[derive(Default)]
 struct Args {
   rename: Option<Ident>,
+  into: Option<Span>,
 }
 
 /// Reads one argument of `#[flat(..)]` at `place` into `args`, rejecting what does not belong
 /// there.
 fn read_args(args: &mut Args, place: Place) -> impl FnMut(ParseNestedMeta) -> syn::Result<()> {
   move |meta| {
+    if meta.path.is_ident("into") {
+      if place != Place::Field {
+        return Err(meta.error("`into` is for the parameter of a field: write it there"));
+      }
+      if args.into.is_some() {
+        return Err(meta.error("`into` is given twice"));
+      }
+      if !meta.input.is_empty() && !meta.input.peek(syn::Token![,]) {
+        return Err(meta.error("`into` takes no value"));
+      }
+      args.into = Some(meta.path.span());
+      return Ok(());
+    }
     if !meta.path.is_ident("rename") {
       return Err(meta.error(match place {
         Place::Type => "`#[flat]` takes no arguments",
         Place::Variant => "unknown argument: a variant takes `#[flat(rename = \"name\")]`",
-        Place::Field => "a field takes no `#[flat(..)]` arguments",
+        Place::Field => "unknown argument: a field takes `#[flat(into)]`",
       }));
     }
     if place != Place::Variant {
@@ -600,6 +632,17 @@ fn take_args(attrs: &mut Vec<Attribute>, place: Place) -> syn::Result<Args> {
 
 /// `X` if `ty` is written `Near<X>`: any path ending in `Near` with one type argument.
 fn near_target(ty: &Type) -> Option<&Type> {
+  type_arg(ty, "Near")
+}
+
+/// Whether `ty` is written as a pointer, `Near<..>` (a list and a string too) or
+/// `Option<Near<..>>`.
+fn is_pointer(ty: &Type) -> bool {
+  near_target(ty).or_else(|| type_arg(ty, "Option").and_then(near_target)).is_some()
+}
+
+/// `X` if `ty` is written `name<X>`: any path ending in `name` with one type argument.
+fn type_arg<'t>(ty: &'t Type, name: &str) -> Option<&'t Type> {
   let ty = match ty {
     Type::Group(g) => &*g.elem,
     Type::Paren(p) => &*p.elem,
@@ -608,7 +651,7 @@ fn near_target(ty: &Type) -> Option<&Type> {
   let Type::Path(p) = ty else { return None };
   let last = p.path.segments.last()?;
   match &last.arguments {
-    PathArguments::AngleBracketed(a) if last.ident == "Near" && a.args.len() == 1 => {
+    PathArguments::AngleBracketed(a) if last.ident == name && a.args.len() == 1 => {
       match a.args.first() {
         Some(GenericArgument::Type(x)) => Some(x),
         _ => None,
