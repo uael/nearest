@@ -199,9 +199,9 @@
 //! [`Heap`], which grows as needed. [`Inline<N>`] keeps it in `N` bytes inside the `Region`
 //! value, with no heap; growing past them panics, as growing past 2 GiB does. A storage of
 //! your own, such as an arena or a memory-mapped file, implements the `unsafe` trait
-//! [`Storage`]: two accessors to its memory and, if it grows, `grow`. A region in any storage
-//! is built with [`Region::new_in`], or with [`Region::from_bytes`] when the storage has a
-//! `Default`; everything else is the same. A storage may move with its region; a region cannot
+//! [`Storage`]: two accessors to its memory, the second of which grows it if it can. A region in
+//! any storage is built with [`Region::new_in`], or with [`Region::from_bytes`] when the storage
+//! has a `Default`; everything else is the same. A storage may move with its region; a region cannot
 //! move while something borrows it, and every edit starts from where it is.
 //!
 //! ```
