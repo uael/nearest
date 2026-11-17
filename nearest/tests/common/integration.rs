@@ -2063,6 +2063,19 @@ mod names {
     Project(Near<Plan>, u32),
   }
 
+  /// Constructors named with `#[flat(rename = "..")]`: two variants that would both have
+  /// `http_server`, and one that would have `project_`.
+  #[flat]
+  #[derive(Debug, PartialEq)]
+  enum Host {
+    HTTPServer(u8),
+    #[flat(rename = "http_server_v2")]
+    HttpServer(u16),
+    #[flat(rename = "plan")]
+    Project { id: u32, next: Option<Near<Host>> },
+    Idle,
+  }
+
   /// A type parameter called like one the generated code could use.
   #[flat]
   struct Wrap<E> {
@@ -2092,6 +2105,14 @@ mod names {
       *n += 1;
     }
     assert!(matches!(&*plan, Plan::Project(input, 3) if matches!(**input, Plan::Scan(1))));
+
+    let mut host = Region::new_in(Store::default(), Host::plan(1, Near::new(Host::http_server_v2(2))));
+    if let HostMut::Project(p) = host.edit().as_mut() {
+      p.next().insert(Host::http_server(3));
+    }
+    let Host::Project { id: 1, next: Some(next) } = &*host else { unreachable!() };
+    assert_eq!(**next, Host::HTTPServer(3));
+    assert_ne!(*Region::new_in(Store::default(), Host::Idle), **next);
 
     let mut wrap = Region::new_in(Store::default(), Wrap::<u8>::new(7, 1));
     *wrap.edit().value() += 1;

@@ -1,0 +1,5 @@
+error: `rename` takes the name of a function
+ --> tests/compile-fail/flat_rename_not_a_name.rs:5:26
+  |
+5 | enum E { #[flat(rename = "make one")] A(u8) }
+  |                          ^^^^^^^^^^

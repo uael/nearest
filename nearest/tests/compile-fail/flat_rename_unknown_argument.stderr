@@ -1,0 +1,5 @@
+error: unknown argument: a variant takes `#[flat(rename = "name")]`
+ --> tests/compile-fail/flat_rename_unknown_argument.rs:5:17
+  |
+5 | enum E { #[flat(name = "make")] A(u8) }
+  |                 ^^^^
