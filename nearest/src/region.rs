@@ -5,7 +5,7 @@ use core::{fmt, marker::PhantomData, ops::Deref, slice};
 #[cfg(feature = "alloc")]
 use crate::Heap;
 use crate::{
-  Edit, Emit, Flat, Invalid, Pending, Storage,
+  Edit, Emit, Error, Flat, Pending, Storage,
   bytes::{Stack, check},
   flat::{Buf, Sink, fits},
 };
@@ -171,7 +171,7 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// assert_eq!(&*Region::<Msg>::view(image)?.body, "hi"); // the buffer is 8-aligned
   /// r.edit().body().set("hello");
   /// assert!(r.as_bytes().is_none());
-  /// # Ok::<(), nearest::Invalid>(())
+  /// # Ok::<(), nearest::Error>(())
   /// ```
   #[must_use]
   pub fn as_bytes(&self) -> Option<&[u8]> {
@@ -196,7 +196,7 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// let bytes = r.to_bytes();
   /// assert!(matches!(bytes, Cow::Owned(_)) && bytes.len() < r.byte_len());
   /// assert_eq!(&*Region::<Msg>::from_bytes(&bytes)?.body, "hello");
-  /// # Ok::<(), nearest::Invalid>(())
+  /// # Ok::<(), nearest::Error>(())
   /// ```
   #[cfg(feature = "alloc")]
   #[must_use]
@@ -225,25 +225,22 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// let back = Region::<Msg>::from_bytes(&bytes)?;
   /// assert_eq!((back.id, &*back.body), (1, "hi"));
   /// assert!(Region::<Msg>::from_bytes(&bytes[1..]).is_err());
-  /// # Ok::<(), nearest::Invalid>(())
+  /// # Ok::<(), nearest::Error>(())
   /// ```
   ///
   /// # Errors
-  /// [`Invalid`] if the bytes are not the compact image of a valid `T`, or if they are one
-  /// larger than the storage gives (then [`Invalid::offset`] is `None`).
+  /// [`Error::Invalid`] if the bytes are not the compact image of a valid `T`, and
+  /// [`Error::StorageFull`] if they are one, larger than the storage gives.
   #[cfg(feature = "alloc")]
-  pub fn from_bytes(bytes: &[u8]) -> Result<Self, Invalid>
+  pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error>
   where
     S: Default,
   {
-    // A vector is never full.
-    Self::load(bytes, Stack::Heap(Vec::new())).unwrap_or(Err(Invalid(0)))
+    Self::load(bytes, Stack::Heap(Vec::new()))
   }
 
-  /// [`from_bytes`](Self::from_bytes), checking with `scratch` for memory: `None` if it ran out
-  /// before the check finished, which says nothing about the bytes; otherwise the result of
-  /// `from_bytes`. `bytes.len() / 4` entries are always enough (see [`Pending`]). It needs no
-  /// `alloc`.
+  /// [`from_bytes`](Self::from_bytes), checking with `scratch` for memory.
+  /// `bytes.len() / 4` entries are always enough (see [`Pending`]). It needs no `alloc`.
   ///
   /// ```
   /// use nearest::{Inline, Near, Pending, Region, flat};
@@ -256,12 +253,16 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// let r = Small::new_in(Inline::default(), Msg::new(1, "hi"));
   /// let bytes = r.as_bytes().unwrap();
   /// let mut scratch = [Pending::default(); 64 / 4]; // enough for anything `Inline<64>` holds
-  /// let back = Small::from_bytes_with(bytes, &mut scratch).unwrap()?;
+  /// let back = Small::from_bytes_with(bytes, &mut scratch)?;
   /// assert_eq!((back.id, &*back.body), (1, "hi"));
-  /// assert!(Small::from_bytes_with(&bytes[1..], &mut scratch).unwrap().is_err());
-  /// # Ok::<(), nearest::Invalid>(())
+  /// assert!(Small::from_bytes_with(&bytes[1..], &mut scratch).is_err());
+  /// # Ok::<(), nearest::Error>(())
   /// ```
-  pub fn from_bytes_with(bytes: &[u8], scratch: &mut [Pending]) -> Option<Result<Self, Invalid>>
+  ///
+  /// # Errors
+  /// As [`from_bytes`](Self::from_bytes), and [`Error::ScratchFull`] if `scratch` ran out before
+  /// the check finished, which says nothing about the bytes.
+  pub fn from_bytes_with(bytes: &[u8], scratch: &mut [Pending]) -> Result<Self, Error>
   where
     S: Default,
   {
@@ -269,16 +270,14 @@ impl<T: Flat, S: Storage> Region<T, S> {
   }
 
   /// `from_bytes`, checking with `todo`.
-  fn load(bytes: &[u8], todo: Stack<'_>) -> Option<Result<Self, Invalid>>
+  fn load(bytes: &[u8], todo: Stack<'_>) -> Result<Self, Error>
   where
     S: Default,
   {
     // The checker reads bytes at any alignment, so nothing is copied for a bad image.
-    if let Err(e) = check::<T>(bytes, todo)? {
-      return Some(Err(e));
-    }
+    check::<T>(bytes, todo)?;
     // SAFETY: `bytes` is not in a new storage.
-    Some(unsafe { Self::copy_of(S::default(), bytes.as_ptr(), bytes.len()) }.ok_or(Invalid::LARGE))
+    unsafe { Self::copy_of(S::default(), bytes.as_ptr(), bytes.len()) }.ok_or(Error::StorageFull)
   }
 
   /// [`from_bytes`](Self::from_bytes) without the check, for bytes that are trusted.
@@ -342,24 +341,22 @@ impl<T: Flat> Region<T> {
   /// let bytes = r.to_bytes(); // the region's own buffer, which is 8-aligned
   /// let msg: &Msg = Region::view(&bytes)?;
   /// assert_eq!(&*msg.body, "hi");
-  /// # Ok::<(), nearest::Invalid>(())
+  /// # Ok::<(), nearest::Error>(())
   /// ```
   ///
   /// # Errors
-  /// [`Invalid`] if the slice is not 8-aligned or the bytes are not the compact image of a
-  /// valid `T`.
+  /// [`Error::Invalid`] if the bytes are not the compact image of a valid `T`, or the slice is
+  /// not 8-aligned (at offset 0).
   #[cfg(feature = "alloc")]
-  pub fn view(bytes: &[u8]) -> Result<&T, Invalid> {
-    // A vector is never full.
-    Self::read(bytes, Stack::Heap(Vec::new())).unwrap_or(Err(Invalid(0)))
+  pub fn view(bytes: &[u8]) -> Result<&T, Error> {
+    Self::read(bytes, Stack::Heap(Vec::new()))
   }
 
-  /// [`view`](Self::view), checking with `scratch` for memory: `None` if it ran out before the
-  /// check finished, which says nothing about the bytes; otherwise the result of `view`.
-  /// `bytes.len() / 4` entries are always enough (see [`Pending`]). It needs no `alloc`.
+  /// [`view`](Self::view), checking with `scratch` for memory. `bytes.len() / 4` entries are
+  /// always enough (see [`Pending`]). It needs no `alloc`.
   ///
   /// ```
-  /// use nearest::{Near, Pending, Region, flat};
+  /// use nearest::{Error, Near, Pending, Region, flat};
   ///
   /// #[flat]
   /// #[derive(Debug, PartialEq)]
@@ -372,20 +369,25 @@ impl<T: Flat> Region<T> {
   /// let compact = Region::new(&*r);
   /// let bytes = compact.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
   /// let mut scratch = vec![Pending::default(); bytes.len() / 4];
-  /// assert_eq!(Region::<Expr>::view_with(&bytes, &mut scratch), Some(Ok(&*r)));
-  /// assert_eq!(Region::<Expr>::view_with(&bytes, &mut scratch[..10]), None);
+  /// assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch), Ok(&*r));
+  /// assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch[..10]), Err(Error::ScratchFull));
   /// ```
-  pub fn view_with<'b>(bytes: &'b [u8], scratch: &mut [Pending]) -> Option<Result<&'b T, Invalid>> {
+  ///
+  /// # Errors
+  /// As [`view`](Self::view), and [`Error::ScratchFull`] if `scratch` ran out before the check
+  /// finished, which says nothing about the bytes.
+  pub fn view_with<'b>(bytes: &'b [u8], scratch: &mut [Pending]) -> Result<&'b T, Error> {
     Self::read(bytes, Stack::Scratch(scratch, 0))
   }
 
   /// `view`, checking with `todo`.
-  fn read<'b>(bytes: &'b [u8], todo: Stack<'_>) -> Option<Result<&'b T, Invalid>> {
+  fn read<'b>(bytes: &'b [u8], todo: Stack<'_>) -> Result<&'b T, Error> {
     if !bytes.as_ptr().addr().is_multiple_of(8) {
-      return Some(Err(Invalid(0)));
+      return Err(Error::Invalid(0));
     }
+    check::<T>(bytes, todo)?;
     // SAFETY: just checked.
-    Some(check::<T>(bytes, todo)?.map(|()| unsafe { Self::view_unchecked(bytes) }))
+    Ok(unsafe { Self::view_unchecked(bytes) })
   }
 
   /// [`view`](Self::view) without the check, for bytes that are trusted: nothing is read

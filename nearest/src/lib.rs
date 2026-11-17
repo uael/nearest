@@ -46,7 +46,7 @@
 //! // A memory-mapped file, or any 8-aligned slice, is read in place.
 //! let block: &Block = Region::view(&bytes)?;
 //! assert_eq!(block.id, 7);
-//! # Ok::<(), nearest::Invalid>(())
+//! # Ok::<(), nearest::Error>(())
 //! ```
 //!
 //! Enums get a view of their variant, and `replace` returns the old value, like
@@ -185,11 +185,11 @@
 //! then, and never allocates. [`Region::from_bytes`] checks and
 //! copies bytes; [`Region::view`] checks an 8-aligned slice and reads it in place. Checking
 //! accepts exactly the compact images of valid values, in one pass, without recursion or
-//! panics; an error, [`Invalid`], says where the bytes went wrong, or that a valid image does
-//! not fit the storage. Checking keeps the pointers still to visit in memory that grows with
-//! the nesting of the data: [`Region::view_with`] and [`Region::from_bytes_with`] take it from
-//! the caller, as a slice of [`Pending`] (`bytes.len() / 4` entries are always enough), and
-//! return `None` if it runs out. For bytes that are trusted, [`Region::from_bytes_unchecked`]
+//! panics; an [`Error`] says where the bytes went wrong, or that a valid image does not fit the
+//! storage. Checking keeps the pointers still to visit in memory that grows with the nesting
+//! of the data: [`Region::view_with`] and [`Region::from_bytes_with`] take it from the caller,
+//! as a slice of [`Pending`] (`bytes.len() / 4` entries are always enough), and say if it runs
+//! out. For bytes that are trusted, [`Region::from_bytes_unchecked`]
 //! and [`Region::view_unchecked`] skip the check and are `unsafe`. The bytes hold
 //! native-endian integers and the layout of the target.
 //!
@@ -262,7 +262,7 @@ mod storage;
 #[cfg(feature = "nightly")]
 mod unpin;
 
-pub use bytes::{Invalid, Pending};
+pub use bytes::{Error, Pending};
 pub use edit::{ListEdit, Old, OptionEdit, StrEdit};
 pub use flat::{Emit, Flat};
 pub use near::Near;

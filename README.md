@@ -94,7 +94,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `update` |
 | `StrEdit<'e>` | the handle of a `Near<str>`: `set`, `replace`, `update` |
 | `Old<'e, T>` | a value that left its place: write it anywhere to move it there |
-| `Invalid` | the error of `from_bytes` and `view`: `offset` |
+| `Error` | the error of every loader: `Invalid(offset)`, `ScratchFull`, `StorageFull` |
 | `Pending` | an entry of the memory that `from_bytes_with` and `view_with` check bytes with |
 | `Flat`, `Emit<T>` | "may live in a region", "can be written as a `T`" |
 
@@ -154,12 +154,12 @@ buffer when the region has not been edited since it was built or loaded, and `as
 the image only then, without allocating. `from_bytes` checks
 bytes and copies them into a new region; `view` checks an 8-aligned slice, such as a
 memory-mapped file, and reads it in place. Checking accepts exactly the compact images of valid
-values, in one pass, in safe code, without recursion or panics. `Invalid::offset` says where
-the bytes went wrong, or is `None` for a valid image larger than the storage, which
-`from_bytes` returns as an error too. Checking keeps the pointers still to visit in memory that
-grows with the nesting of the data; `from_bytes_with` and `view_with` take it from the caller,
-as `&mut [Pending]`, and return `None` if it runs out: `bytes.len() / 4` entries are always
-enough. For bytes you trust, `from_bytes_unchecked` and `view_unchecked` skip the check and are
+values, in one pass, in safe code, without recursion or panics. Every loader returns
+`Result<_, Error>`: `Error::Invalid(offset)` says where the bytes went wrong, and
+`Error::StorageFull` that a valid image is larger than the storage of `from_bytes`. Checking
+keeps the pointers still to visit in memory that grows with the nesting of the data;
+`from_bytes_with` and `view_with` take it from the caller, as `&mut [Pending]`, and return
+`Error::ScratchFull` if it runs out: `bytes.len() / 4` entries are always enough. For bytes you trust, `from_bytes_unchecked` and `view_unchecked` skip the check and are
 `unsafe`. The bytes hold native-endian integers and the layout of the target.
 
 ## Storage

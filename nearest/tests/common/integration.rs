@@ -1064,7 +1064,7 @@ fn aligned(bytes: &[u8]) -> Vec<u64> {
 }
 
 /// `nearest::Region::view` of `bytes`, copied to an 8-aligned address.
-fn view<T: Flat, R>(bytes: &[u8], f: impl FnOnce(&T) -> R) -> Result<R, nearest::Invalid> {
+fn view<T: Flat, R>(bytes: &[u8], f: impl FnOnce(&T) -> R) -> Result<R, nearest::Error> {
   let words = aligned(bytes);
   // SAFETY: `words` holds at least `bytes.len()` initialized bytes.
   let slice = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), bytes.len()) };
@@ -1341,11 +1341,16 @@ fn malformed_images_are_rejected() {
 
   // The error.
   let err = Region::<Expr>::from_bytes(&[9]).err().unwrap();
-  let copy = err.clone();
-  assert_eq!(err, copy);
-  assert!(err.to_string().starts_with("invalid region bytes at offset"));
+  assert_eq!(err, nearest::Error::Invalid(0));
+  assert_eq!(err.to_string(), "invalid region bytes at offset 0");
   let _: &dyn std::error::Error = &err;
-  assert!(format!("{err:?}").starts_with("Invalid"));
+  assert_eq!(format!("{err:?}"), "Invalid(0)");
+  for (e, shown) in [
+    (nearest::Error::ScratchFull, "scratch too small to check region bytes"),
+    (nearest::Error::StorageFull, "region bytes larger than the storage"),
+  ] {
+    assert_eq!(e.to_string(), shown);
+  }
 }
 
 #[test]

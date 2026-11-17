@@ -79,7 +79,7 @@ fn full_inline_storage() {
   let big = nearest::Region::new(Lst::new(Near::from_iter(0..16u64)));
   assert!(catch_unwind(|| Small::new_in(Store64::default(), &*big)).is_err());
   // Loading does not panic: the image is valid, and larger than the storage.
-  assert_eq!(Small::from_bytes(&big.to_bytes()).err().unwrap().offset(), None);
+  assert_eq!(Small::from_bytes(&big.to_bytes()).err(), Some(nearest::Error::StorageFull));
   // SAFETY: the bytes come from `to_bytes` for the same type.
   assert!(catch_unwind(|| unsafe { Small::from_bytes_unchecked(&big.to_bytes()) }).is_err());
   assert_eq!(*Big::from_bytes(&big.to_bytes()).unwrap(), *big);

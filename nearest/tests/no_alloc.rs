@@ -3,7 +3,7 @@
 
 use core::pin::Pin;
 
-use nearest::{Inline, Near, Pending, Region, flat};
+use nearest::{Error, Inline, Near, Pending, Region, flat};
 
 #[flat]
 #[derive(Debug, PartialEq)]
@@ -35,14 +35,14 @@ fn build_edit_move_and_load() {
   let compact = Region::new_in(Inline::<128>::default(), &*moved);
   let bytes = compact.as_bytes().unwrap();
   let mut scratch = [Pending::default(); 128 / 4];
-  assert_eq!(Region::<Msg>::view_with(bytes, &mut scratch), Some(Ok(&*moved)));
+  assert_eq!(Region::<Msg>::view_with(bytes, &mut scratch), Ok(&*moved));
   let loaded = Region::<Msg, Inline<64>>::from_bytes_with(bytes, &mut scratch);
-  assert_eq!(*loaded.unwrap().unwrap(), *moved);
+  assert_eq!(*loaded.unwrap(), *moved);
   // A valid image larger than the storage is an error, not a panic.
   let small = Region::<Msg, Inline<32>>::from_bytes_with(bytes, &mut scratch);
-  assert_eq!(small.unwrap().err().map(|e| e.offset()), Some(None));
+  assert_eq!(small.err(), Some(Error::StorageFull));
   #[cfg(feature = "alloc")]
-  assert_eq!(Region::<Msg, Inline<32>>::from_bytes(bytes).err().map(|e| e.offset()), Some(None));
+  assert_eq!(Region::<Msg, Inline<32>>::from_bytes(bytes).err(), Some(Error::StorageFull));
   assert!(std::panic::catch_unwind(|| Region::new_in(Inline::<32>::default(), &*moved)).is_err());
 }
 
@@ -67,24 +67,24 @@ fn checking_takes_scratch_memory_from_the_caller() {
   let mut scratch = [Pending::default(); SIZE / 4];
   let shallow = sum(50);
   let bytes = shallow.as_bytes().unwrap();
-  assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch[..64]), Some(Ok(&*shallow)));
+  assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch[..64]), Ok(&*shallow));
   let deep = sum(500);
   let bytes = deep.as_bytes().unwrap();
   assert!(bytes.len() > 16_000);
-  assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch), Some(Ok(&*deep)));
-  assert_eq!(*Big::from_bytes_with(bytes, &mut scratch).unwrap().unwrap(), *deep);
+  assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch), Ok(&*deep));
+  assert_eq!(*Big::from_bytes_with(bytes, &mut scratch).unwrap(), *deep);
   // Too little: the check could not finish.
-  assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch[..400]), None);
-  assert!(Big::from_bytes_with(bytes, &mut scratch[..400]).is_none());
+  assert_eq!(Region::<Expr>::view_with(bytes, &mut scratch[..400]), Err(Error::ScratchFull));
+  assert_eq!(Big::from_bytes_with(bytes, &mut scratch[..400]).err(), Some(Error::ScratchFull));
   // Invalid bytes are invalid, given enough.
   let cut = &bytes[..bytes.len() - 16];
-  assert!(matches!(Region::<Expr>::view_with(cut, &mut scratch), Some(Err(_))));
-  assert!(matches!(Big::from_bytes_with(&bytes[1..], &mut scratch), Some(Err(_))));
+  assert!(matches!(Region::<Expr>::view_with(cut, &mut scratch), Err(Error::Invalid(_))));
+  assert!(matches!(Big::from_bytes_with(&bytes[1..], &mut scratch), Err(Error::Invalid(_))));
   // With `alloc`, the checker's own memory grows as needed.
   #[cfg(feature = "alloc")]
   {
     assert_eq!(Region::<Expr>::view(bytes), Ok(&*deep));
     assert_eq!(*Big::from_bytes(bytes).unwrap(), *deep);
-    assert!(Region::<Expr>::view(cut).is_err());
+    assert!(matches!(Region::<Expr>::view(cut), Err(Error::Invalid(_))));
   }
 }

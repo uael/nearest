@@ -517,7 +517,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         fn check(
           #ck: &mut #np::Check<'_>,
           #at: usize,
-        ) -> ::core::result::Result<(), ::nearest::Invalid> {
+        ) -> ::core::result::Result<(), ::nearest::Error> {
           #np::fits::<Self>();
           #checks
           ::core::result::Result::Ok(())

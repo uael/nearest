@@ -1,7 +1,7 @@
 use core::{marker::PhantomData, mem::needs_drop, num::NonZero, ptr, slice};
 
 use crate::{
-  Invalid, Near, Storage,
+  Error, Near, Storage,
   bytes::{Check, list, target, text},
   edit::{ListEdit, OptionEdit, Raw, StrEdit},
 };
@@ -343,7 +343,7 @@ pub unsafe trait Flat: Sized + 'static {
 
   /// Checks the `Self` at `at`, whose own bytes are in bounds, and queues its pointers.
   #[doc(hidden)]
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid>;
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
 }
 
 /// A deep copy of `src` at `at`.
@@ -463,9 +463,9 @@ macro_rules! plain {
         // SAFETY: forwarded.
         unsafe { plain_edit(buf, at) }
       }
-      fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
+      fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
         let $b = <$raw>::from_ne_bytes(ck.get(at)?);
-        if $ok { Ok(()) } else { Err(Invalid(at)) }
+        if $ok { Ok(()) } else { Err(Error::Invalid(at)) }
       }
     }
   )*)*};
@@ -505,7 +505,7 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
     // SAFETY: forwarded.
     unsafe { plain_edit(buf, at) }
   }
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     fits::<Self>();
     if T::ANY {
       return Ok(());
@@ -551,7 +551,7 @@ unsafe impl<T: Flat> Flat for Near<T> {
     // SAFETY: a `Near` at `at` points to a valid `T`, owned by it alone.
     unsafe { T::edit(buf, aim(buf, at)) }
   }
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     ck.push(at, 0, target::<T>)
   }
 }
@@ -577,7 +577,7 @@ unsafe impl<T: Flat> Flat for Near<[T]> {
     // SAFETY: forwarded.
     unsafe { ListEdit::new(Raw::new(buf, at)) }
   }
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     ck.push(at, 0, list::<T>)
   }
 }
@@ -602,7 +602,7 @@ unsafe impl Flat for Near<str> {
     // SAFETY: forwarded.
     unsafe { StrEdit::new(Raw::new(buf, at)) }
   }
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     ck.push(at, 0, text)
   }
 }
@@ -628,7 +628,7 @@ unsafe impl<T: Flat> Flat for Option<Near<T>> {
     // SAFETY: forwarded.
     unsafe { OptionEdit::new(Raw::new(buf, at)) }
   }
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     if i32::from_ne_bytes(ck.get(at)?) == 0 { Ok(()) } else { ck.push(at, 0, target::<T>) }
   }
 }
