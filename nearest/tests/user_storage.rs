@@ -16,13 +16,13 @@ unsafe impl Storage for Moving {
   fn memory(&self) -> &[MaybeUninit<u64>] {
     &self.0
   }
-  fn memory_mut(&mut self) -> &mut [MaybeUninit<u64>] {
+  fn memory_mut(&mut self, words: usize) -> &mut [MaybeUninit<u64>] {
+    if words > self.0.len() {
+      let mut new = vec![MaybeUninit::uninit(); words];
+      new[..self.0.len()].copy_from_slice(&self.0);
+      self.0 = new;
+    }
     &mut self.0
-  }
-  fn grow(&mut self, words: usize) {
-    let mut new = vec![MaybeUninit::uninit(); words.max(self.0.len())];
-    new[..self.0.len()].copy_from_slice(&self.0);
-    self.0 = new;
   }
 }
 
@@ -43,7 +43,7 @@ unsafe impl Storage for Arena<'_> {
   fn memory(&self) -> &[MaybeUninit<u64>] {
     self.0
   }
-  fn memory_mut(&mut self) -> &mut [MaybeUninit<u64>] {
+  fn memory_mut(&mut self, _words: usize) -> &mut [MaybeUninit<u64>] {
     self.0
   }
 }

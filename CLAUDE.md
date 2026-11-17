@@ -59,7 +59,7 @@ bytes. `DESIGN.md` is the specification.
 `from_iter`, `as_pin_mut`, `iter_pin_mut`), `Region<T, S = Heap>` (`new`, `with_capacity`, `new_in`, `edit`, `as_bytes`, `to_bytes`,
 `from_bytes`, `view` (both with `alloc`), `from_bytes_with`, `view_with`, `byte_len`, and the
 `unsafe` `from_bytes_unchecked`, `view_unchecked`),
-`unsafe trait Storage` (`memory`, `memory_mut`, `grow`), `Heap`, `Inline<N>`,
+`unsafe trait Storage` (`memory`, `memory_mut(words)`), `Heap`, `Inline<N>`,
 `ListEdit<'e, T>` (`push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`,
 `set`, `replace`, `update`, `iter_pin_mut`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`,
 `set`, `update`), `StrEdit<'e>` (`set`, `replace`, `update`), `Old<'e, T>` (no methods),
@@ -147,7 +147,7 @@ for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), hidden `#[repr(C)]` mir
   only), the caller's `&mut [Pending]` for `from_bytes_with`/`view_with` (`None` when full;
   `bytes.len() / 4` entries always suffice). No fixed bound anywhere. `from_bytes` asks for
   room in the storage (`Buf::load`) after the check and returns `Invalid::LARGE` if the
-  storage gives too little; `Storage::grow` does nothing by default.
+  storage gives too little; a storage that does not grow ignores the `words` of `memory_mut`.
 
 ### Safety Model
 
@@ -161,7 +161,7 @@ for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), hidden `#[repr(C)]` mir
   `Region::attach` writes its memory, address and `regrow` into the `Buf` before every use
   through `&mut self` (`new_in`, `edit`, loading, `clone`), always after the region's last move
   (attach, then never return the region by value before using it); uses through `&self` call
-  `memory` (`Region::base`), never the `Buf`'s pointer. `regrow` attaches again after `grow`,
+  `memory` (`Region::base`), never the `Buf`'s pointer. `regrow` attaches with `memory_mut(words)`, and again with 0 if that unwinds,
   also when it unwinds. A storage's memory may hold anything: `Buf::cap` is the zeroed prefix
   (`[len, cap)` zero, `[cap, mem)` anything), raised by the cold `Buf::grow`, which zeroes the
   next part and calls `regrow` only when `mem` is too short; `attach` keeps `cap` (a length).
