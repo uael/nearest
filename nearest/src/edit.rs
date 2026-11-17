@@ -174,7 +174,6 @@ impl<'e, T: Flat> Raw<'e, T> {
   /// e.set(Expr::Lit(3));
   /// drop(stash);
   /// ```
-  #[cfg(feature = "unstable")]
   pub fn update<'a, E: Emit<T>>(&'a mut self, f: impl FnOnce(Old<'a, T>) -> E) {
     self.swap_in(|buf, at| f(Old { buf, at, _e: PhantomData }));
   }
@@ -586,8 +585,7 @@ impl<'e, T: Flat> ListEdit<'e, T> {
     self.0.replace(value)
   }
 
-  /// Replaces the list with what `f` builds from the old one, which moves into it. Needs the
-  /// `unstable` feature.
+  /// Replaces the list with what `f` builds from the old one, which moves into it.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -600,7 +598,6 @@ impl<'e, T: Flat> ListEdit<'e, T> {
   /// r.edit().kids().update(|old| [Tree::new(9, old)]);
   /// assert_eq!((r.kids.len(), r.kids[0].id, r.kids[0].kids.len()), (1, 9, 2));
   /// ```
-  #[cfg(feature = "unstable")]
   pub fn update<'a, E: Emit<Near<[T]>>>(&'a mut self, f: impl FnOnce(Old<'a, Near<[T]>>) -> E) {
     self.0.update(f);
   }
@@ -758,8 +755,7 @@ impl<'e, T: Flat> OptionEdit<'e, T> {
     self.0.set(value);
   }
 
-  /// Replaces the pointer with what `f` builds from the old one, which moves into it. Needs
-  /// the `unstable` feature.
+  /// Replaces the pointer with what `f` builds from the old one, which moves into it.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -773,7 +769,6 @@ impl<'e, T: Flat> OptionEdit<'e, T> {
   /// let next = r.next.as_ref().unwrap();
   /// assert_eq!((next.value, next.next.as_ref().unwrap().value), (2, 3));
   /// ```
-  #[cfg(feature = "unstable")]
   pub fn update<'a, E: Emit<Option<Near<T>>>>(
     &'a mut self,
     f: impl FnOnce(Old<'a, Option<Near<T>>>) -> E,
@@ -846,7 +841,7 @@ impl<'e> StrEdit<'e> {
     self.0.replace(value)
   }
 
-  /// Replaces the string with what `f` builds from the old one. Needs the `unstable` feature.
+  /// Replaces the string with what `f` builds from the old one, which moves into it.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -858,7 +853,6 @@ impl<'e> StrEdit<'e> {
   /// r.edit().name().update(|old| old); // the old string moves back in
   /// assert_eq!(&*r.name, "f");
   /// ```
-  #[cfg(feature = "unstable")]
   pub fn update<'a, E: Emit<Near<str>>>(&'a mut self, f: impl FnOnce(Old<'a, Near<str>>) -> E) {
     self.0.update(f);
   }

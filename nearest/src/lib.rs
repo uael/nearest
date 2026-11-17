@@ -105,12 +105,12 @@
 //! | Place | Handle | Operations |
 //! |---|---|---|
 //! | plain data (`T: Copy`) | `&mut T` | ordinary Rust |
-//! | `#[flat]` struct | generated | a method per field, `set`, `replace` |
-//! | `#[flat]` enum `X` | generated | `as_mut()` (returns `XMut`), `set`, `replace` |
+//! | `#[flat]` struct | generated | a method per field, `set`, `replace`, `update` |
+//! | `#[flat]` enum `X` | generated | `as_mut()` (returns `XMut`), `set`, `replace`, `update` |
 //! | `Near<T>` | the handle of the `T` | |
-//! | `Near<[T]>` | [`ListEdit<T>`] | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `iter_pin_mut` |
-//! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `take`, `set` |
-//! | `Near<str>` | [`StrEdit`] | `set`, `replace` |
+//! | `Near<[T]>` | [`ListEdit<T>`] | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
+//! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `take`, `set`, `update` |
+//! | `Near<str>` | [`StrEdit`] | `set`, `replace`, `update` |
 //!
 //! Handles dereference to the value they designate, and mutably so for plain data. A handle
 //! borrows its parent handle, so one handle is usable at a time, and no reference into the
@@ -123,7 +123,9 @@
 //!
 //! `set` assigns; `replace`, [`ListEdit::remove`] and [`OptionEdit::take`] return the value that
 //! left its place as an [`Old`], which can be written into any other place of the region in
-//! O(1). Edits append: compact with `Region::new(&*region)`.
+//! O(1). `update` builds the new value from the old one in a closure, so that wrapping needs no
+//! placeholder: `e.update(Expr::neg)`, or `e.update(|old| Expr::add(old, Expr::Lit(1)))`. Edits
+//! append: compact with `Region::new(&*region)`.
 //!
 //! # Several fields at once
 //!
@@ -173,13 +175,6 @@
 //! [`Region::view_unchecked`] skip the check and are `unsafe`. The bytes hold native-endian
 //! integers and the layout of the target.
 //!
-//! # The `unstable` feature
-//!
-//! The cargo feature `unstable` adds `update` to every handle, the closure form of `replace`:
-//! `e.update(Expr::neg)` or `e.update(|old| Expr::add(old, Expr::Lit(1)))` wraps a value
-//! without a placeholder. It works on stable
-//! Rust; what the feature gates may change in any release.
-//!
 //! # Safety model
 //!
 //! - A `Near` has no constructor and is not `Clone`: it only exists inside a region.
@@ -223,7 +218,8 @@ pub use near::Near;
 ///   for a field written `Near<X>` takes a builder of `X` and allocates the target (a list or
 ///   string builder if `X` is a slice or `str`);
 /// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign), `replace` (assign and return the
-///   old value as an [`Old`]) and `pin` (a pinned view), and for structs one method per field
+///   old value as an [`Old`]), `update` (build the new value from the old one) and `pin` (a
+///   pinned view), and for structs one method per field
 ///   (`_0`, `_1`, .. for tuple fields; a trailing underscore for fields named `set`,
 ///   `replace`, `pin` or `update`) returning the field's handle, with the field's visibility;
 /// - `project(self: Pin<&mut X>) -> XPin<'_>`: the fields of a pinned value, all pinned, as a

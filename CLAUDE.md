@@ -12,8 +12,7 @@ cargo test --test integration TESTNAME  # Run a single integration test
 cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
 cargo run --example expr             # Examples (also: ir); they assert their results
 cargo bench --bench region           # Benchmarks (criterion)
-cargo test -p nearest --features unstable  # The same with the `unstable` feature (adds `update`)
-RUSTFLAGS="--cfg nearest_nightly" MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --features unstable --lib --test integration --test pin_v2  # Miri
+RUSTFLAGS="--cfg nearest_nightly" MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --lib --test integration --test pin_v2  # Miri
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
 cargo xtask fmt --check              # Check formatting
 cargo xtask lint                     # Clippy (workspace, tests, examples, benches, -D warnings) + format check
@@ -35,7 +34,7 @@ limit, index bounds and the check of loaded bytes. `DESIGN.md` is the specificat
 
 ### Workspace Crates
 
-- **`nearest/`** — the library (`#![no_std]` + `alloc`; one opt-in feature, `unstable`)
+- **`nearest/`** — the library (`#![no_std]` + `alloc`, no features)
 - **`nearest-derive/`** — the `#[flat]` attribute, re-exported as `nearest::flat`
 - **`xtask/`** — dev automation (fmt, lint)
 
@@ -45,16 +44,14 @@ limit, index bounds and the check of loaded bytes. `DESIGN.md` is the specificat
 `from_iter`, `as_pin_mut`, `iter_pin_mut`), `Region<T>` (`new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`, and the
 `unsafe` `from_bytes_unchecked`, `view_unchecked`),
 `ListEdit<'e, T>` (`push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`,
-`set`, `replace`, `iter_pin_mut`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`, `set`), `StrEdit<'e>` (`set`,
-`replace`), `Old<'e, T>` (no methods), `Invalid`, plus the trait impls listed in `DESIGN.md`.
+`set`, `replace`, `update`, `iter_pin_mut`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`,
+`set`, `update`), `StrEdit<'e>` (`set`, `replace`, `update`), `Old<'e, T>` (no methods), `Invalid`, plus the trait impls listed in `DESIGN.md`.
 Hidden plumbing for the macro: `nearest::__private::{Raw, Buf, Sink, Check, fits, make,
 Variant, Pointer}` and the hidden items of the two traits. Do not add public items.
 
-The cargo feature `unstable` (forwarded to `nearest-derive/unstable`) adds `update` to every
-handle: `Raw::update`, its wrappers on `ListEdit`, `OptionEdit`, `StrEdit`, and the generated
-one. Its `Old<'a, T>` has the lifetime of the handle's borrow, not of the edit. Test both
-configurations: `cargo test --all` and `cargo test -p nearest --features unstable`; `cargo
-xtask lint` runs clippy with and without the feature.
+Every handle has `update`, the closure form of `replace`: `Raw::update` (which shares
+`Raw::swap_in` with `replace`), its wrappers on `ListEdit`, `OptionEdit`, `StrEdit`, and the
+generated one. Its `Old<'a, T>` has the lifetime of the handle's borrow, not of the edit.
 
 The pinned view: `pin()` on generated handles (`Raw::pin`) gives `Pin<&mut X>`; the macro
 generates `X::project` and `XPin<'a>` (a struct or an enum with the shape of `X`, every field
@@ -66,6 +63,10 @@ hand-written impl a conflict. For a type the user also marked `#[pin_v2]` (night
 makes patterns project. `tests/pin_v2.rs` covers it; it is built only with `--cfg
 nearest_nightly`, on the pinned nightly:
 `RUSTFLAGS="--cfg nearest_nightly" cargo +nightly-2026-02-10 test -p nearest --test pin_v2`.
+The macro must not write `#[pin_v2]` itself (with `allow_internal_unstable`): in a crate
+without `#![feature(pin_ergonomics)]` the compiler then accepts a hand-written `impl Unpin`,
+while the macro's own bounded impl is rejected in crates with the gate, so nothing would keep
+`Pin::get_mut` away from values holding pointers.
 Names the generated code keeps: a field called `set`, `replace`, `pin` or `update` gets a
 trailing underscore, and a variant called `Project` gets the constructor `project_`.
 

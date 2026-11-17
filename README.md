@@ -89,9 +89,9 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `Region<T>` | the buffer: `new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`; `unsafe` `from_bytes_unchecked`, `view_unchecked` |
 | `Near<T>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
-| `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `iter_pin_mut` |
-| `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set` |
-| `StrEdit<'e>` | the handle of a `Near<str>`: `set`, `replace` |
+| `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
+| `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `update` |
+| `StrEdit<'e>` | the handle of a `Near<str>`: `set`, `replace`, `update` |
 | `Old<'e, T>` | a value that left its place: write it anywhere to move it there |
 | `Invalid` | the error of `from_bytes` and `view` |
 | `Flat`, `Emit<T>` | "may live in a region", "can be written as a `T`" |
@@ -108,7 +108,14 @@ the buffer outlives a change that may grow it. Every handle has `set` (assign); 
 (assign and return the old value), `ListEdit::remove` and `OptionEdit::take` return the value
 that left. Such an `Old` keeps the region borrowed for the whole edit and can be written
 into any place of it in O(1): wrapping, hoisting, swapping and moving elements between lists
-are ordinary statements.
+are ordinary statements. `update` builds the new value from the old one in a closure, so that
+wrapping needs no placeholder:
+
+```rust
+e.update(Expr::neg);                                         // wrap
+e.update(|old| Expr::add(old, Expr::Lit(1)));
+node.next().update(|rest| Near::new(Node::new(2, rest)));    // put a node in front
+```
 
 ## Several fields at once
 
@@ -145,19 +152,6 @@ memory-mapped file, and reads it in place. Checking accepts exactly the compact 
 values, in one pass, in safe code, without recursion or panics. For bytes you trust,
 `from_bytes_unchecked` and `view_unchecked` skip the check and are `unsafe`. The bytes hold
 native-endian integers and the layout of the target.
-
-## The `unstable` feature
-
-`nearest = { version = "..", features = ["unstable"] }` adds `update` to every handle: the
-closure form of `replace`, so that wrapping a value needs no placeholder.
-
-```rust
-e.update(Expr::neg);                                         // wrap
-e.update(|old| Expr::add(old, Expr::Lit(1)));
-node.next().update(|rest| Near::new(Node::new(2, rest)));    // put a node in front
-```
-
-It works on stable Rust; "unstable" is about the API, which may change in any release.
 
 ## Safety model
 

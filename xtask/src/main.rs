@@ -59,10 +59,6 @@ fn fmt(sh: &Shell, check: bool) -> Result<()> {
 fn lint(sh: &Shell, fix: bool) -> Result<()> {
   let args =
     if fix { ["--fix", "--allow-dirty", "--allow-staged"] } else { ["--", "-D", "warnings"] };
-  // Once with the default features, once with `unstable`.
-  for features in [&[][..], &["--features", "nearest/unstable"]] {
-    cmd!(sh, "cargo clippy --workspace {features...} --tests --examples --benches {args...}")
-      .run_echo()?;
-  }
+  cmd!(sh, "cargo clippy --workspace --tests --examples --benches {args...}").run_echo()?;
   fmt(sh, !fix)
 }

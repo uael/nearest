@@ -353,18 +353,16 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   copy_g.make_where_clause().predicates.push(parse_quote!(for<#lt> #self_ty: ::core::marker::Copy));
   let copy_where = copy_g.split_for_impl().2;
   let handle_doc = format!("The handle of a `{name}` in a region: `Edit<'e, {name}>`.");
-  // With `nearest/unstable`: the closure form of `replace`.
-  let update = cfg!(feature = "unstable").then(|| {
-    quote! {
-      /// Writes over the value what `f` builds from the old one, which moves into it.
-      #vis fn update<#lt, __NearestNew: ::nearest::Emit<#self_ty>>(
-        &#lt mut self,
-        f: impl ::core::ops::FnOnce(::nearest::Old<#lt, #self_ty>) -> __NearestNew,
-      ) {
-        self.0.update(f);
-      }
+  // The closure form of `replace`.
+  let update = quote! {
+    /// Writes over the value what `f` builds from the old one, which moves into it.
+    #vis fn update<#lt, __NearestNew: ::nearest::Emit<#self_ty>>(
+      &#lt mut self,
+      f: impl ::core::ops::FnOnce(::nearest::Old<#lt, #self_ty>) -> __NearestNew,
+    ) {
+      self.0.update(f);
     }
-  });
+  };
   if !has_repr {
     let repr = if is_enum { parse_quote!(#[repr(u8)]) } else { parse_quote!(#[repr(C)]) };
     input.attrs.insert(0, repr);

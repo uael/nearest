@@ -1821,9 +1821,8 @@ fn random_expression_rewrites_match_a_model() {
   }
 }
 
-/// The `unstable` feature: `update` builds the new value from the old one in a closure.
-#[cfg(feature = "unstable")]
-mod unstable {
+/// `update`: the new value is built from the old one in a closure.
+mod update {
   use std::{
     cell::Cell,
     panic::{AssertUnwindSafe, catch_unwind},
