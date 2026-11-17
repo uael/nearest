@@ -138,11 +138,38 @@ impl<T: Flat> Region<T> {
   pub fn from_bytes(bytes: &[u8]) -> Result<Self, Invalid> {
     // The checker reads bytes at any alignment, so nothing is copied for a bad image.
     check::<T>(bytes)?;
+    // SAFETY: just checked.
+    Ok(unsafe { Self::from_bytes_unchecked(bytes) })
+  }
+
+  /// [`from_bytes`](Self::from_bytes) without the check, for bytes that are trusted.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Msg { id: u8, body: Near<str> }
+  ///
+  /// let bytes = Region::new(Msg::new(1, "hi")).to_bytes().into_owned();
+  /// // SAFETY: the bytes come from `to_bytes` for the same type, in this build.
+  /// let back = unsafe { Region::<Msg>::from_bytes_unchecked(&bytes) };
+  /// assert_eq!((back.id, &*back.body), (1, "hi"));
+  /// ```
+  ///
+  /// # Safety
+  /// `bytes` are what [`to_bytes`](Self::to_bytes) returned for a `Region<T>`, in a build with
+  /// the same layout of `T`.
+  ///
+  /// # Panics
+  /// If `bytes` is longer than 2 GiB.
+  #[must_use]
+  pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self {
+    fits::<T>();
     let mut buf = Buf::new();
     let at = buf.alloc(bytes.len(), 8);
     // SAFETY: `bytes.len()` bytes were allocated at `at`.
     unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buf.ptr().add(at), bytes.len()) };
-    Ok(Self { buf, _t: PhantomData })
+    Self { buf, _t: PhantomData }
   }
 
   /// The value whose image is `bytes`, read in place, for example from a memory-mapped file.
@@ -169,9 +196,35 @@ impl<T: Flat> Region<T> {
       return Err(Invalid(0));
     }
     check::<T>(bytes)?;
-    // SAFETY: the bytes are 8-aligned and the image of a valid `T`, whose pointers all aim
-    // inside them.
-    Ok(unsafe { &*bytes.as_ptr().cast::<T>() })
+    // SAFETY: just checked.
+    Ok(unsafe { Self::view_unchecked(bytes) })
+  }
+
+  /// [`view`](Self::view) without the check, for bytes that are trusted: nothing is read
+  /// before the value is used.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Msg { id: u8, body: Near<str> }
+  ///
+  /// let r = Region::new(Msg::new(1, "hi"));
+  /// let bytes = r.to_bytes(); // the region's own buffer, which is 8-aligned
+  /// // SAFETY: the bytes come from `to_bytes` for the same type, in this build.
+  /// let msg: &Msg = unsafe { Region::view_unchecked(&bytes) };
+  /// assert_eq!(&*msg.body, "hi");
+  /// ```
+  ///
+  /// # Safety
+  /// `bytes` is 8-aligned and holds what [`to_bytes`](Self::to_bytes) returned for a
+  /// `Region<T>`, in a build with the same layout of `T`.
+  #[must_use]
+  pub const unsafe fn view_unchecked(bytes: &[u8]) -> &T {
+    fits::<T>();
+    // SAFETY: per the caller, the bytes are 8-aligned and the image of a valid `T`, whose
+    // pointers all aim inside them.
+    unsafe { &*bytes.as_ptr().cast::<T>() }
   }
 
   /// Bytes in use, including those no longer reachable after edits.
