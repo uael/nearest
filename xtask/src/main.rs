@@ -60,6 +60,8 @@ fn lint(sh: &Shell, fix: bool) -> Result<()> {
   let args =
     if fix { ["--fix", "--allow-dirty", "--allow-staged"] } else { ["--", "-D", "warnings"] };
   cmd!(sh, "cargo clippy --workspace --tests --examples --benches {args...}").run_echo()?;
+  // With `serde`, which adds code of its own.
+  cmd!(sh, "cargo clippy -p nearest --features serde --lib --test serde {args...}").run_echo()?;
   // Without `alloc`: the code it leaves out has a counterpart of its own.
   cmd!(sh, "cargo clippy -p nearest --no-default-features --lib --test no_alloc {args...}")
     .run_echo()?;

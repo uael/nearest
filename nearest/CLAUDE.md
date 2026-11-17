@@ -10,8 +10,8 @@ A `Region<T>` keeps a `T` and everything it points to in one buffer. A pointer i
 4 bytes: the distance from its own address to its target. So copying the buffer copies the
 value (`Clone` is a `memcpy`), reading is plain `&T` (`Near` derefs like `Box`), and the bytes
 mean the same at any address (a region is saved and loaded as bytes). Stable Rust,
-`#![no_std]`, no dependency but the macro. Aliasing, lifetimes, moves and the tree shape are
-enforced by types; see Runtime checks for the rest.
+`#![no_std]`, no dependency but the macro (and `serde`, optional). Aliasing, lifetimes, moves
+and the tree shape are enforced by types; see Runtime checks for the rest.
 
 ## Public surface
 
@@ -34,8 +34,9 @@ enforced by types; see Runtime checks for the rest.
 - `enum Error`: `Invalid(usize)`, `ScratchFull`, `StorageFull`; the error of every loader.
 - `Pending`: no methods; an entry of the scratch that `from_bytes_with` and `view_with` take.
 
-Trait impls: `Region`: `Deref`, `Clone` (`S: Default`), `Debug`, `Display`, `PartialEq`, `Eq`.
-`Near`: `Deref`, `Debug`, `Display`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, and
+Trait impls: `Region`: `Deref`, `Clone` (`S: Default`), `Debug`, `Display`, `PartialEq`, `Eq`;
+with `serde`, `Serialize` and `Deserialize` (`S: Default`). `Near`: `Deref`, `Debug`,
+`Display`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, and
 `IntoIterator` for `&Near<[T]>`; `Debug`, `Display` and the comparisons forward to the value or
 the target. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, `Display`,
 `core::error::Error`, `Clone`, `Copy`, `PartialEq`, `Eq`. `Pending`: `Default`, `Clone`, `Copy`,
@@ -58,6 +59,8 @@ Features:
   `specialization` (`nearest`) and `allow_internal_unstable` (`nearest-derive`) inside the two
   crates; users need no `#![feature]`, except `pin_ergonomics` to write patterns on pinned
   values. Without it nothing changes.
+- `serde` (implies `alloc`; the optional `serde` dependency, without its `std`) makes a `Region`
+  `Serialize` and `Deserialize` as its bytes (see Bytes). It adds no public item.
 
 ## Stored types
 
@@ -444,6 +447,12 @@ no gaps. Values are checked on the way: `bool`, `char`, `NonZero`, enum tags, UT
   numbers: a large mapped table is ready at once.
 - The bytes hold native-endian integers and the layout of the target; no header, no version. A
   build with the same layout reads back what `as_bytes` gave.
+- With `serde`, a region serializes as its bytes (`serialize_bytes` of `as_bytes`, or of a
+  compact copy, `Region::new(&*r)`, if it was edited), and deserializes through `from_bytes`
+  (any storage with `Default`); its `Error` becomes `de::Error::custom`. The visitor takes bytes
+  borrowed or owned, or a sequence of `u8` (as JSON writes them), whose size hint it trusts up
+  to 64 KiB. It needs `alloc`: `from_bytes` checks with the heap, and a sequence is collected
+  into a `Vec`.
 
 ## Internals
 
@@ -458,7 +467,7 @@ Files of `src/`:
   `text`, `items`), `check`, `view`, `view_with`, `view_unchecked`.
 - `near.rs`: `Near<T>`: `Deref` for `T`, `[T]` and `str`, builders, trait impls.
 - `region.rs`: `Region<T, S>`: `attach`, `base`, `copy_of`, constructors, `edit`, `as_bytes`,
-  `from_bytes*`, trait impls.
+  `from_bytes*`, trait impls, `serde` impls.
 - `storage.rs`: `Storage` and its contract, `Heap`, `Inline<N>`.
 - `unpin.rs`: `nightly` only, `unpin` and `pinned` (see The pinned view).
 
@@ -473,8 +482,8 @@ Mechanics:
   Borrows. No pointer is made from an integer. Miri runs with `-Zmiri-tree-borrows
   -Zmiri-strict-provenance`.
 - Tests: `tests/common/integration.rs` runs in three storages (`integration`: heap, `inline`,
-  `user_storage`); `no_alloc` also without `alloc`; `compile_fail` (trybuild) holds the
-  compile-time guarantees.
+  `user_storage`); `no_alloc` also without `alloc`; `serde` with that feature;
+  `compile_fail` (trybuild) holds the compile-time guarantees.
 
 ## What is not here, and why
 

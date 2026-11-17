@@ -20,6 +20,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all
       - run: cargo test -p nearest --no-default-features --lib --test no_alloc
+      - run: cargo test -p nearest --features serde --test serde
+      - run: cargo test -p nearest --features serde --doc
       - run: cargo run --example expr
       - run: cargo run --example ir
       - run: cargo bench --bench region -- --test

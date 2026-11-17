@@ -192,6 +192,10 @@
 //! trusted, [`Region::from_bytes_unchecked`] and [`view_unchecked`] skip the check and are
 //! `unsafe`. The bytes hold native-endian integers and the layout of the target.
 //!
+//! With the `serde` feature, a [`Region`] is `Serialize` and `Deserialize` as these bytes:
+//! written with `serialize_bytes` (a compact copy if the region was edited), and read back
+//! through [`Region::from_bytes`], whose [`Error`] becomes the format's error.
+//!
 //! # Storage
 //!
 //! A region keeps its buffer in a [`Storage`]: `Region<T>` is `Region<T, Heap>`, on the

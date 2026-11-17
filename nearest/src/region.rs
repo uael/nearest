@@ -352,6 +352,73 @@ impl<T: Eq, S: Storage> Eq for Region<T, S> {}
 // region: moving it (which moves inline storage) is like growing its buffer.
 impl<T, S: Unpin> Unpin for Region<T, S> {}
 
+/// With the `serde` feature: a region is its bytes, [`as_bytes`](Region::as_bytes) of the
+/// region or of a compact copy of it, written with `serialize_bytes`. Like any image, they hold
+/// native-endian integers and the layout of the target.
+///
+/// ```
+/// use nearest::{Near, Region, flat};
+///
+/// #[flat]
+/// #[derive(Debug, PartialEq)]
+/// struct Msg { id: u32, body: Near<str> }
+///
+/// let mut r = Region::new(Msg::new(1, "hi"));
+/// r.edit().body().set("hello");
+/// let json = serde_json::to_string(&r)?;
+/// let back: Region<Msg> = serde_json::from_str(&json)?;
+/// assert_eq!(back, r);
+/// # Ok::<(), serde_json::Error>(())
+/// ```
+#[cfg(feature = "serde")]
+impl<T: Flat, S: Storage> ::serde::Serialize for Region<T, S> {
+  fn serialize<Z: ::serde::Serializer>(&self, serializer: Z) -> Result<Z::Ok, Z::Error> {
+    if let Some(bytes) = self.as_bytes() {
+      return serializer.serialize_bytes(bytes);
+    }
+    // A copy is compact.
+    let copy = Region::<T>::new(&**self);
+    serializer.serialize_bytes(copy.as_bytes().unwrap_or_default())
+  }
+}
+
+/// With the `serde` feature: a region from its bytes, checked as
+/// [`from_bytes`](Region::from_bytes) checks them; an [`Error`] is a custom error of the
+/// deserializer. Bytes are accepted borrowed, owned, or as a sequence of `u8` (as JSON writes
+/// them).
+#[cfg(feature = "serde")]
+impl<'de, T: Flat, S: Storage + Default> ::serde::Deserialize<'de> for Region<T, S> {
+  fn deserialize<D: ::serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    use ::serde::de::{self, SeqAccess, Visitor};
+
+    /// Builds the region from what the format gives.
+    struct Bytes<T, S>(PhantomData<(T, S)>);
+
+    impl<'de, T: Flat, S: Storage + Default> Visitor<'de> for Bytes<T, S> {
+      type Value = Region<T, S>;
+
+      fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the bytes of a region")
+      }
+
+      fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {
+        Region::from_bytes(bytes).map_err(E::custom)
+      }
+
+      fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        // The hint comes from the input: trust it only so far.
+        let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(1 << 16));
+        while let Some(byte) = seq.next_element::<u8>()? {
+          bytes.push(byte);
+        }
+        self.visit_bytes(&bytes)
+      }
+    }
+
+    deserializer.deserialize_bytes(Bytes(PhantomData))
+  }
+}
+
 const _: () = {
   const fn send_sync_unpin<T: Send + Sync + Unpin>() {}
   #[cfg(feature = "alloc")]
