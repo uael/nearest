@@ -60,7 +60,7 @@ Variant}` and the hidden items of the two traits. Do not add public items.
 | `region.rs` | `Region<T>`, including `to_bytes`, `from_bytes`, `view` |
 
 `nearest-derive/src/lib.rs` generates, inside `const _: () = { .. }`: the `Flat` impl (`Edit<'e>`,
-`PLAIN`, `store`, `edit`, `check`, each checking `fits`), constructors (`new`, or one snake-case
+`PLAIN`, `ANY`, `store`, `edit`, `check`, each checking `fits`), constructors (`new`, or one snake-case
 function per non-unit variant; a parameter for a field written `Near<X>` takes a builder of
 `X`), the handle `__NearestEdit<'e, ..>` (`set`, `replace`, a method per struct field, `as_mut`
 for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), hidden `#[repr(C)]` mirror structs
@@ -85,7 +85,8 @@ for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), hidden `#[repr(C)]` mir
   into its own region (same `me`) is a move, anywhere else a deep copy.
 - Bytes: a region's compact image is what a deep copy writes. `Flat::check` (safe, generated)
   walks an image in that order without recursion; each pointer must aim exactly where the copy
-  would have put its target. `to_bytes` borrows the buffer when the compact mark is set.
+  would have put its target. Elements with `Flat::ANY` (no pointers, every bit pattern valid)
+  are not walked. `to_bytes` borrows the buffer when the compact mark is set.
 
 ### Safety Model
 

@@ -117,7 +117,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // What differs between structs and enums.
   let (mut mirrors, mut ctors, mut methods, mut extra) = (vec![], vec![], vec![], vec![]);
   let mut view = None;
-  let (plain, body, checks) = match &input.data {
+  let (plain, any, body, checks) = match &input.data {
     Data::Union(u) => {
       return Err(Error::new(u.union_token.span, "`#[flat]` does not support unions"));
     }
@@ -139,8 +139,9 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         true #(&& <#tys as ::nearest::Flat>::PLAIN)*
           && ::core::mem::size_of::<Self>() == 0 #(+ ::core::mem::size_of::<#tys>())*
       };
+      let any = quote!(true #(&& <#tys as ::nearest::Flat>::ANY)*);
       let checks = check(&tys, &offs);
-      (plain, quote!(#(#stores)*), checks)
+      (plain, any, quote!(#(#stores)*), checks)
     }
     Data::Enum(data) => {
       if let Some(v) = data.variants.iter().nth(256) {
@@ -262,7 +263,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       let unit = data.variants.iter().all(|v| matches!(v.fields, Fields::Unit));
       let count = data.variants.len();
       let checks = quote!(match #ck.tag(#at, #count)? { #(#check_arms)* });
-      (quote!(#unit), quote!(#(#built)* match self { #(#arms)* }), checks)
+      // A tag is never any byte.
+      (quote!(#unit), quote!(false), quote!(#(#built)* match self { #(#arms)* }), checks)
     }
   };
 
@@ -285,6 +287,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           #np::fits::<Self>();
           #plain
         };
+        const ANY: bool = #any;
         unsafe fn store(
           &self,
           #sink: &mut #np::Sink,

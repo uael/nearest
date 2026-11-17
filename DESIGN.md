@@ -334,6 +334,9 @@ Padding is not looked at.
 - It does not recurse. Pointers wait on a stack and the pointers of a list element come before
   the remaining elements, so memory is bounded by nesting depth times fields, time by the
   length of the bytes, and it never panics.
+- Lists and arrays of numbers are not walked (`Flat::ANY`: no pointers, and every bit pattern
+  is a value). Checking costs time for pointers, text and values that can be invalid, not for
+  bulk numbers, so a large memory-mapped table is ready at once.
 - The bytes hold native-endian integers and the layout of the target; there is no header or
   version. What `to_bytes` wrote, a build with the same layout reads back.
 

@@ -1221,6 +1221,18 @@ fn malformed_images_are_rejected() {
   let color = Region::new(Color::Blue).to_bytes().into_owned();
   assert!(view::<Color, _>(&[3], |_| ()).is_err() && view::<Color, _>(&color, |_| ()).is_ok());
 
+  // Elements that can be invalid are checked one by one, inside lists and arrays too; lists
+  // of numbers are not walked, and any bytes there are a value.
+  let flags = Region::new(Lst::<[bool; 2]>::new([[true, false], [false, true]]));
+  let numbers = Region::new(Lst::<[u16; 2]>::new([[1, 2], [3, 4]]));
+  let (flags, numbers) = (flags.to_bytes().into_owned(), numbers.to_bytes().into_owned());
+  for i in 12..flags.len() {
+    let (mut f, mut n) = (flags.clone(), numbers.clone());
+    (f[i], n[12 + 2 * (i - 12)]) = (2, 0xff);
+    assert!(view::<Lst<[bool; 2]>, _>(&f, |_| ()).is_err(), "flag {i}");
+    assert_eq!(view::<Lst<[u16; 2]>, _>(&n, |l| l.items.len()), Ok(2));
+  }
+
   // The error.
   let err = Region::<Expr>::from_bytes(&[9]).err().unwrap();
   let copy = err.clone();

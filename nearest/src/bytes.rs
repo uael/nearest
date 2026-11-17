@@ -117,8 +117,12 @@ pub fn text(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Invalid> {
 }
 
 /// The `count` elements from `first`, in order. When one has pointers, they are checked before
-/// the remaining elements, which wait on the stack behind them.
+/// the remaining elements, which wait on the stack behind them. Elements of which every bit
+/// pattern is valid are not walked.
 fn items<T: Flat>(ck: &mut Check<'_>, first: usize, count: usize) -> Result<(), Invalid> {
+  if T::ANY {
+    return Ok(());
+  }
   for i in 0..count {
     let mark = ck.todo.len();
     T::check(ck, first + i * size_of::<T>())?;

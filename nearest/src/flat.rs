@@ -204,8 +204,9 @@ pub unsafe fn aim(buf: *mut Buf, at: usize) -> usize {
 ///
 /// `Self` has no drop glue and no pointers other than [`Near`]. `store` writes every field of
 /// `self` at `at` as described on it; `PLAIN` is `true` only if `Self` has no padding and no
-/// pointers; `edit` returns the handle of a valid `Self` at `at`; `check` accepts exactly the
-/// compact images of valid values, in the order `store` writes them.
+/// pointers, and `ANY` only if it has no pointers and every bit pattern is a valid `Self`;
+/// `edit` returns the handle of a valid `Self` at `at`; `check` accepts exactly the compact
+/// images of valid values, in the order `store` writes them.
 pub unsafe trait Flat: Sized + 'static {
   /// The handle of a place holding a `Self`, during the edit `'e`: what
   /// [`Region::edit`](crate::Region::edit) and field methods return a `&mut` to. See
@@ -215,6 +216,11 @@ pub unsafe trait Flat: Sized + 'static {
   /// No pointers and no padding: may be copied as bytes.
   #[doc(hidden)]
   const PLAIN: bool = false;
+
+  /// No pointers, and every bit pattern is a valid value: there is nothing to check, so lists
+  /// of such elements are not walked.
+  #[doc(hidden)]
+  const ANY: bool = false;
 
   /// Writes `self` at `at`. With `shift == None` every pointer target is copied too; with
   /// `Some(d)` every pointer keeps its target and is re-aimed for a move of `d` bytes, and no
@@ -345,11 +351,13 @@ const unsafe fn plain_edit<'a, T>(buf: *mut Buf, at: usize) -> &'a mut T {
 }
 
 macro_rules! plain {
-  ($($t:ty => |$b:ident: $raw:ty| $ok:expr;)*) => {$(
-    // SAFETY: primitive values have no pointers and no padding; `check` accepts the valid ones.
+  ($($any:literal: $($t:ty => |$b:ident: $raw:ty| $ok:expr),*;)*) => {$($(
+    // SAFETY: primitive values have no pointers and no padding; `check` accepts the valid ones,
+    // which for the `ANY` types is every bit pattern.
     unsafe impl Flat for $t {
       type Edit<'e> = Self;
       const PLAIN: bool = true;
+      const ANY: bool = $any;
       unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<i32>) {
         // SAFETY: the caller allocated `at` for `Self`.
         unsafe { sink.write(at, *self) }
@@ -363,18 +371,20 @@ macro_rules! plain {
         if $ok { Ok(()) } else { Err(Invalid(at)) }
       }
     }
-  )*};
+  )*)*};
 }
 plain! {
-  u8 => |_b: u8| true; u16 => |_b: u16| true; u32 => |_b: u32| true; u64 => |_b: u64| true;
-  i8 => |_b: u8| true; i16 => |_b: u16| true; i32 => |_b: u32| true; i64 => |_b: u64| true;
-  f32 => |_b: u32| true; f64 => |_b: u64| true;
-  bool => |b: u8| b <= 1;
-  char => |b: u32| char::from_u32(b).is_some();
-  NonZero<u8> => |b: u8| b != 0; NonZero<u16> => |b: u16| b != 0;
-  NonZero<u32> => |b: u32| b != 0; NonZero<u64> => |b: u64| b != 0;
-  NonZero<i8> => |b: u8| b != 0; NonZero<i16> => |b: u16| b != 0;
-  NonZero<i32> => |b: u32| b != 0; NonZero<i64> => |b: u64| b != 0;
+  true:
+    u8 => |_b: u8| true, u16 => |_b: u16| true, u32 => |_b: u32| true, u64 => |_b: u64| true,
+    i8 => |_b: u8| true, i16 => |_b: u16| true, i32 => |_b: u32| true, i64 => |_b: u64| true,
+    f32 => |_b: u32| true, f64 => |_b: u64| true;
+  false:
+    bool => |b: u8| b <= 1,
+    char => |b: u32| char::from_u32(b).is_some(),
+    NonZero<u8> => |b: u8| b != 0, NonZero<u16> => |b: u16| b != 0,
+    NonZero<u32> => |b: u32| b != 0, NonZero<u64> => |b: u64| b != 0,
+    NonZero<i8> => |b: u8| b != 0, NonZero<i16> => |b: u16| b != 0,
+    NonZero<i32> => |b: u32| b != 0, NonZero<i64> => |b: u64| b != 0;
 }
 
 // SAFETY: an array is its elements, without padding between them; `Copy` elements have no
@@ -385,6 +395,7 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
     fits::<Self>();
     T::PLAIN
   };
+  const ANY: bool = T::ANY;
   unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<i32>) {
     fits::<Self>();
     // SAFETY: the caller allocated `at` for the array.
@@ -396,6 +407,9 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
     unsafe { plain_edit(buf, at) }
   }
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Invalid> {
+    if T::ANY {
+      return Ok(());
+    }
     (0..N).try_for_each(|i| T::check(ck, at + i * size_of::<T>()))
   }
 }
