@@ -53,8 +53,9 @@ use core::{mem::MaybeUninit, slice};
 ///   keeps the bytes of the memory, wherever it puts them, and never makes it shorter; what it
 ///   adds may hold anything. If it panics, the memory is as before, at the same address.
 ///
-/// The region checks the rest: it asks for at most 2 GiB, uses at most 2 GiB of any memory,
-/// and panics if it gets less than it asked for, except in
+/// The region checks the rest: it asks for no more than its limit (what its pointers reach: 2
+/// GiB with the default `i32`, see [`Offset`](crate::Offset)), uses no more of any memory, and
+/// panics if it gets less than it asked for, except in
 /// [`from_bytes`](crate::Region::from_bytes), which returns an error.
 pub unsafe trait Storage {
   /// The memory, for reading.
@@ -64,13 +65,13 @@ pub unsafe trait Storage {
   ///
   /// The region asks for no more than the memory has, except when it needs more. A storage
   /// that does not grow returns its memory as it is: a region that gets less than it asked for
-  /// panics, as growing past 2 GiB does, except
+  /// panics, as growing past its limit does, except
   /// [`Region::from_bytes`](crate::Region::from_bytes), which returns an error.
   fn memory_mut(&mut self, words: usize) -> &mut [MaybeUninit<u64>];
 }
 
-/// The heap, the default storage: memory that grows as the region needs, up to 2 GiB. It needs
-/// the `alloc` feature.
+/// The heap, the default storage: memory that grows as the region needs, up to the region's
+/// limit. It needs the `alloc` feature.
 #[cfg(feature = "alloc")]
 #[derive(Default)]
 pub struct Heap(Vec<MaybeUninit<u64>>);
@@ -78,8 +79,8 @@ pub struct Heap(Vec<MaybeUninit<u64>>);
 #[cfg(feature = "alloc")]
 impl Heap {
   /// A heap with room for `bytes` bytes from the start: a region in it does not reallocate
-  /// until it holds more. Nothing is written; the region zeroes what it uses, and uses at most
-  /// 2 GiB.
+  /// until it holds more. Nothing is written; the region zeroes what it uses, and uses no more
+  /// than its limit.
   ///
   /// ```
   /// use nearest::{Heap, Near, Region, flat};

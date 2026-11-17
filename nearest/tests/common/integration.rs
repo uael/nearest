@@ -502,7 +502,7 @@ fn layout() {
     [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 4, 0]
   );
   // `[cap][len][elements]` after the pointer; strings are `[len][bytes]`.
-  let l = Region::new_in(Store::default(), Near::from_iter([7u32, 8]));
+  let l = Region::<Near<[u32]>>::new_in(Store::default(), Near::from_iter([7u32, 8]));
   let words =
     |b: &[u8]| b.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect::<Vec<_>>();
   assert_eq!(words(l.as_bytes().unwrap()), [8, 2, 2, 7, 8]);
@@ -745,7 +745,7 @@ fn list_handles() {
 
 #[test]
 fn list_index_panics() {
-  let mut r = Region::new_in(Store::default(), Near::from_iter([1u32, 2]));
+  let mut r = Region::<Near<[u32]>>::new_in(Store::default(), Near::from_iter([1u32, 2]));
   fails(|| *r.edit().at(2) = 0);
   fails(|| {
     let _ = r.edit().remove(2);

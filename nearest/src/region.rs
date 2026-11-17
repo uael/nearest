@@ -7,7 +7,7 @@ use crate::Heap;
 use crate::{
   Edit, Emit, Error, Flat, Pending, Storage,
   bytes::{Stack, check},
-  flat::{Buf, Sink, fits},
+  flat::{Buf, Sink, fits, limit},
 };
 
 /// One buffer holding a `T` at byte 0 and everything it points to.
@@ -17,7 +17,8 @@ use crate::{
 /// and load it.
 ///
 /// `S` is the [`Storage`] of the buffer: by default, with `alloc`, the [`Heap`](crate::Heap), which
-/// grows as needed up to 2 GiB; [`Inline<N>`](crate::Inline) keeps it in `N` bytes inside the
+/// grows as needed up to the limit of `T` (2 GiB with the default pointers; see
+/// [`Offset`](crate::Offset)); [`Inline<N>`](crate::Inline) keeps it in `N` bytes inside the
 /// `Region` value, with no heap; and a storage of your own puts it anywhere else. A region in
 /// another storage is built with [`new_in`](Self::new_in) or [`from_bytes`](Self::from_bytes);
 /// everything else is the same for all.
@@ -42,9 +43,9 @@ pub struct Region<T, #[cfg(feature = "alloc")] S = Heap, #[cfg(not(feature = "al
 
 impl<T, S: Storage> Region<T, S> {
   /// An empty region in `store`, not attached: attach it once it is where it is used, since a
-  /// storage may move with its region.
-  const fn empty(store: S) -> Self {
-    Self { buf: Buf::new(), store, _t: PhantomData }
+  /// storage may move with its region. It holds at most `max` bytes, the limit of `T`.
+  const fn empty(store: S, max: usize) -> Self {
+    Self { buf: Buf::new(max), store, _t: PhantomData }
   }
 
   /// Attaches the storage to the buffer, where it is now: a storage may move with its region.
@@ -60,13 +61,13 @@ impl<T, S: Storage> Region<T, S> {
     self.store.memory().as_ptr().cast()
   }
 
-  /// A region in `store` holding a copy of the `len` bytes at `src`, or `None` if the storage
-  /// cannot hold them.
+  /// A region of at most `max` bytes in `store` holding a copy of the `len` bytes at `src`, or
+  /// `None` if the storage cannot hold them.
   ///
   /// # Safety
   /// `src` is valid for reading `len` bytes, outside `store`.
-  unsafe fn copy_of(store: S, src: *const u8, len: usize) -> Option<Self> {
-    let mut r = Self::empty(store);
+  unsafe fn copy_of(store: S, max: usize, src: *const u8, len: usize) -> Option<Self> {
+    let mut r = Self::empty(store, max);
     r.attach();
     // SAFETY: the buffer was just attached and is empty; `src` is not in it.
     unsafe { r.buf.load(src, len) }.then_some(r)
@@ -116,7 +117,7 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// If the value does not fit the storage.
   pub fn new_in(storage: S, value: impl Emit<T>) -> Self {
     fits::<T>();
-    let mut r = Self::empty(storage);
+    let mut r = Self::empty(storage, limit::<T>());
     r.attach();
     // SAFETY: the buffer is attached, live during the call and only reached through the sink.
     let mut sink = unsafe { Sink::new(&raw mut r.buf) };
@@ -217,7 +218,8 @@ impl<T: Flat, S: Storage> Region<T, S> {
   }
 
   /// [`from_bytes`](Self::from_bytes), checking with `scratch` for memory.
-  /// `bytes.len() / 4` entries are always enough (see [`Pending`]). It needs no `alloc`.
+  /// `bytes.len() / 4` entries are always enough (`/ 2` with 2-byte pointers; see [`Pending`]).
+  /// It needs no `alloc`.
   ///
   /// ```
   /// use nearest::{Inline, Near, Pending, Region, flat};
@@ -254,7 +256,8 @@ impl<T: Flat, S: Storage> Region<T, S> {
     // The checker reads bytes at any alignment, so nothing is copied for a bad image.
     check::<T>(bytes, todo)?;
     // SAFETY: `bytes` is not in a new storage.
-    unsafe { Self::copy_of(S::default(), bytes.as_ptr(), bytes.len()) }.ok_or(Error::StorageFull)
+    let r = unsafe { Self::copy_of(S::default(), limit::<T>(), bytes.as_ptr(), bytes.len()) };
+    r.ok_or(Error::StorageFull)
   }
 
   /// [`from_bytes`](Self::from_bytes) without the check, for bytes that are trusted.
@@ -276,7 +279,7 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// with the same layout of `T`.
   ///
   /// # Panics
-  /// If the storage cannot hold them (or they exceed 2 GiB).
+  /// If the storage cannot hold them (or they exceed what the pointers of `T` reach).
   #[must_use]
   pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self
   where
@@ -284,7 +287,7 @@ impl<T: Flat, S: Storage> Region<T, S> {
   {
     fits::<T>();
     // SAFETY: `bytes` is not in a new storage.
-    let r = unsafe { Self::copy_of(S::default(), bytes.as_ptr(), bytes.len()) };
+    let r = unsafe { Self::copy_of(S::default(), limit::<T>(), bytes.as_ptr(), bytes.len()) };
     r.expect("region exceeds its storage")
   }
 }
@@ -314,7 +317,7 @@ impl<T, S: Storage> Deref for Region<T, S> {
 impl<T, S: Storage + Default> Clone for Region<T, S> {
   fn clone(&self) -> Self {
     // SAFETY: the bytes in use are in the memory of `self`, not of the new storage.
-    let r = unsafe { Self::copy_of(S::default(), self.base(), self.buf.len()) };
+    let r = unsafe { Self::copy_of(S::default(), self.buf.max(), self.base(), self.buf.len()) };
     let mut r = r.expect("region exceeds its storage");
     r.buf.compact = self.buf.compact;
     r

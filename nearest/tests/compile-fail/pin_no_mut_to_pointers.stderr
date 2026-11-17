@@ -11,7 +11,7 @@ error[E0277]: `PhantomPinned` cannot be unpinned
 note: required because it appears within the type `Near<Expr>`
   --> src/near.rs
    |
-   | pub struct Near<T: ?Sized> {
+   | pub struct Near<T: ?Sized, O: Offset = i32> {
    |            ^^^^
 note: required because it appears within the type `__NearestFields<'_>`
   --> tests/compile-fail/pin_no_mut_to_pointers.rs:7:27

@@ -1,10 +1,10 @@
 //! Self-relative pointers in one buffer.
 //!
 //! A [`Region<T>`] keeps a `T` and everything it points to in one buffer. A pointer is a
-//! [`Near<T>`]: 4 bytes holding the distance from its own address to its target. So copying
-//! the buffer copies the whole value (`Clone` is a `memcpy`), reading is plain `&T` with `Near`
-//! dereferencing like `Box`, and the bytes mean the same at any address, so a region can be
-//! written out and read back.
+//! [`Near<T>`]: 4 bytes (or 2, or 8: see [Pointer widths](#pointer-widths)) holding the distance
+//! from its own address to its target. So copying the buffer copies the whole value (`Clone` is
+//! a `memcpy`), reading is plain `&T` with `Near` dereferencing like `Box`, and the bytes mean
+//! the same at any address, so a region can be written out and read back.
 //!
 //! ```
 //! use nearest::{Edit, Near, Region, flat};
@@ -167,6 +167,28 @@
 //! `match e { Expr::Add(a, b) => .. }`. Without the feature, `#[flat]` rejects a `#[pin_v2]`
 //! written on the type.
 //!
+//! # Pointer widths
+//!
+//! A `Near<T>` keeps its distance in an `i32`, so a region holds at most 2 GiB. The second
+//! parameter of `Near<T, O>` picks another [`Offset`]: `i16`, 2 bytes, for regions of at most
+//! 32 KiB, or `i64`, 8 bytes, for regions as large as memory. List and string lengths are `O`s
+//! too. Each field picks its width, and a type can take it as a parameter. The pointers of the
+//! root bound the region, and a pointer may only lead to types whose pointers are at least as
+//! wide (checked at compile time), so every distance fits. Building or editing past the bound
+//! panics, as growing past a storage does, and bytes longer than it do not load.
+//!
+//! ```
+//! use nearest::{Near, Offset, Region, flat};
+//!
+//! #[flat]
+//! struct Table<O: Offset> { name: Near<str, O>, rows: Near<[u64], O> }
+//!
+//! let small = Region::new(Table::<i16>::new("small", [1, 2, 3]));
+//! let large = Region::new(Table::<i64>::new("large", [1, 2, 3]));
+//! assert_eq!((small.rows[2], large.rows[2]), (3, 3));
+//! assert_eq!((size_of::<Table<i16>>(), size_of::<Table<i64>>()), (4, 16));
+//! ```
+//!
 //! # The `nightly` feature
 //!
 //! The opt-in cargo feature `nightly` needs a nightly compiler for the whole build. With it
@@ -188,7 +210,8 @@
 //! bytes went wrong, or that a valid image does not fit the storage. Checking keeps the
 //! pointers still to visit in memory that grows with the nesting of the data: [`view_with`] and
 //! [`Region::from_bytes_with`] take it from the caller, as a slice of [`Pending`]
-//! (`bytes.len() / 4` entries are always enough), and say if it runs out. For bytes that are
+//! (`bytes.len() / 4` entries are always enough, `/ 2` with 2-byte pointers), and say if it
+//! runs out. For bytes that are
 //! trusted, [`Region::from_bytes_unchecked`] and [`view_unchecked`] skip the check and are
 //! `unsafe`. The bytes hold native-endian integers and the layout of the target.
 //!
@@ -227,15 +250,15 @@
 //!
 //! # Storage
 //!
-//! A region keeps its buffer in a [`Storage`]: `Region<T>` is `Region<T, Heap>`, on the
-//! [`Heap`], which grows as needed ([`Heap::with_capacity`] makes room up front).
-//! [`Inline<N>`] keeps it in `N` bytes inside the `Region` value, with no heap; growing past
-//! them panics, as growing past 2 GiB does. A storage of your own, such as an arena or a
-//! memory-mapped file, implements the `unsafe` trait [`Storage`]: two accessors to its memory,
-//! the second of which grows it if it can. A region in any storage is built with
-//! [`Region::new_in`], or with [`Region::from_bytes`] when the storage has a `Default`;
-//! everything else is the same. A storage may move with its region; a region cannot move while
-//! something borrows it, and every edit starts from where it is.
+//! A region keeps its buffer in a [`Storage`]: `Region<T>` is `Region<T, Heap>`, on the [`Heap`],
+//! which grows as needed ([`Heap::with_capacity`] makes room up front). [`Inline<N>`] keeps it in
+//! `N` bytes inside the `Region` value, with no heap; growing past them panics, as growing past
+//! what the pointers reach does. A storage of your own, such as an arena or a memory-mapped file,
+//! implements the `unsafe` trait [`Storage`]: two accessors to its memory, the second of which
+//! grows it if it can. A region in any storage is built with [`Region::new_in`], or with
+//! [`Region::from_bytes`] when the storage has a `Default`; everything else is the same. A storage
+//! may move with its region; a region cannot move while something borrows it, and every edit starts
+//! from where it is.
 //!
 //! ```
 //! use nearest::{Inline, Near, Region, flat};
@@ -272,8 +295,9 @@
 //!   provenance.
 //!
 //! Stored types must have alignment at most 8, non-zero size and no drop glue (checked at
-//! compile time). A region holds at most `i32::MAX` bytes, or what its storage gives; growing
-//! past that panics.
+//! compile time). A region holds at most what the pointers of its root reach (2 GiB with the
+//! default `i32`; see [Pointer widths](#pointer-widths)), or what its storage gives; growing past
+//! that panics.
 #![no_std]
 #![deny(missing_docs)]
 // The `nightly` feature: `unpin` asks whether a type implements `Unpin` (see `mod unpin`).
@@ -300,7 +324,7 @@ pub use bytes::view;
 pub use bytes::{Error, Pending, view_unchecked, view_with};
 pub use edit::{ListEdit, Old, OptionEdit, StrEdit};
 pub use flat::{Emit, Flat};
-pub use near::Near;
+pub use near::{Near, Offset};
 /// Makes a struct or enum storable in a region.
 ///
 /// It implements [`Flat`] and adds `#[repr(C)]` to structs (unless they are already `C` or
@@ -420,7 +444,7 @@ pub type Edit<'e, T> = <T as Flat>::Edit<'e>;
 pub mod __private {
   #[cfg(feature = "nightly")]
   pub use crate::unpin::unpin;
-  use crate::{Emit, Flat, Near};
+  use crate::{Emit, Flat, Near, Offset};
   pub use crate::{
     bytes::Check,
     edit::Raw,
@@ -442,72 +466,24 @@ pub mod __private {
     fn wrap(arg: impl Emit<Self::Arg>) -> impl Emit<Self>;
   }
 
-  impl<T: Flat> Pointer for Near<T> {
+  impl<T: Flat, O: Offset> Pointer for Near<T, O> {
     type Arg = T;
     fn wrap(arg: impl Emit<T>) -> impl Emit<Self> {
       Self::new(arg)
     }
   }
 
-  impl<T: Flat> Pointer for Near<[T]> {
+  impl<T: Flat, O: Offset> Pointer for Near<[T], O> {
     type Arg = Self;
     fn wrap(arg: impl Emit<Self>) -> impl Emit<Self> {
       arg
     }
   }
 
-  impl Pointer for Near<str> {
+  impl<O: Offset> Pointer for Near<str, O> {
     type Arg = Self;
     fn wrap(arg: impl Emit<Self>) -> impl Emit<Self> {
       arg
     }
-  }
-}
-
-#[cfg(all(test, feature = "alloc"))]
-mod tests {
-  extern crate std;
-  use std::{
-    panic::{AssertUnwindSafe, catch_unwind},
-    vec::Vec,
-  };
-
-  use crate::{Near, Region};
-
-  /// Unit tests build with a 64 KiB limit.
-  #[test]
-  fn the_size_limit_panics_and_leaves_a_valid_region() {
-    assert!(catch_unwind(|| Region::new(Near::from_iter(0..20_000u32))).is_err());
-    let mut r = Region::new(Near::from_iter(0..10u32));
-    let full = catch_unwind(AssertUnwindSafe(|| {
-      for i in 0..u32::MAX {
-        r.edit().push(i);
-      }
-    }));
-    assert!(full.is_err());
-    assert!(r.byte_len() > 1 << 15 && r.byte_len() <= 1 << 16);
-    assert_eq!(r[..10], (0..10).collect::<Vec<_>>());
-    let before = r.to_vec();
-    assert!(r[10..].iter().copied().eq(0..before.len() as u32 - 10));
-    // What does not fit fails the same way, and the region is still intact.
-    assert!(
-      catch_unwind(AssertUnwindSafe(|| r.edit().set(Near::from_iter(0..16_384u32)))).is_err()
-    );
-    assert_eq!(r[..], before);
-    let compact = Region::new(&*r);
-    assert_eq!(compact.byte_len(), 4 + 4 + 4 + 4 * before.len());
-    assert_eq!(compact[..], r[..]);
-  }
-
-  /// Memory past the size limit is there, but not used.
-  #[test]
-  fn capacity_past_the_size_limit_is_not_used() {
-    let mut r = Region::new_in(crate::Heap::with_capacity((1 << 16) + 64), Near::from_iter([0u32]));
-    let full = catch_unwind(AssertUnwindSafe(|| {
-      for i in 0..1 << 15 {
-        r.edit().push(i);
-      }
-    }));
-    assert!(full.is_err() && r.byte_len() <= 1 << 16);
   }
 }

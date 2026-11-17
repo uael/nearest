@@ -22,6 +22,8 @@ jobs:
       - run: cargo test -p nearest --no-default-features --lib --test no_alloc
       - run: cargo test -p nearest --features serde --test serde
       - run: cargo test -p nearest --features serde --doc
+      # A region past 2 GiB, with 8-byte pointers: about 4 GB of memory, seconds in release.
+      - run: cargo test --release -p nearest --test width -- --ignored
       - run: cargo run --example expr
       - run: cargo run --example ir
       - run: cargo bench --bench region -- --test
@@ -51,6 +53,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # A target without `std` or an allocator: nothing may need either.
       - run: cargo build -p nearest --no-default-features --target thumbv7em-none-eabihf
+      # A 16-bit target, whose `core` is built from source on the pinned nightly.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-10
+          components: rust-src
+      - run: cargo +nightly-2026-02-10 build -p nearest --no-default-features -Zbuild-std=core --target msp430-none-elf
 
   fmt:
     name: Format
@@ -89,7 +97,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The default configuration, with every storage; without `alloc`; the `nightly` feature
       # adds `tests/pin_v2.rs` (the `nightly` job runs the other tests natively with the feature).
-      - run: cargo +nightly-2026-02-10 miri test -p nearest --lib --test integration --test inline --test user_storage --test no_alloc
+      - run: cargo +nightly-2026-02-10 miri test -p nearest --lib --test integration --test inline --test user_storage --test no_alloc --test width
         env:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
       - run: cargo +nightly-2026-02-10 miri test -p nearest --no-default-features --test no_alloc

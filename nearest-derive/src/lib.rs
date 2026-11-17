@@ -119,8 +119,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let (p_impl, p_ty, p_where) = pin_g.split_for_impl();
 
   // A constructor: `make` around one `emit` per field, after an optional tag. A field written
-  // `Near<..>` takes what `Pointer` says: for `Near<X>` a builder of `X`, whose target the
-  // constructor allocates.
+  // `Near<..>` takes what `Pointer` says: for `Near<X>` (or `Near<X, O>`) a builder of `X`,
+  // whose target the constructor allocates.
   // A field marked `#[flat(into)]` takes `impl Into<FieldType>`.
   let ctor = |fname: Ident,
               doc: String,
@@ -144,7 +144,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         // A type parameter is a sized target; naming it lets the argument infer it.
         Some(Type::Path(x)) if type_params.iter().any(|t| x.path.is_ident(*t)) => {
           ptys.push(quote!(impl ::nearest::Emit<#x>));
-          vals.push(quote!(::nearest::Near::<#x>::new(#p)));
+          vals.push(quote!(<#ty>::new(#p)));
         }
         Some(_) => {
           ptys.push(quote!(impl ::nearest::Emit<<#ty as #np::Pointer>::Arg>));
@@ -464,6 +464,19 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       impl #f_impl ::core::marker::Unpin for #self_ty #unpin_where {}
     }
   };
+  // What the narrowest pointer held by value reaches: the least `REACH` of the fields (without
+  // fields, the default).
+  let reach = (!field_tys.is_empty()).then(|| {
+    quote! {
+      const REACH: u64 = {
+        let mut reach = u64::MAX;
+        #(if <#field_tys as ::nearest::Flat>::REACH < reach {
+          reach = <#field_tys as ::nearest::Flat>::REACH;
+        })*
+        reach
+      };
+    }
+  });
   // With the `nightly` feature: every field is `Unpin`, and, checked on evaluation, so is this
   // type only if it should be. `&` and not `&&`, so that every field is checked.
   let unpin_const = cfg!(feature = "nightly").then(|| {
@@ -496,12 +509,13 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           #plain
         };
         const ANY: bool = #any;
+        #reach
         #unpin_const
         unsafe fn store(
           &self,
           #sink: &mut #np::Sink,
           #at: usize,
-          #shift: ::core::option::Option<i32>,
+          #shift: ::core::option::Option<isize>,
         ) {
           #np::fits::<Self>();
           unsafe { #body }
@@ -630,19 +644,21 @@ fn take_args(attrs: &mut Vec<Attribute>, place: Place) -> syn::Result<Args> {
   Ok(args)
 }
 
-/// `X` if `ty` is written `Near<X>`: any path ending in `Near` with one type argument.
+/// `X` if `ty` is written `Near<X>` or `Near<X, O>`: any path ending in `Near` with one or two
+/// type arguments.
 fn near_target(ty: &Type) -> Option<&Type> {
-  type_arg(ty, "Near")
+  type_arg(ty, "Near", 2)
 }
 
 /// Whether `ty` is written as a pointer, `Near<..>` (a list and a string too) or
 /// `Option<Near<..>>`.
 fn is_pointer(ty: &Type) -> bool {
-  near_target(ty).or_else(|| type_arg(ty, "Option").and_then(near_target)).is_some()
+  near_target(ty).or_else(|| type_arg(ty, "Option", 1).and_then(near_target)).is_some()
 }
 
-/// `X` if `ty` is written `name<X>`: any path ending in `name` with one type argument.
-fn type_arg<'t>(ty: &'t Type, name: &str) -> Option<&'t Type> {
+/// `X` if `ty` is written `name<X, ..>`: any path ending in `name` with at least one and at most
+/// `most` type arguments.
+fn type_arg<'t>(ty: &'t Type, name: &str, most: usize) -> Option<&'t Type> {
   let ty = match ty {
     Type::Group(g) => &*g.elem,
     Type::Paren(p) => &*p.elem,
@@ -651,7 +667,9 @@ fn type_arg<'t>(ty: &'t Type, name: &str) -> Option<&'t Type> {
   let Type::Path(p) = ty else { return None };
   let last = p.path.segments.last()?;
   match &last.arguments {
-    PathArguments::AngleBracketed(a) if last.ident == name && a.args.len() == 1 => {
+    PathArguments::AngleBracketed(a)
+      if last.ident == name && (1..=most).contains(&a.args.len()) =>
+    {
       match a.args.first() {
         Some(GenericArgument::Type(x)) => Some(x),
         _ => None,

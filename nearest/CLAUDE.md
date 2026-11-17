@@ -6,12 +6,12 @@ toolchain, releases and style are in the root `CLAUDE.md`. The examples are the 
 
 ## Idea
 
-A `Region<T>` keeps a `T` and everything it points to in one buffer. A pointer is a `Near<T>`,
-4 bytes: the distance from its own address to its target. So copying the buffer copies the
-value (`Clone` is a `memcpy`), reading is plain `&T` (`Near` derefs like `Box`), and the bytes
-mean the same at any address (a region is saved and loaded as bytes). Stable Rust,
-`#![no_std]`, no dependency but the macro (and `serde`, optional). Aliasing, lifetimes, moves
-and the tree shape are enforced by types; see Runtime checks for the rest.
+A `Region<T>` keeps a `T` and everything it points to in one buffer. A pointer is a `Near<T, O>`:
+the distance from its own address to its target, an `O` (`i32`, 4 bytes, by default; `i16` or
+`i64`). So copying the buffer copies the value (`Clone` is a `memcpy`), reading is plain `&T`
+(`Near` derefs like `Box`), and the bytes mean the same at any address (a region is saved and loaded
+as bytes). Stable Rust, `#![no_std]`, no dependency but the macro (and `serde`, optional). Aliasing,
+lifetimes, moves and the tree shape are enforced by types; see Runtime checks for the rest.
 
 ## Public surface
 
@@ -19,7 +19,12 @@ and the tree shape are enforced by types; see Runtime checks for the rest.
 - `trait Flat`: `type Edit<'e>: ?Sized`; the rest is hidden. `trait Emit<T>`: all hidden; "can
   be written as a `T`". `type Edit<'e, T> = <T as Flat>::Edit<'e>`: the handle of a place
   holding a `T`.
-- `Near<T>`: builders `new`, `from_iter`; pinned view `as_pin_mut`, `iter_pin_mut`.
+- `Near<T, O: Offset = i32>`: builders `new`, `from_iter`; pinned view `as_pin_mut`,
+  `iter_pin_mut`.
+- `trait Offset`: the integer of a `Near`, implemented for `i16`, `i32`, `i64` only (sealed by a
+  private supertrait); all its items hidden (`NonZero`, `LIMIT`, `from_isize`, `to_isize`,
+  `read`). Its supertraits `Flat + Copy + Debug + Eq + Ord + Hash` let a type generic over the
+  width be `#[flat]` (which bounds every type parameter by `Flat`) and derive the usual traits.
 - `Region<T, S: Storage = Heap>`: `new`, `new_in`, `edit`, `as_bytes`, `from_bytes`,
   `from_bytes_with`, `byte_len`; `unsafe` `from_bytes_unchecked`.
 - Functions `view::<T>(bytes)`, `view_with::<T>(bytes, scratch)`; `unsafe`
@@ -27,9 +32,10 @@ and the tree shape are enforced by types; see Runtime checks for the rest.
 - `unsafe trait Storage`: `memory`, `memory_mut(words)`, where a region keeps its bytes.
   Storages: `Heap` (the default; `with_capacity(bytes)`), `Inline<N>` (`N` bytes inside the
   region).
-- Handles: `ListEdit<'e, T>` (`push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`,
-  `try_at`, `set`, `replace`, `update`, `iter_pin_mut`), `OptionEdit<'e, T>` (`as_mut`,
-  `insert`, `take`, `set`, `update`), `StrEdit<'e>` (`set`, `replace`, `update`).
+- Handles: `ListEdit<'e, T, O = i32>` (`push`, `insert`, `remove`, `swap`, `truncate`,
+  `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut`),
+  `OptionEdit<'e, T, O = i32>` (`as_mut`, `insert`, `take`, `set`, `update`),
+  `StrEdit<'e, O = i32>` (`set`, `replace`, `update`).
 - `Old<'e, T>`: no methods; a value that left its place, which can only be written somewhere.
 - `enum Error`: `Invalid(usize)`, `ScratchFull`, `StorageFull`; the error of every loader.
 - `Pending`: no methods; an entry of the scratch that `from_bytes_with` and `view_with` take.
@@ -43,9 +49,9 @@ the target. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, `
 `Debug`.
 
 Hidden: `nearest::__private::{Raw, Buf, Sink, Check, fits, make, Variant, Pointer}` (and `unpin`
-with `nightly`), the plumbing of the macro; the hidden items of `Flat` (`PLAIN`, `ANY`, `store`,
-`edit`, `check`; `UNPIN` with `nightly`) and `Emit` (`emit`, `plain`). Nothing else is public;
-do not add public items.
+with `nightly`), the plumbing of the macro; the hidden items of `Flat` (`PLAIN`, `ANY`, `REACH`,
+`store`, `edit`, `check`; `UNPIN` with `nightly`), `Emit` (`emit`, `plain`) and `Offset`.
+Nothing else is public; do not add public items.
 
 Features:
 
@@ -68,38 +74,48 @@ Features:
 |---|---|
 | `u8`..`u64`, `i8`..`i64`, `f32`, `f64`, `bool`, `char`, `NonZero<_>` of those integers | itself |
 | `[T; N]`, `T: Flat + Copy`, `N > 0` | itself |
-| `Near<T>`, `T: Flat` | `Edit<'e, T>`: the handle is the target's |
-| `Near<[T]>`, `T: Flat` | `ListEdit<'e, T>` |
-| `Near<str>` | `StrEdit<'e>` |
-| `Option<Near<T>>`, `T: Flat` | `OptionEdit<'e, T>` (4 bytes, `None` is 0) |
+| `Near<T, O>`, `T: Flat` | `Edit<'e, T>`: the handle is the target's |
+| `Near<[T], O>`, `T: Flat` | `ListEdit<'e, T, O>` |
+| `Near<str, O>` | `StrEdit<'e, O>` |
+| `Option<Near<T, O>>`, `T: Flat` | `OptionEdit<'e, T, O>` (an `O`, `None` is 0) |
 | `#[flat]` types | generated |
 
-`Flat: 'static`: a stored type has no lifetime. Alignment at most 8, non-zero size and no drop
-glue are checked at compile time by `fits`, a `const` block that every use instantiates
-(building, editing, checking bytes). Plain data means `T: Copy`; a `Copy` type cannot contain a
-`Near`, so it is safe to hand out as `&mut T`.
+`Flat: 'static`: a stored type has no lifetime. Alignment at most 8, non-zero size and no drop glue
+are checked at compile time by `fits`, a `const` block that every use instantiates (building,
+editing, checking bytes). Every use of a pointer also instantiates `fits_behind`: its target holds
+no narrower pointer (see Layout). Plain data means `T: Copy`; a `Copy` type cannot contain a `Near`,
+so it is safe to hand out as `&mut T`.
 
 ## Layout
 
 - The root is at position 0. The buffer is 8-aligned (memory is `u64` words).
-- `Near<T>`: `NonZero<i32>`, target address minus own address.
-- `Near<str>` points at a `u32` length; the bytes follow.
-- `Near<[T]>` points at a `u32` length; the elements follow at `+4`, a `u32` capacity sits at
-  `-4`. The block `[cap][len][elements]` is aligned to `max(4, align_of::<T>())`, so 8-aligned
-  elements are 8-aligned.
+- `Near<T, O>`: `NonZero<O>`, target address minus own address. Below, `w` is `size_of::<O>()`.
+- `Near<str, O>` points at an `O` length, `w`-aligned; the bytes follow.
+- `Near<[T], O>` points at an `O` length; the elements follow at `+w`, an `O` capacity sits at
+  `-w`. The elements are aligned to `max(w, align_of::<T>())` and the header `[cap][len]` takes
+  the `2w` bytes before them (`Buf::alloc` places a block by its byte `inset = 2w`). With `i32`
+  and `i64` the block itself starts so aligned; with `i16`, before 8-aligned elements, it starts
+  4 bytes past a multiple of 8.
 - `#[flat]` adds `#[repr(C)]` to structs (unless already `C` or `transparent`) and `#[repr(u8)]`
   to enums: the layout does not depend on the compiler's field order. Variant field offsets
   come from hidden `#[repr(C)]` mirror structs `(u8, fields..)`.
-- A region holds at most `MAX = i32::MAX & !7` bytes (64 KiB in unit tests), so every distance
-  fits the offset.
+- A region holds at most the limit of its root type, `limit::<T>()`: `T::REACH` (hidden `Flat`
+  const: the `Offset::LIMIT`, `iN::MAX & !7`, of the narrowest pointer `T` holds by value, not
+  through a pointer; `u64::MAX` without one) capped at `isize::MAX & !7`. So 32760 bytes with
+  `i16` at the root, `i32::MAX & !7` with `i32`, `isize::MAX & !7` with `i64`. A pointer only
+  leads to types whose `REACH` is at least its own `LIMIT` (`fits_behind`): widths grow, or stay,
+  going down, so every distance and length in the region fits its `O`. `REACH` and `LIMIT` are
+  `u64` so the rule is the same on every target (an `i64` pointer to an `i32` one is rejected on
+  32-bit targets too, where both reach 2 GiB).
 
 ## Runtime checks
 
 Only what cannot be known before:
 
-- **Size.** Growing past 2 GiB, or past what the storage gives, panics before anything changes
-  (the capacity overflow of `Vec`); it is only looked at when the zeroed capacity is used up.
-  `from_bytes*` return `Error::StorageFull` instead.
+- **Size.** Growing past the limit (2 GiB with `i32` at the root), or past what the storage
+  gives, panics before anything changes (the capacity overflow of `Vec`); it is only looked at
+  when the zeroed capacity is used up. `from_bytes*` return `Error::StorageFull` instead (and
+  `Error::Invalid(0)` for bytes longer than the limit).
 - **Indices.** `at`, `insert`, `remove`, `swap` panic out of bounds; `try_at` returns `None`.
 - **Loaded bytes.** The loaders check bytes from outside (see Bytes). A region built or edited
   in the program is never checked; the `unsafe` unchecked loaders skip the check.
@@ -138,7 +154,8 @@ Only what cannot be known before:
   (when copied into another region), so a handle on another thread could grow the buffer under
   it. References from a handle (`&T`, `&mut` plain data) and the `Region` are `Send`/`Sync` as
   usual.
-- **Buffer.** `len <= cap <= mem <= MAX`, also while unwinding; `[len, cap)` is zero.
+- **Buffer.** `len <= cap <= mem <= max` (the limit), also while unwinding; `[len, cap)` is
+  zero.
 - **Unsafe code.** `pub(crate)` never relaxes a safety precondition: a function that has one is
   an `unsafe fn`, whatever its visibility.
 
@@ -179,10 +196,13 @@ mutably for plain data (`T: Copy`):
   `insert(x) -> &mut Edit<'e, T>`, `take() -> Option<Old<'e, T>>`, `set`, `update`;
 - `Near<str>`: `StrEdit<'e>`; `set`, `replace`, `update`.
 
+The three take the width as a last parameter, `i32` by default (`ListEdit<'e, T, O>`).
+
 ## Generated code
 
 For a type `X`, `#[flat]` emits, inside `const _: () = { .. }`, the `Flat` impl (`Edit<'e>`,
-`PLAIN`, `ANY`, `store`, `edit`, `check`, each calling `fits`), the constructors, the handle
+`PLAIN`, `ANY`, `REACH` (the least of the fields', left at the default without fields),
+`store`, `edit`, `check`, each calling `fits`), the constructors, the handle
 `__NearestEdit<'e, ..>` (`set`, `replace`, `update`, `pin`, a method per struct field, `as_mut`
 for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), the mirror structs, and `X::project`;
 next to `X`, with its visibility, `XPin<'a>` and, for an enum with fields, `XMut<'a, 'e>` (an
@@ -206,7 +226,9 @@ item of the user's with one of those names is a duplicate definition).
   field (two handles cannot be live at once, I3). The payload handle is a `Raw` of the mirror,
   named through `__private::Variant<I>`, with no `set` or `replace`: the variant cannot change
   under it. An enum with only unit variants gets no `as_mut`.
-- Generic type parameters must be `Flat`. Rejected: lifetime parameters, unions,
+- Generic type parameters must be `Flat` (an `O: Offset` is). A field written `Near<X>` or
+  `Near<X, O>` is a pointer; with a type parameter as `X` the constructor writes
+  `<FieldType>::new(x)`. Rejected: lifetime parameters, unions,
   `repr(packed)`, enum `repr`s other than `u8`, explicit discriminants, empty enums, more than 256
   variants, and `#[pin_v2]` without `nightly`.
 
@@ -269,7 +291,8 @@ Constructors are lazy: nothing is written until the builder reaches a region. Ty
 pointers can also be built with a plain literal. Pointers are transparent where unambiguous: a
 constructor parameter for a field written `Near<X>` takes a builder of `X` and allocates the
 target (`Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2)))`); if `X` is a slice or `str` it takes
-a list or string builder. The macro recognizes the field by the name `Near`; the hidden trait
+a list or string builder. The same for `Near<X, O>`: builders are generic over the width, which
+the place gives. The macro recognizes the field by the name `Near`; the hidden trait
 `Pointer` (`<FieldType as Pointer>::Arg`) then decides from the type, so `X` may be an alias; a
 type parameter as `X` is used as written, so the argument infers it. A field whose whole type is
 an alias of a pointer takes a builder of the pointer, `Near::new(x)`. Likewise the handle of a
@@ -349,18 +372,19 @@ region zeroes what it uses. The contract (also the trait's `# Safety`, keep both
   puts them), never shortens the memory, and what it adds may hold anything. If it panics, the
   memory is as before, at the same address.
 
-The region checks the rest: it asks for at most 2 GiB, uses at most 2 GiB of any memory, and
+The region checks the rest: it asks for no more than its limit, uses no more of any memory, and
 panics if it gets less than it asked for (`from_bytes*`: `Error::StorageFull`). A storage that
 does not grow returns its memory as it is, whatever it is asked for.
 
 Handles never see the storage; they reach one concrete `Buf` (`flat.rs`): `ptr` (byte 0), `len`,
 `cap` (the zeroed prefix: `[len, cap)` zero, `[cap, mem)` anything), `mem` (bytes of memory, at
-most `MAX`), `store` and `regrow` (a function pointer made for `S`), `me` (I8) and the compact
+most `max`), `max` (the limit, given at creation: `limit::<T>()`, or the source's for `clone`),
+`store` and `regrow` (a function pointer made for `S`), `me` (I8) and the compact
 mark. `Buf` is `Send`/`Sync` by an explicit impl; a region is `Send`, `Sync`, `Unpin` as its
 storage is (the provided ones are all three).
 
 - Allocating below `cap` is the hot path and calls nothing. Past it, the cold `Buf::grow` zeroes
-  the next part, doubling (`max(end, 2 * cap)`, clamped to `[64, MAX]`, at most `mem`), and
+  the next part, doubling (`max(end, 2 * cap)`, clamped to `[64, max]`, at most `mem`), and
   calls `regrow` first only if `mem` is too short (asking for the same, so the heap doubles).
   Zeroing costs the bytes used, never the memory's size: a large arena or mapping costs nothing
   up front. Loading copies the image and zeroes nothing.
@@ -379,7 +403,7 @@ byte there was written by it (a value, or the zeros of `cap`) and kept since (St
 so it is initialized whatever the memory held; pointers into the memory are taken after the
 region's last move and after every growth (Stable, Growth), and nothing else touches it (Its
 own); a growth that unwinds leaves the memory where the restoring guards of I7 write (Growth).
-Memory is words, so 8-aligned, and at most 2 GiB is used, so every offset fits.
+Memory is words, so 8-aligned, and no more than the limit is used, so every offset fits.
 
 A storage that cannot hold the region panics where the heap would grow: `new_in`,
 `from_bytes_unchecked`, `clone`, edits. `from_bytes*` load bytes from outside and return an
@@ -419,14 +443,14 @@ pub const unsafe fn view_unchecked<T: Flat>(bytes: &[u8]) -> &T
   build with the same layout (and, for `view_unchecked`, 8-aligned). Loading is then one
   `memcpy`, and viewing reads nothing.
 - `Error` (exhaustive): `Invalid(at)`, where the bytes stop being the image of a valid value (0
-  for a misaligned slice in `view*`, or bytes shorter than a `T` or longer than `MAX`);
+  for a misaligned slice in `view*`, or bytes shorter than a `T` or longer than its limit);
   `ScratchFull`; `StorageFull`.
 
 Checking (`bytes.rs`) accepts exactly the compact images of valid values. It walks the image
 once, in the order the copy wrote it, and requires every pointer to aim at the very position
 where the copy put its target: that one rule gives bounds, alignment, no sharing, no cycles and
 no gaps. Values are checked on the way: `bool`, `char`, `NonZero`, enum tags, UTF-8,
-`cap == len`. Padding is not looked at.
+`cap == len`; a negative length is as out of bounds as one too long. Padding is not looked at.
 
 - It is safe code that never panics (checked arithmetic, `get` instead of indexing):
   `Flat::check(&mut Check, at) -> Result<(), Error>` (hidden, generated). The only unsafe step
@@ -436,12 +460,13 @@ no gaps. Values are checked on the way: `bool`, `char`, `NonZero`, enum tags, UT
   nesting of the data (no fixed size suffices; nothing points back): a `Vec` for `from_bytes`
   and `view`, the caller's `&mut [Pending]` for the `_with` forms (`Check::push` returns
   `Error::ScratchFull` when it is full, and the walk ends).
-- `bytes.len() / 4` entries always suffice: each waits for its own 4 bytes of the image (a
-  pointer inside a value already checked, or the start of the next element of a list, whose
-  type holds a pointer and so has at least 4 bytes); checked values are disjoint, each pointer
-  is queued once, a list has at most one rest waiting. So an image fitting `Inline<N>` needs at
-  most `N / 4`; most data needs about as many as the pointers waiting along the deepest path.
-  An entry (`Pending(u32, u32, Step)`) is 16 bytes on 64-bit targets, 12 on 32-bit.
+- `bytes.len() / 4` entries always suffice (`/ 2` with `i16` pointers): each waits for its own
+  bytes of the image, at least as many as a pointer has (a pointer inside a value already
+  checked, or the start of the next element of a list, whose type holds a pointer); checked
+  values are disjoint, each pointer is queued once, a list has at most one rest waiting. So an
+  image fitting `Inline<N>` needs at most `N / 4`; most data needs about as many as the pointers
+  waiting along the deepest path. An entry (`Pending(usize, usize, Step)`, as positions may pass
+  4 GiB) is 24 bytes on 64-bit targets, 12 on 32-bit.
 - Elements with `Flat::ANY` (no pointers, every bit pattern valid: lists and arrays of numbers)
   are not walked, so checking costs pointers, text and values that can be invalid, not bulk
   numbers: a large mapped table is ready at once.
@@ -458,14 +483,16 @@ no gaps. Values are checked on the way: `bool`, `char`, `NonZero`, enum tags, UT
 
 Files of `src/`:
 
-- `lib.rs`: crate docs, exports, `Edit<'e, T>`, `__private`, the size-limit unit tests.
-- `flat.rs`: `Buf` (`attach`, `alloc`, `grow`, `room`, `load`), `Sink`, `Flat` and `Emit` with
-  their impls, moves (`relocate`, `detach`, `move_elems`), the list block `List`, `make`.
+- `lib.rs`: crate docs, exports, `Edit<'e, T>`, `__private`.
+- `flat.rs`: `limit`, `fits`, `fits_behind`, `Buf` (`attach`, `alloc`, `grow`, `room`, `load`),
+  `Sink` (`link`, `write_len`), `aim`, `Flat` and `Emit` with their impls, moves (`relocate`,
+  `detach`, `move_elems`), the list block `List<O>`, `make`.
 - `edit.rs`: `Raw` (the core of every handle: `set`, `replace`, `update`, `swap_in`, `pin`),
   `Old`, `ListEdit`, `OptionEdit`, `StrEdit`.
 - `bytes.rs`: `Error`, `Pending`, `Stack`, the checker `Check` and its steps (`target`, `list`,
   `text`, `items`), `check`, `view`, `view_with`, `view_unchecked`.
-- `near.rs`: `Near<T>`: `Deref` for `T`, `[T]` and `str`, builders, trait impls.
+- `near.rs`: `Near<T, O>`: `Deref` for `T`, `[T]` and `str`, builders, trait impls; `Offset`,
+  sealed, and its three impls (`offsets!`).
 - `region.rs`: `Region<T, S>`: `attach`, `base`, `copy_of`, constructors, `edit`, `as_bytes`,
   `from_bytes*`, trait impls, `serde` impls.
 - `storage.rs`: `Storage` and its contract, `Heap`, `Inline<N>`.
@@ -475,14 +502,16 @@ Mechanics:
 
 - `Sink`: a `*mut Buf` (`alloc`, `write`, `link`, `loose` clears the compact mark), never a
   `&mut Buf`.
-- `Flat::store(&self, sink, at, shift)`: `None` deep-copies targets; `Some(d)` keeps targets,
-  re-aims offsets for a move of `d` bytes and never dereferences a `Near` (moves call it on stack
-  copies). `PLAIN` types (no pointers, no padding) are copied as bytes.
+- `Flat::store(&self, sink, at, shift: Option<isize>)`: `None` deep-copies targets; `Some(d)` keeps
+  targets, re-aims offsets for a move of `d` bytes and never dereferences a `Near` (moves call it on
+  stack copies). `PLAIN` types (no pointers, no padding) are copied as bytes.
 - Self-relative pointers are resolved from `&self`: valid under Tree Borrows, not Stacked
   Borrows. No pointer is made from an integer. Miri runs with `-Zmiri-tree-borrows
   -Zmiri-strict-provenance`.
 - Tests: `tests/common/integration.rs` runs in three storages (`integration`: heap, `inline`,
-  `user_storage`); `no_alloc` also without `alloc`; `serde` with that feature;
+  `user_storage`); `width` runs tests generic over the width with `i16`, `i32` and `i64`, the
+  limit (reached cheaply with `i16`), mixed widths, and `a_region_past_2_gib` (`#[ignore]`d;
+  CI runs it in release); `no_alloc` also without `alloc`; `serde` with that feature;
   `compile_fail` (trybuild) holds the compile-time guarantees.
 
 ## What is not here, and why
@@ -519,3 +548,12 @@ Mechanics:
   the compiler. A new case would be a breaking release anyway.
 - Copies recurse once per level of nesting (`Region::new(&*region)`, so saving an edited
   region), like `Clone` for a `Box`. Checking bytes does not.
+- No `isize` or `usize` width: the bytes would change with the target, for no reach that a
+  fixed width lacks (`i64` already reaches `isize::MAX`). No unsigned width: after a move a
+  pointer may aim backward. No cargo feature for the width: two crates of one build would
+  disagree.
+- No narrower pointer below a wider one: the limit comes from the root alone, as a const that
+  followed pointers would cycle on recursive types; so widths may only grow going down.
+- No fallback to `i32` in inference: Rust does not default type parameters in expressions, so a
+  region whose root is a bare pointer names its type (`Region::<Near<[u32]>>::new(..)`).
+- No test-only limit: `i16` pointers reach the real one at 32 KiB.
