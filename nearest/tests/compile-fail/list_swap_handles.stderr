@@ -1,0 +1,14 @@
+error[E0277]: the size for values of type `[()]` cannot be known at compilation time
+  --> tests/compile-fail/list_swap_handles.rs:13:3
+   |
+13 |   std::mem::swap(a.edit().insts(), b.edit().insts());
+   |   ^^^^^^^^^^^^^^ doesn't have a size known at compile-time
+   |
+   = help: within `ListEdit<Inst>`, the trait `Sized` is not implemented for `[()]`
+note: required because it appears within the type `ListEdit<Inst>`
+  --> src/edit.rs
+   |
+   | pub struct ListEdit<T>(Raw<Near<[T]>>);
+   |            ^^^^^^^^
+note: required by an implicit `Sized` bound in `std::mem::swap`
+  --> $RUST/core/src/mem/mod.rs

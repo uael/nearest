@@ -1,0 +1,9 @@
+error[E0499]: cannot borrow `*args` as mutable more than once at a time
+  --> tests/compile-fail/list_plain_slice_across_push.rs:15:3
+   |
+14 |   let s: &mut [u32] = &mut *args;
+   |                       ---------- first mutable borrow occurs here
+15 |   args.push(3);
+   |   ^^^^ second mutable borrow occurs here
+16 |   s[0] = 1;
+   |   ---- first borrow later used here

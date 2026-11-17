@@ -1,6 +1,4 @@
 //! The attribute takes no arguments.
-#![feature(pin_ergonomics)]
-#![allow(incomplete_features)]
 use nearest::flat;
 
 #[flat(copy)]

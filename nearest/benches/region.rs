@@ -1,5 +1,3 @@
-#![feature(pin_ergonomics)]
-#![expect(incomplete_features, reason = "pin_ergonomics")]
 #![expect(missing_docs, reason = "criterion generates undocumented items")]
 
 use std::hint::black_box;
@@ -45,7 +43,7 @@ fn func(blocks: u32, insts: u32) -> Region<Func> {
 fn expr(depth: u32) -> Region<Expr> {
   let mut r = Region::new(Expr::Lit(1));
   for i in 0..depth {
-    r.edit(|old, slot| slot.put(Expr::add(Near::new(old), Near::new(Expr::Lit(i64::from(i))))));
+    r.edit().replace(|old| Expr::add(old, Expr::Lit(i64::from(i))));
   }
   Region::new(&*r)
 }
@@ -56,7 +54,7 @@ fn build(c: &mut Criterion) {
     b.iter(|| Region::new(Inst::new(0, Near::from_iter(0..black_box(100_000u32)))));
   });
   g.bench_function("func 100 blocks x 100 insts", |b| b.iter(|| func(black_box(100), 100)));
-  g.bench_function("10k Near::new(u64)", |b| {
+  g.bench_function("10k small blocks", |b| {
     b.iter(|| {
       Region::new(Func::new(
         "",
@@ -98,13 +96,19 @@ fn clone_and_compact(c: &mut Criterion) {
   let mut g = c.benchmark_group("copy");
   g.bench_function("clone", |b| b.iter(|| black_box(&f).clone()));
   g.bench_function("compact", |b| b.iter(|| Region::new(&**black_box(&f))));
-  f.edit(|root, slot| {
-    let Func { blocks, .. } = root;
-    slot.at(blocks, |old, new| new.put(Near::from_iter(old.into_iter().rev())));
-  });
+  reverse(&mut f);
   g.bench_function("compact after edit", |b| b.iter(|| Region::new(&**black_box(&f))));
   g.bench_function("to_bytes", |b| b.iter(|| black_box(&f).to_bytes()));
   g.finish();
+}
+
+/// Reverses the blocks, moving each one.
+fn reverse(f: &mut Region<Func>) {
+  let blocks = f.edit().blocks();
+  let n = blocks.len();
+  for i in 0..n / 2 {
+    blocks.swap(i, n - 1 - i);
+  }
 }
 
 fn edit(c: &mut Criterion) {
@@ -112,65 +116,48 @@ fn edit(c: &mut Criterion) {
   let mut f = func(100, 100);
   g.bench_function("in place: bump every op", |b| {
     b.iter(|| {
-      f.edit(|root, _| {
-        let Func { blocks, .. } = root;
-        for block in blocks {
-          let Block { insts, .. } = block;
-          for inst in insts {
-            let Inst { op, .. } = inst;
-            *op.get_mut() = op.wrapping_add(1);
-          }
+      let blocks = f.edit().blocks();
+      for i in 0..blocks.len() {
+        let insts = blocks.at(i).insts();
+        for j in 0..insts.len() {
+          let op = insts.at(j).op();
+          *op = op.wrapping_add(1);
         }
-      });
+      }
     });
   });
   g.bench_function("structural: reverse blocks (moves)", |b| {
+    b.iter_batched_ref(|| func(100, 100), reverse, criterion::BatchSize::LargeInput);
+  });
+  g.bench_function("structural: retain insts in every block", |b| {
     b.iter_batched_ref(
       || func(100, 100),
       |f| {
-        f.edit(|root, slot| {
-          let Func { blocks, .. } = root;
-          slot.at(blocks, |old, new| new.put(Near::from_iter(old.into_iter().rev())));
-        });
+        let blocks = f.edit().blocks();
+        for i in 0..blocks.len() {
+          blocks.at(i).insts().retain(|inst| inst.op % 2 == 0);
+        }
       },
       criterion::BatchSize::LargeInput,
     );
   });
-  g.bench_function("structural: filter insts in every block", |b| {
-    b.iter_batched_ref(
-      || func(100, 100),
-      |f| {
-        f.edit(|root, slot| {
-          let Func { blocks, .. } = root;
-          for block in blocks {
-            let Block { insts, .. } = block;
-            slot.at(insts, |old, new| {
-              for inst in old {
-                if inst.op % 2 == 0 {
-                  new.push(inst);
-                }
-              }
-            });
-          }
-        });
-      },
-      criterion::BatchSize::LargeInput,
-    );
-  });
-  g.bench_function("structural: 100 single appends", |b| {
+  g.bench_function("structural: 100 pushes", |b| {
     b.iter_batched_ref(
       || Region::new(Inst::new(0, ())),
       |r| {
         for i in 0..100u32 {
-          r.edit(|root, slot| {
-            let Inst { args, .. } = root;
-            slot.at(args, |old, new| {
-              for x in old {
-                new.push(x);
-              }
-              new.push(i);
-            });
-          });
+          r.edit().args().push(i);
+        }
+      },
+      criterion::BatchSize::SmallInput,
+    );
+  });
+  g.bench_function("structural: wrap the root 100 times", |b| {
+    b.iter_batched_ref(
+      || Region::new(Expr::Lit(0)),
+      |r| {
+        for i in 0..100 {
+          r.edit().replace(|old| Expr::add(old, Expr::Lit(i)));
         }
       },
       criterion::BatchSize::SmallInput,

@@ -1,0 +1,11 @@
+error[E0507]: cannot move out of `*x` which is behind a shared reference
+  --> tests/compile-fail/near_by_value.rs:12:28
+   |
+12 |   let stolen: Near<Expr> = *x;
+   |                            ^^ move occurs because `*x` has type `Near<Expr>`, which does not implement the `Copy` trait
+   |
+help: consider removing the dereference here
+   |
+12 -   let stolen: Near<Expr> = *x;
+12 +   let stolen: Near<Expr> = x;
+   |

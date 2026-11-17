@@ -1,6 +1,4 @@
 //! A type with drop glue cannot live in a region.
-#![feature(pin_ergonomics)]
-#![allow(incomplete_features)]
 use nearest::{Region, flat};
 
 #[flat]

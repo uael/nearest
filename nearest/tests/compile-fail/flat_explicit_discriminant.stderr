@@ -1,5 +1,5 @@
 error: `#[flat]` numbers variants in order
- --> tests/compile-fail/flat_explicit_discriminant.rs:7:12
+ --> tests/compile-fail/flat_explicit_discriminant.rs:5:12
   |
-7 | enum E { A = 1, B }
+5 | enum E { A = 1, B }
   |            ^^^

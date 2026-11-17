@@ -1,0 +1,5 @@
+error: `#[flat]` enums have at most 256 variants
+ --> tests/compile-fail/flat_too_many_variants.rs:5:1436
+  |
+5 | ...5, V246, V247, V248, V249, V250, V251, V252, V253, V254, V255, V256 }
+  |                                                                   ^^^^

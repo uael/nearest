@@ -1,0 +1,73 @@
+error[E0277]: the trait bound `impl Emit<Near<Expr>> + Emit<Option<Near<Expr>>>: Emit<Expr>` is not satisfied
+  --> tests/compile-fail/edit_near_new_for_boxed_field.rs:10:33
+   |
+10 |   let _ = Region::new(Expr::neg(Near::new(Expr::Lit(1))));
+   |                       --------- ^^^^^^^^^^^^^^^^^^^^^^^ the trait `Emit<Expr>` is not implemented for `impl Emit<Near<Expr>> + Emit<Option<Near<Expr>>>`
+   |                       |
+   |                       required by a bound introduced by this call
+   |
+   = help: the following other types implement trait `Emit<T>`:
+             `&T` implements `Emit<T>`
+             `&[T]` implements `Emit<Near<[T]>>`
+             `&str` implements `Emit<Near<str>>`
+             `()` implements `Emit<Near<[T]>>`
+             `(L,)` implements `Emit<Near<[T]>>`
+             `(K, L)` implements `Emit<Near<[T]>>`
+             `(J, K, L)` implements `Emit<Near<[T]>>`
+             `(I, J, K, L)` implements `Emit<Near<[T]>>`
+           and $N others
+note: required by a bound in `_::<impl Expr>::neg`
+  --> tests/compile-fail/edit_near_new_for_boxed_field.rs:4:1
+   |
+ 4 | #[flat]
+   | ^^^^^^^ required by this bound in `_::<impl Expr>::neg`
+ 5 | enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
+   = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `impl Emit<Near<Expr>> + Emit<Option<Near<Expr>>>: Emit<Expr>` is not satisfied
+  --> tests/compile-fail/edit_near_new_for_boxed_field.rs:10:23
+   |
+10 |   let _ = Region::new(Expr::neg(Near::new(Expr::Lit(1))));
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Emit<Expr>` is not implemented for `impl Emit<Near<Expr>> + Emit<Option<Near<Expr>>>`
+   |
+   = help: the following other types implement trait `Emit<T>`:
+             `&T` implements `Emit<T>`
+             `&[T]` implements `Emit<Near<[T]>>`
+             `&str` implements `Emit<Near<str>>`
+             `()` implements `Emit<Near<[T]>>`
+             `(L,)` implements `Emit<Near<[T]>>`
+             `(K, L)` implements `Emit<Near<[T]>>`
+             `(J, K, L)` implements `Emit<Near<[T]>>`
+             `(I, J, K, L)` implements `Emit<Near<[T]>>`
+           and $N others
+note: required by a bound in `_::<impl Expr>::neg`
+  --> tests/compile-fail/edit_near_new_for_boxed_field.rs:4:1
+   |
+ 4 | #[flat]
+   | ^^^^^^^ required by this bound in `_::<impl Expr>::neg`
+ 5 | enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
+   = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `impl Emit<Near<Expr>> + Emit<Option<Near<Expr>>>: Emit<Expr>` is not satisfied
+  --> tests/compile-fail/edit_near_new_for_boxed_field.rs:10:11
+   |
+10 |   let _ = Region::new(Expr::neg(Near::new(Expr::Lit(1))));
+   |           ^^^^^^^^^^^ the trait `Emit<Expr>` is not implemented for `impl Emit<Near<Expr>> + Emit<Option<Near<Expr>>>`
+   |
+   = help: the following other types implement trait `Emit<T>`:
+             `&T` implements `Emit<T>`
+             `&[T]` implements `Emit<Near<[T]>>`
+             `&str` implements `Emit<Near<str>>`
+             `()` implements `Emit<Near<[T]>>`
+             `(L,)` implements `Emit<Near<[T]>>`
+             `(K, L)` implements `Emit<Near<[T]>>`
+             `(J, K, L)` implements `Emit<Near<[T]>>`
+             `(I, J, K, L)` implements `Emit<Near<[T]>>`
+           and $N others
+note: required by a bound in `_::<impl Expr>::neg`
+  --> tests/compile-fail/edit_near_new_for_boxed_field.rs:4:1
+   |
+ 4 | #[flat]
+   | ^^^^^^^ required by this bound in `_::<impl Expr>::neg`
+ 5 | enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
+   = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)

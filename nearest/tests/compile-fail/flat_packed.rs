@@ -1,6 +1,4 @@
 //! Packed structs would have unaligned fields.
-#![feature(pin_ergonomics)]
-#![allow(incomplete_features)]
 use nearest::flat;
 
 #[flat]

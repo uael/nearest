@@ -1,62 +1,82 @@
 error[E0277]: the trait bound `String: Flat` is not satisfied
- --> tests/compile-fail/flat_non_flat_field.rs:6:1
+ --> tests/compile-fail/flat_non_flat_field.rs:4:1
   |
-6 | #[flat]
+4 | #[flat]
   | ^^^^^^^ the trait `Flat` is not implemented for `String`
   |
-help: the trait `Flat` is implemented for `str`
- --> src/flat.rs
-  |
-  | unsafe impl Flat for str {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^
+  = help: the following other types implement trait `Flat`:
+            Near<T>
+            Near<[T]>
+            Near<str>
+            NonZero<i16>
+            NonZero<i32>
+            NonZero<i64>
+            NonZero<i8>
+            NonZero<u16>
+          and $N others
 note: required by a bound in `Emit`
  --> src/flat.rs
   |
-  | pub unsafe trait Emit<'o, T: Flat> {
-  |                              ^^^^ required by this bound in `Emit`
+  | pub unsafe trait Emit<T: Flat> {
+  |                          ^^^^ required by this bound in `Emit`
   = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `String: Flat` is not satisfied
- --> tests/compile-fail/flat_non_flat_field.rs:7:18
+ --> tests/compile-fail/flat_non_flat_field.rs:4:1
   |
-7 | struct S { name: String }
+4 | #[flat]
+  | ^^^^^^^ the trait `Flat` is not implemented for `String`
+  |
+  = help: the following other types implement trait `Flat`:
+            Near<T>
+            Near<[T]>
+            Near<str>
+            NonZero<i16>
+            NonZero<i32>
+            NonZero<i64>
+            NonZero<i8>
+            NonZero<u16>
+          and $N others
+  = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `String: Flat` is not satisfied
+ --> tests/compile-fail/flat_non_flat_field.rs:5:18
+  |
+5 | struct S { name: String }
   |                  ^^^^^^ the trait `Flat` is not implemented for `String`
   |
-help: the trait `Flat` is implemented for `str`
- --> src/flat.rs
-  |
-  | unsafe impl Flat for str {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^
+  = help: the following other types implement trait `Flat`:
+            Near<T>
+            Near<[T]>
+            Near<str>
+            NonZero<i16>
+            NonZero<i32>
+            NonZero<i64>
+            NonZero<i8>
+            NonZero<u16>
+          and $N others
 note: required by a bound in `nearest::Emit::emit`
  --> src/flat.rs
   |
-  | pub unsafe trait Emit<'o, T: Flat> {
-  |                              ^^^^ required by this bound in `Emit::emit`
+  | pub unsafe trait Emit<T: Flat> {
+  |                          ^^^^ required by this bound in `Emit::emit`
 ...
-  |   unsafe fn emit(self, sink: &mut Sink<'o>, at: usize);
-  |             ---- required by a bound in this associated function
+  |   unsafe fn emit(self, sink: &mut Sink, at: usize);
+  |
 
 error[E0277]: the trait bound `String: Flat` is not satisfied
- --> tests/compile-fail/flat_non_flat_field.rs:7:18
+ --> tests/compile-fail/flat_non_flat_field.rs:5:18
   |
-7 | struct S { name: String }
+5 | struct S { name: String }
   |                  ^^^^^^ the trait `Flat` is not implemented for `String`
   |
-help: the trait `Flat` is implemented for `str`
- --> src/flat.rs
-  |
-  | unsafe impl Flat for str {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^
-
-error[E0277]: the trait bound `String: Flat` is not satisfied
- --> tests/compile-fail/flat_non_flat_field.rs:6:1
-  |
-6 | #[flat]
-  | ^^^^^^^ the trait `Flat` is not implemented for `String`
-  |
-help: the trait `Flat` is implemented for `str`
- --> src/flat.rs
-  |
-  | unsafe impl Flat for str {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^
-  = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)
+  = help: the following other types implement trait `Flat`:
+            Near<T>
+            Near<[T]>
+            Near<str>
+            NonZero<i16>
+            NonZero<i32>
+            NonZero<i64>
+            NonZero<i8>
+            NonZero<u16>
+          and $N others

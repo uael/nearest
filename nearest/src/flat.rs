@@ -1,19 +1,20 @@
 use alloc::vec::Vec;
 use core::{
-  marker::PhantomData,
-  mem::{self, MaybeUninit},
-  pin::Pin,
-  ptr::{self, Pointee},
-  slice,
+  mem::{MaybeUninit, needs_drop},
+  num::NonZero,
+  ptr,
 };
 
-use crate::Near;
+use crate::{
+  Near,
+  edit::{ListEdit, OptionEdit, Raw, StrEdit},
+};
 
 /// Largest region, a multiple of 8: every distance inside it fits the `i32` offset. Small in
 /// unit tests, so that the limit can be hit cheaply.
 const MAX: usize = if cfg!(test) { 1 << 16 } else { i32::MAX as usize & !7 };
 
-pub const fn align_up(n: usize, align: usize) -> usize {
+const fn align_up(n: usize, align: usize) -> usize {
   (n + align - 1) & !(align - 1)
 }
 
@@ -26,25 +27,19 @@ pub const fn distance(from: usize, to: usize) -> i32 {
 /// Rejects, at compile time, types a region cannot hold.
 pub const fn fits<T>() {
   const {
-    assert!(
-      align_of::<T>() <= 8 && size_of::<T>() != 0,
-      "a region holds only types aligned to at most 8 bytes and of non-zero size"
-    );
+    assert!(align_of::<T>() <= 8, "a region holds only types aligned to at most 8 bytes");
+    assert!(size_of::<T>() != 0, "a region holds only types of non-zero size");
+    assert!(!needs_drop::<T>(), "a region holds only types without drop glue");
   };
-}
-
-/// Whether `Near<T>` points at a length header (slices and `str`) rather than a `T`.
-pub const fn is_list<T: ?Sized>() -> bool {
-  size_of::<<T as Pointee>::Metadata>() != 0
 }
 
 /// 8-aligned bytes, zero-filled when they grow.
 ///
-/// Invariants, also while unwinding: `len <= words.len() * 8`, and `words.len() * 8 + base <=
-/// MAX` for the `base` the buffer is appended at, so every position fits an `i32`.
+/// Invariants, also while unwinding: `len <= words.len() * 8 <= MAX`, so every position fits
+/// an `i32`.
 pub struct Buf {
-  pub words: Vec<MaybeUninit<u64>>,
-  pub len: usize,
+  words: Vec<MaybeUninit<u64>>,
+  len: usize,
 }
 
 impl Buf {
@@ -52,240 +47,412 @@ impl Buf {
     Self { words: Vec::new(), len: 0 }
   }
 
-  #[inline]
-  pub const fn ptr(&mut self) -> *mut u8 {
+  /// Bytes in use.
+  pub(crate) const fn len(&self) -> usize {
+    self.len
+  }
+
+  /// Byte 0, for writing.
+  pub(crate) const fn ptr(&mut self) -> *mut u8 {
     self.words.as_mut_ptr().cast()
   }
 
-  /// `size` zeroed bytes at `at`, which is at least `len`; `base` is where byte 0 of this
-  /// buffer will finally live.
+  /// Byte 0, for reading.
+  pub(crate) const fn base(&self) -> *const u8 {
+    self.words.as_ptr().cast()
+  }
+
+  /// `size` zeroed bytes aligned to `align` (bytes past `len` are never written); returns their
+  /// position.
   #[inline]
-  pub(crate) fn alloc(&mut self, at: usize, size: usize, base: usize) -> usize {
+  pub(crate) fn alloc(&mut self, size: usize, align: usize) -> usize {
+    let at = align_up(self.len, align);
     let end = at.saturating_add(size);
     if end > self.words.len() * 8 {
-      self.grow(end, base);
+      self.grow(end);
     }
     self.len = end;
     at
   }
 
-  /// Grows to hold `end` bytes, keeping `words.len() * 8 + base <= MAX`: anything past the
-  /// limit comes here and panics, before changing anything.
+  /// Grows to hold `end` bytes, keeping `words.len() * 8 <= MAX`: anything past the limit comes
+  /// here and panics, before changing anything.
   #[cold]
-  fn grow(&mut self, end: usize, base: usize) {
-    assert!(end.saturating_add(base) <= MAX, "region exceeds 2 GiB");
-    let words = end.div_ceil(8).max(self.words.len() * 2).max(8).min((MAX - base) / 8);
+  fn grow(&mut self, end: usize) {
+    assert!(end <= MAX, "region exceeds 2 GiB");
+    let words = end.div_ceil(8).max(self.words.len() * 2).clamp(8, MAX / 8);
     self.words.resize(words, MaybeUninit::zeroed());
   }
+
+  /// A copy of the bytes in use.
+  pub(crate) fn to_vec(&self) -> Self {
+    Self { words: self.words[..self.len.div_ceil(8)].to_vec(), len: self.len }
+  }
 }
 
-/// Where values are written. Only `Flat` and `Emit` impls touch it.
-pub struct Sink<'o> {
-  pub(crate) buf: Buf,
-  /// Where byte 0 of this sink lands in the region.
-  pub(crate) base: usize,
-  /// Address of byte 0 of the region being edited.
-  pub(crate) origin: usize,
-  brand: PhantomData<fn(&'o ()) -> &'o ()>,
+/// Where values are written: a region's buffer, reached through a raw pointer so that no
+/// reference to it outlives a statement.
+pub struct Sink {
+  buf: *mut Buf,
 }
 
-impl Sink<'_> {
-  pub(crate) const fn new(base: usize, origin: usize) -> Self {
-    Self { buf: Buf::new(), base, origin, brand: PhantomData }
+impl Sink {
+  /// # Safety
+  /// `buf` points to a live `Buf` while the sink is used, and no reference to that `Buf` is
+  /// live across a call that takes the sink.
+  pub(crate) const unsafe fn new(buf: *mut Buf) -> Self {
+    Self { buf }
   }
 
+  pub(crate) const fn buf(&self) -> *mut Buf {
+    self.buf
+  }
+
+  /// `size` bytes aligned to `align`; returns their position.
   #[inline]
   pub(crate) fn alloc(&mut self, size: usize, align: usize) -> usize {
-    self.buf.alloc(align_up(self.buf.len, align), size, self.base)
-  }
-
-  /// A `u32` length header followed by `bytes` aligned to `align`; returns the header position.
-  #[inline]
-  fn alloc_list(&mut self, align: usize, bytes: usize) -> usize {
-    let head = align_up(self.buf.len + 4, align.max(4)) - 4;
-    self.buf.alloc(head, bytes.saturating_add(4), self.base)
+    // SAFETY: `buf` is live per `new`, and this reborrow ends with the statement.
+    unsafe { (*self.buf).alloc(size, align) }
   }
 
   /// # Safety
   /// `at + size_of::<P>()` is within the allocated bytes.
   #[inline]
-  const unsafe fn put<P: Copy>(&mut self, at: usize, v: P) {
-    // SAFETY: in bounds per the caller; the buffer has no alignment guarantee for `P` here.
-    unsafe { self.buf.ptr().add(at).cast::<P>().write_unaligned(v) }
+  pub(crate) const unsafe fn write<P: Copy>(&mut self, at: usize, v: P) {
+    // SAFETY: in bounds per the caller.
+    unsafe { (*self.buf).ptr().add(at).cast::<P>().write_unaligned(v) }
   }
 
+  /// Points the pointer at `at` to `target`.
+  ///
   /// # Safety
   /// `at` holds a pointer field.
   #[inline]
-  const unsafe fn link(&mut self, at: usize, target: usize) {
+  pub(crate) const unsafe fn link(&mut self, at: usize, target: usize) {
     // SAFETY: forwarded; the distance fits an `i32` because the region is at most `MAX` bytes.
-    unsafe { self.put(at, distance(at, target)) }
+    unsafe { self.write(at, distance(at, target)) }
   }
 }
 
-/// Types that may live in a region: plain data, [`Near`] pointers, and types made with
-/// [`#[flat]`](crate::flat).
+/// The position a pointer at `at` points to.
 ///
-/// Implemented for `u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 bool char`, arrays, slices, `str`,
-/// `Near<T>` and `Option<Near<T>>`. Implement it with `#[flat]`, not by hand.
+/// # Safety
+/// `at` holds a non-null pointer in `buf`.
+pub unsafe fn target(buf: *mut Buf, at: usize) -> usize {
+  // SAFETY: per the caller.
+  let off = unsafe { (*buf).base().add(at).cast::<i32>().read_unaligned() };
+  at.wrapping_add_signed(off as isize)
+}
+
+/// Types that may live in a region: plain data, [`Near`] pointers, and types made with
+/// [`#[flat]`](crate::flat). Implement it with `#[flat]`, not by hand.
+///
+/// | Type | [`Edit`](Flat::Edit) |
+/// |---|---|
+/// | `u8`..`u64`, `i8`..`i64`, `f32`, `f64`, `bool`, `char`, `NonZero` integers | itself |
+/// | `[T; N]`, `T: Flat + Copy` | itself |
+/// | `Near<T>` | `Edit<T>`, the target's handle |
+/// | `Near<[T]>` | [`ListEdit<T>`] |
+/// | `Near<str>` | [`StrEdit`] |
+/// | `Option<Near<T>>` | [`OptionEdit<T>`] |
+/// | `#[flat]` types | generated |
+///
+/// Every stored type has alignment at most 8, non-zero size and no drop glue; this is checked
+/// at compile time.
 ///
 /// ```
-/// # #![feature(pin_ergonomics)]
-/// # #![allow(incomplete_features)]
 /// use nearest::{Flat, Near, flat};
 ///
 /// #[flat]
 /// struct Point { x: i32, y: i32 }
 ///
-/// fn assert_flat<T: Flat + ?Sized>() {}
+/// fn assert_flat<T: Flat>() {}
 /// assert_flat::<Point>();
 /// assert_flat::<Near<[Point]>>();
+/// assert_flat::<Option<Near<Point>>>();
 /// ```
 ///
 /// # Safety
 ///
-/// `T` has no drop glue and no pointers other than [`Near`]. `store` writes every field of
-/// `self` at `at` as described on it, and `PLAIN` is `true` only if `T` has no padding and no
-/// pointers. An unsized implementor has the metadata of a slice.
-pub unsafe trait Flat {
+/// `Self` has no drop glue and no pointers other than [`Near`]. `store` writes every field of
+/// `self` at `at` as described on it; `PLAIN` is `true` only if `Self` has no padding and no
+/// pointers; `edit` returns the handle of a valid `Self` at `at`.
+pub unsafe trait Flat: Sized {
+  /// The handle of a place holding a `Self`: what [`Region::edit`](crate::Region::edit) and
+  /// field methods return a `&mut` to. See [`Edit`](crate::Edit).
+  type Edit: ?Sized;
+
   /// No pointers and no padding: may be copied as bytes.
   #[doc(hidden)]
   const PLAIN: bool = false;
 
-  /// Writes `self` into `sink` at `at`. With `shift == None` every pointer target is copied
-  /// into the sink too; with `Some(d)` every pointer keeps its target and is re-aimed for a
-  /// move of `d` bytes.
+  /// Writes `self` at `at`. With `shift == None` every pointer target is copied too; with
+  /// `Some(d)` every pointer keeps its target and is re-aimed for a move of `d` bytes, and no
+  /// pointer is dereferenced.
   ///
   /// # Safety
-  /// `at` is allocated in the sink, aligned and sized for `self`.
+  /// `at` is allocated in the sink, aligned and sized for `Self`. With `None`, `self` is not in
+  /// the sink's buffer.
   #[doc(hidden)]
-  unsafe fn store(&self, sink: &mut Sink<'_>, at: usize, shift: Option<i32>);
+  unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<i32>);
+
+  /// The handle of the `Self` at `at`.
+  ///
+  /// # Safety
+  /// `buf` points to a live `Buf` holding a valid `Self` at `at`, which is only reached through
+  /// the returned handle for `'a`.
+  #[doc(hidden)]
+  unsafe fn edit<'a>(buf: *mut Buf, at: usize) -> &'a mut Self::Edit;
 }
 
-/// [`Flat::store`], or a byte copy for plain data.
+/// A deep copy of `src` at `at`.
 ///
 /// # Safety
-/// As for [`Flat::store`].
-unsafe fn transfer<T: ?Sized + Flat>(src: &T, sink: &mut Sink<'_>, at: usize, shift: Option<i32>) {
+/// As for [`Flat::store`] with `None`.
+pub unsafe fn write_copy<T: Flat>(src: &T, sink: &mut Sink, at: usize) {
   // SAFETY: plain data is its bytes, and the destination is sized for it.
   unsafe {
     if T::PLAIN {
-      let dst = sink.buf.ptr().add(at);
-      ptr::copy_nonoverlapping(ptr::from_ref(src).cast::<u8>(), dst, size_of_val(src));
+      let dst = (*sink.buf).ptr().add(at);
+      ptr::copy_nonoverlapping(ptr::from_ref(src).cast::<u8>(), dst, size_of::<T>());
     } else {
-      src.store(sink, at, shift);
+      src.store(sink, at, None);
     }
   }
 }
 
-/// Writes at `at` a pointer to a deep copy of `src`.
+/// A deep copy of the elements of `src` at `at`.
 ///
 /// # Safety
-/// `at` holds a `Near<T>` in the sink.
-unsafe fn copy_to<T: ?Sized + Flat>(sink: &mut Sink<'_>, at: usize, src: &T) {
-  let (size, align) = (size_of_val(src), align_of_val(src));
-  // SAFETY: each position written was just allocated with the size it is written with.
+/// As for [`write_copy`], with room for `src.len()` elements.
+unsafe fn write_slice<T: Flat>(src: &[T], sink: &mut Sink, at: usize) {
+  // SAFETY: as for `write_copy`, element by element.
   unsafe {
-    if is_list::<T>() {
-      let h = sink.alloc_list(align, size);
-      sink.put(h, mem::transmute_copy::<_, usize>(&ptr::metadata(src)) as u32);
-      transfer(src, sink, h + 4, None);
-      sink.link(at, h);
+    if T::PLAIN {
+      let dst = (*sink.buf).ptr().add(at);
+      ptr::copy_nonoverlapping(src.as_ptr().cast::<u8>(), dst, size_of_val(src));
     } else {
-      let t = sink.alloc(size, align);
-      transfer(src, sink, t, None);
-      sink.link(at, t);
+      for (i, x) in src.iter().enumerate() {
+        x.store(sink, at + i * size_of::<T>(), None);
+      }
     }
   }
+}
+
+/// Writes at `to` the value `v` that was read from `from`, re-aiming its pointers.
+///
+/// # Safety
+/// `v` is a bitwise copy of the `T` at `from` in `buf`, and `to` is allocated for a `T`.
+pub unsafe fn put_moved<T: Flat>(buf: *mut Buf, v: &T, from: usize, to: usize) {
+  // SAFETY: per the caller; a move never dereferences a pointer, so `v` may live anywhere.
+  unsafe { v.store(&mut Sink::new(buf), to, Some(distance(to, from))) }
+}
+
+/// Moves the `T` at `from` to `to`, re-aiming its pointers. The two may overlap.
+///
+/// # Safety
+/// A `T` is at `from` in `buf`, and `to` is allocated for a `T`.
+pub unsafe fn relocate<T: Flat>(buf: *mut Buf, from: usize, to: usize) {
+  // SAFETY: per the caller; the value is read before anything is written.
+  unsafe {
+    let p = (*buf).ptr();
+    if T::PLAIN {
+      ptr::copy(p.add(from), p.add(to), size_of::<T>());
+    } else {
+      let v = p.add(from).cast::<T>().read();
+      put_moved(buf, &v, from, to);
+    }
+  }
+}
+
+/// Moves `n` consecutive `T`s from `from` to `to`; the ranges may overlap.
+///
+/// # Safety
+/// `n` `T`s are at `from` in `buf`, and `to` is allocated for `n` of them.
+pub unsafe fn move_elems<T: Flat>(buf: *mut Buf, from: usize, to: usize, n: usize) {
+  let size = size_of::<T>();
+  // SAFETY: per the caller; with overlap, every element is read before it is overwritten.
+  unsafe {
+    if T::PLAIN {
+      let p = (*buf).ptr();
+      ptr::copy(p.add(from), p.add(to), n * size);
+    } else if to < from {
+      for i in 0..n {
+        relocate::<T>(buf, from + i * size, to + i * size);
+      }
+    } else {
+      for i in (0..n).rev() {
+        relocate::<T>(buf, from + i * size, to + i * size);
+      }
+    }
+  }
+}
+
+/// The handle of the plain `T` at `at`.
+///
+/// # Safety
+/// As for [`Flat::edit`].
+const unsafe fn plain_edit<'a, T>(buf: *mut Buf, at: usize) -> &'a mut T {
+  // SAFETY: per the caller.
+  unsafe { &mut *(*buf).ptr().add(at).cast::<T>() }
 }
 
 macro_rules! plain {
   ($($t:ty)*) => {$(
     // SAFETY: primitive values have no pointers and no padding.
     unsafe impl Flat for $t {
+      type Edit = Self;
       const PLAIN: bool = true;
-      unsafe fn store(&self, sink: &mut Sink<'_>, at: usize, _: Option<i32>) {
+      unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<i32>) {
         // SAFETY: the caller allocated `at` for `Self`.
-        unsafe { sink.put(at, *self) }
+        unsafe { sink.write(at, *self) }
+      }
+      unsafe fn edit<'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
+        // SAFETY: forwarded.
+        unsafe { plain_edit(buf, at) }
       }
     }
   )*};
 }
 plain!(u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 bool char);
+plain!(NonZero<u8> NonZero<u16> NonZero<u32> NonZero<u64>);
+plain!(NonZero<i8> NonZero<i16> NonZero<i32> NonZero<i64>);
 
-// SAFETY: an array is its elements, without padding between them.
-unsafe impl<T: Flat, const N: usize> Flat for [T; N] {
-  const PLAIN: bool = T::PLAIN;
-  unsafe fn store(&self, sink: &mut Sink<'_>, at: usize, shift: Option<i32>) {
-    // SAFETY: same bytes as the slice.
-    unsafe { transfer(&self[..], sink, at, shift) }
+// SAFETY: an array is its elements, without padding between them; `Copy` elements have no
+// pointers.
+unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
+  type Edit = Self;
+  const PLAIN: bool = {
+    fits::<Self>();
+    T::PLAIN
+  };
+  unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<i32>) {
+    fits::<Self>();
+    // SAFETY: the caller allocated `at` for the array.
+    unsafe { write_slice(self, sink, at) }
   }
-}
-
-// SAFETY: each element is stored at its own offset.
-unsafe impl<T: Flat> Flat for [T] {
-  const PLAIN: bool = T::PLAIN;
-  unsafe fn store(&self, sink: &mut Sink<'_>, at: usize, shift: Option<i32>) {
-    for (i, x) in self.iter().enumerate() {
-      // SAFETY: element `i` lives `i * size_of::<T>()` bytes into the allocation.
-      unsafe { x.store(sink, at + i * size_of::<T>(), shift) }
-    }
-  }
-}
-
-// SAFETY: a `str` is its bytes.
-unsafe impl Flat for str {
-  const PLAIN: bool = true;
-  unsafe fn store(&self, sink: &mut Sink<'_>, at: usize, shift: Option<i32>) {
-    // SAFETY: same bytes.
-    unsafe { transfer(self.as_bytes(), sink, at, shift) }
+  unsafe fn edit<'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
+    fits::<Self>();
+    // SAFETY: forwarded.
+    unsafe { plain_edit(buf, at) }
   }
 }
 
 // SAFETY: copies the target, or re-aims the offset by the distance moved.
-unsafe impl<T: ?Sized + Flat> Flat for Near<T> {
-  unsafe fn store(&self, sink: &mut Sink<'_>, at: usize, shift: Option<i32>) {
-    // SAFETY: the caller allocated `at` for a `Near`.
+unsafe impl<T: Flat> Flat for Near<T> {
+  type Edit = T::Edit;
+  unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<i32>) {
+    // SAFETY: the caller allocated `at` for a `Near`; the target is allocated before the
+    // source is read.
     unsafe {
-      match shift {
-        Some(d) => sink.put(at, self.off.get().wrapping_add(d)),
-        None => copy_to(sink, at, &**self),
+      if let Some(d) = shift {
+        sink.write(at, self.off.get().wrapping_add(d));
+      } else {
+        fits::<T>();
+        let t = sink.alloc(size_of::<T>(), align_of::<T>());
+        write_copy(&**self, sink, t);
+        sink.link(at, t);
       }
     }
+  }
+  unsafe fn edit<'a>(buf: *mut Buf, at: usize) -> &'a mut T::Edit {
+    fits::<T>();
+    // SAFETY: a `Near` at `at` points to a valid `T`, owned by it alone.
+    unsafe { T::edit(buf, target(buf, at)) }
+  }
+}
+
+// SAFETY: copies the list, or re-aims the offset by the distance moved.
+unsafe impl<T: Flat> Flat for Near<[T]> {
+  type Edit = ListEdit<T>;
+  unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<i32>) {
+    // SAFETY: the caller allocated `at` for a `Near`; the list is allocated with room for the
+    // elements before they are written.
+    unsafe {
+      if let Some(d) = shift {
+        sink.write(at, self.off.get().wrapping_add(d));
+      } else {
+        let src: &[T] = self;
+        let mut list = List::new::<T>(sink, src.len());
+        write_slice(src, sink, list.elem::<T>(0));
+        list.len = src.len();
+        list.finish(sink, at);
+      }
+    }
+  }
+  unsafe fn edit<'a>(buf: *mut Buf, at: usize) -> &'a mut ListEdit<T> {
+    fits::<T>();
+    // SAFETY: forwarded.
+    unsafe { ListEdit::new(Raw::new(buf, at)) }
+  }
+}
+
+// SAFETY: copies the text, or re-aims the offset by the distance moved.
+unsafe impl Flat for Near<str> {
+  type Edit = StrEdit;
+  unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<i32>) {
+    // SAFETY: the caller allocated `at` for a `Near`.
+    unsafe {
+      if let Some(d) = shift {
+        sink.write(at, self.off.get().wrapping_add(d));
+      } else {
+        copy_str(sink, at, self);
+      }
+    }
+  }
+  unsafe fn edit<'a>(buf: *mut Buf, at: usize) -> &'a mut StrEdit {
+    // SAFETY: forwarded.
+    unsafe { StrEdit::new(Raw::new(buf, at)) }
   }
 }
 
 // SAFETY: `None` is a zero offset; `Some` is the `Near`.
-unsafe impl<T: ?Sized + Flat> Flat for Option<Near<T>> {
-  unsafe fn store(&self, sink: &mut Sink<'_>, at: usize, shift: Option<i32>) {
+unsafe impl<T: Flat> Flat for Option<Near<T>> {
+  type Edit = OptionEdit<T>;
+  unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<i32>) {
     // SAFETY: the caller allocated `at` for a `Near`.
     unsafe {
       match self {
         Some(near) => near.store(sink, at, shift),
-        None => sink.put(at, 0i32),
+        None => sink.write(at, 0i32),
       }
     }
   }
+  unsafe fn edit<'a>(buf: *mut Buf, at: usize) -> &'a mut OptionEdit<T> {
+    fits::<T>();
+    // SAFETY: forwarded.
+    unsafe { OptionEdit::new(Raw::new(buf, at)) }
+  }
 }
 
-/// Sources that can be written as a `T`: values, copies (`&T`), moves (`Pin<&'o mut T>`) and
-/// builders.
+/// Writes at `at` a pointer to a copy of `s`.
 ///
-/// | Source | Writes |
+/// # Safety
+/// `at` holds a `Near<str>` in the sink.
+unsafe fn copy_str(sink: &mut Sink, at: usize, s: &str) {
+  let h = sink.alloc(s.len().saturating_add(4), 4);
+  // SAFETY: `h` was just allocated for the length and the bytes.
+  unsafe {
+    sink.write(h, s.len() as u32);
+    ptr::copy_nonoverlapping(s.as_ptr(), (*sink.buf).ptr().add(h + 4), s.len());
+    sink.link(at, h);
+  }
+}
+
+/// Sources that can be written as a `T`: values, copies, moves and builders.
+///
+/// | Target | Builders |
 /// |---|---|
-/// | `T` | the value |
-/// | `&T` | a deep copy, from any region |
-/// | `Pin<&'o mut T>` | a move, from the value a [`Slot<'o, _>`](crate::Slot) replaces |
-/// | [`Near::new(e)`](Near::new) | `Near<T>` or `Option<Near<T>>` to a new `T` |
-/// | `[e; N]`, tuples up to 12, `()` | `Near<[T]>`; tuple elements may be different builders |
-/// | `&[T]` | `Near<[T]>`, a copy of the slice |
-/// | [`Near::from_iter(iter)`](Near::from_iter) | `Near<[T]>` |
-/// | `&str` | `Near<str>` |
-/// | `Type::new(..)`, `Enum::variant(..)` | constructors made by [`#[flat]`](crate::flat) |
+/// | any `T` | `T` by value, `&T` (a deep copy, from any region), [`Old<'_, T>`](crate::Old) (a move) |
+/// | `Near<T>`, `Option<Near<T>>` | [`Near::new(e)`](Near::new) |
+/// | `Near<[T]>` | `[e; N]`, tuples up to 12 and `()`, `&[T]`, [`Near::from_iter(iter)`](Near::from_iter) |
+/// | `Near<str>` | `&str` |
+/// | `#[flat]` types | the generated constructors |
+///
+/// Constructor parameters for fields written `Near<X>` take a builder of `X` and allocate the
+/// target themselves.
 ///
 /// ```
-/// # #![feature(pin_ergonomics)]
-/// # #![allow(incomplete_features)]
 /// use nearest::{Near, Region, flat};
 ///
 /// #[flat]
@@ -299,40 +466,30 @@ unsafe impl<T: ?Sized + Flat> Flat for Option<Near<T>> {
 ///
 /// # Safety
 ///
-/// `emit` writes a valid `T` at `at`, allocating in the sink whatever it points to.
-pub unsafe trait Emit<'o, T: Flat> {
+/// `emit` writes a valid `T` at `at`, allocating whatever it points to.
+pub unsafe trait Emit<T: Flat> {
   /// Writes `self` as a `T` at `at`.
   ///
   /// # Safety
   /// `at` is allocated in the sink, aligned and sized for `T`.
   #[doc(hidden)]
-  unsafe fn emit(self, sink: &mut Sink<'o>, at: usize);
+  unsafe fn emit(self, sink: &mut Sink, at: usize);
 }
 
-// SAFETY: a value is stored as itself.
-unsafe impl<'o, T: Flat> Emit<'o, T> for T {
-  unsafe fn emit(self, sink: &mut Sink<'o>, at: usize) {
+// SAFETY: a value is stored as itself; it is not in any region.
+unsafe impl<T: Flat> Emit<T> for T {
+  unsafe fn emit(self, sink: &mut Sink, at: usize) {
     // SAFETY: forwarded.
-    unsafe { transfer(&self, sink, at, None) }
+    unsafe { write_copy(&self, sink, at) }
   }
 }
 
-// SAFETY: a deep copy is a valid `T`.
-unsafe impl<'o, T: Flat> Emit<'o, T> for &T {
-  unsafe fn emit(self, sink: &mut Sink<'o>, at: usize) {
+// SAFETY: a deep copy is a valid `T`. A `&T` into a region cannot coexist with a handle of that
+// region, so it is not in the sink's buffer.
+unsafe impl<T: Flat> Emit<T> for &T {
+  unsafe fn emit(self, sink: &mut Sink, at: usize) {
     // SAFETY: forwarded.
-    unsafe { transfer(self, sink, at, None) }
-  }
-}
-
-// SAFETY: the brand `'o` ties the pin to the value the slot replaces, so its targets stay where
-// they are and get exactly one owner: the copy written here, re-aimed for the move.
-unsafe impl<'o, T: Flat> Emit<'o, T> for Pin<&'o mut T> {
-  unsafe fn emit(self, sink: &mut Sink<'o>, at: usize) {
-    let from = ptr::from_ref::<T>(&self).addr().wrapping_sub(sink.origin);
-    let shift = distance(sink.base + at, from);
-    // SAFETY: forwarded.
-    unsafe { transfer(&*self, sink, at, Some(shift)) }
+    unsafe { write_copy(self, sink, at) }
   }
 }
 
@@ -340,8 +497,8 @@ unsafe impl<'o, T: Flat> Emit<'o, T> for Pin<&'o mut T> {
 pub struct New<E>(pub E);
 
 // SAFETY: allocates and writes the target, then links to it.
-unsafe impl<'o, T: Flat, E: Emit<'o, T>> Emit<'o, Near<T>> for New<E> {
-  unsafe fn emit(self, sink: &mut Sink<'o>, at: usize) {
+unsafe impl<T: Flat, E: Emit<T>> Emit<Near<T>> for New<E> {
+  unsafe fn emit(self, sink: &mut Sink, at: usize) {
     fits::<T>();
     let t = sink.alloc(size_of::<T>(), align_of::<T>());
     // SAFETY: `t` was just allocated for a `T`.
@@ -353,27 +510,31 @@ unsafe impl<'o, T: Flat, E: Emit<'o, T>> Emit<'o, Near<T>> for New<E> {
 }
 
 // SAFETY: `Some(near)` has the bytes of `near`.
-unsafe impl<'o, T: Flat, E: Emit<'o, T>> Emit<'o, Option<Near<T>>> for New<E> {
-  unsafe fn emit(self, sink: &mut Sink<'o>, at: usize) {
+unsafe impl<T: Flat, E: Emit<T>> Emit<Option<Near<T>>> for New<E> {
+  unsafe fn emit(self, sink: &mut Sink, at: usize) {
     // SAFETY: forwarded.
     unsafe { Emit::<Near<T>>::emit(self, sink, at) }
   }
 }
 
 // SAFETY: copies the text.
-unsafe impl<'o> Emit<'o, Near<str>> for &str {
-  unsafe fn emit(self, sink: &mut Sink<'o>, at: usize) {
+unsafe impl Emit<Near<str>> for &str {
+  unsafe fn emit(self, sink: &mut Sink, at: usize) {
     // SAFETY: forwarded.
-    unsafe { copy_to(sink, at, self) }
+    unsafe { copy_str(sink, at, self) }
   }
 }
 
-// SAFETY: copies the slice.
-unsafe impl<'o, T: Flat> Emit<'o, Near<[T]>> for &[T] {
-  unsafe fn emit(self, sink: &mut Sink<'o>, at: usize) {
-    fits::<T>();
-    // SAFETY: forwarded.
-    unsafe { copy_to(sink, at, self) }
+// SAFETY: copies the slice, which is not in the sink's buffer (as for `&T`).
+unsafe impl<T: Flat> Emit<Near<[T]>> for &[T] {
+  unsafe fn emit(self, sink: &mut Sink, at: usize) {
+    let mut list = List::new::<T>(sink, self.len());
+    // SAFETY: the list has room for the elements.
+    unsafe {
+      write_slice(self, sink, list.elem::<T>(0));
+      list.len = self.len();
+      list.finish(sink, at);
+    }
   }
 }
 
@@ -381,19 +542,21 @@ unsafe impl<'o, T: Flat> Emit<'o, Near<[T]>> for &[T] {
 pub struct Seq<I>(pub I);
 
 // SAFETY: writes the elements into a list, then links to it.
-unsafe impl<'o, T: Flat, I: IntoIterator<Item: Emit<'o, T>>> Emit<'o, Near<[T]>> for Seq<I> {
-  unsafe fn emit(self, sink: &mut Sink<'o>, at: usize) {
+unsafe impl<T: Flat, I: IntoIterator<Item: Emit<T>>> Emit<Near<[T]>> for Seq<I> {
+  unsafe fn emit(self, sink: &mut Sink, at: usize) {
     let items = self.0.into_iter();
     let mut list = List::new::<T>(sink, items.size_hint().0);
-    list.extend(sink, items);
-    // SAFETY: forwarded.
-    unsafe { list.finish(sink, at) }
+    // SAFETY: a new block, filled by `extend`.
+    unsafe {
+      list.extend(sink, items);
+      list.finish(sink, at);
+    }
   }
 }
 
 // SAFETY: as for `Seq`.
-unsafe impl<'o, T: Flat, E: Emit<'o, T>, const N: usize> Emit<'o, Near<[T]>> for [E; N] {
-  unsafe fn emit(self, sink: &mut Sink<'o>, at: usize) {
+unsafe impl<T: Flat, E: Emit<T>, const N: usize> Emit<Near<[T]>> for [E; N] {
+  unsafe fn emit(self, sink: &mut Sink, at: usize) {
     // SAFETY: forwarded.
     unsafe { Seq(self).emit(sink, at) }
   }
@@ -403,13 +566,15 @@ unsafe impl<'o, T: Flat, E: Emit<'o, T>, const N: usize> Emit<'o, Near<[T]>> for
 macro_rules! tuples {
   ($($e:ident $x:ident)*) => {
     // SAFETY: as for `Seq`.
-    unsafe impl<'o, T: Flat, $($e: Emit<'o, T>),*> Emit<'o, Near<[T]>> for ($($e,)*) {
-      unsafe fn emit(self, sink: &mut Sink<'o>, at: usize) {
+    unsafe impl<T: Flat, $($e: Emit<T>),*> Emit<Near<[T]>> for ($($e,)*) {
+      unsafe fn emit(self, sink: &mut Sink, at: usize) {
         let ($($x,)*) = self;
         let list = &mut List::new::<T>(sink, 0 $(+ { let _ = &$x; 1 })*);
-        $(list.push(sink, $x);)*
-        // SAFETY: forwarded.
-        unsafe { list.finish(sink, at) }
+        // SAFETY: a new block, filled by `push`.
+        unsafe {
+          $(list.push(sink, $x);)*
+          list.finish(sink, at);
+        }
       }
     }
     tuples!(@ $($e $x)*);
@@ -419,79 +584,109 @@ macro_rules! tuples {
 }
 tuples!(A a B b C c D d E e F f G g H h I i J j K k L l);
 
-/// A list being written into a sink: a header at `head`, then room for `cap` elements of which
-/// `len` are written. The header is written by `finish`.
+/// A list block `[cap][len][elements]` in a buffer: `head` is the position of `len`, and `len`
+/// and `cap` are the values in use (the builder writes them to the header in `finish`).
 pub struct List {
-  head: usize,
-  len: usize,
-  cap: usize,
+  pub head: usize,
+  pub len: usize,
+  pub cap: usize,
 }
 
 impl List {
-  pub(crate) const NONE: Self = Self { head: 0, len: 0, cap: 0 };
-
-  pub(crate) const fn is_some(&self) -> bool {
-    self.cap != 0
-  }
-
-  pub(crate) fn new<T: Flat>(sink: &mut Sink<'_>, cap: usize) -> Self {
+  /// A new block with room for `cap` elements, its header `[cap][0]`.
+  pub fn new<T: Flat>(sink: &mut Sink, cap: usize) -> Self {
     fits::<T>();
-    let head = sink.alloc_list(align_of::<T>(), size_of::<T>().saturating_mul(cap));
-    Self { head, len: 0, cap }
+    let bytes = size_of::<T>().saturating_mul(cap).saturating_add(8);
+    let start = sink.alloc(bytes, align_of::<T>().max(4));
+    // SAFETY: the header was just allocated; `cap` fits a `u32` because the block does.
+    unsafe { sink.write(start, cap as u32) };
+    Self { head: start + 4, len: 0, cap }
   }
 
-  /// Moves the elements to new room for `cap`; the old room becomes garbage.
-  fn grow<T: Flat>(&mut self, sink: &mut Sink<'_>, cap: usize) {
-    let old = Self::new::<T>(sink, cap);
-    let (from, to) = (self.head + 4, old.head + 4);
-    // SAFETY: the `len` elements at `from` are valid, and the walk with `Some(_)` only writes
-    // the new room, which does not overlap them and was allocated before they were borrowed.
+  /// The list the pointer at `at` points to.
+  ///
+  /// # Safety
+  /// `at` holds a `Near<[T]>` in `buf`.
+  pub unsafe fn read(buf: *mut Buf, at: usize) -> Self {
+    // SAFETY: the pointer leads to a list header.
     unsafe {
-      let elems = slice::from_raw_parts(sink.buf.ptr().add(from).cast::<T>(), self.len);
-      transfer(elems, sink, to, Some(distance(to, from)));
+      let head = target(buf, at);
+      let header = |p: usize| (*buf).base().add(p).cast::<u32>().read_unaligned() as usize;
+      Self { head, len: header(head), cap: header(head - 4) }
     }
-    (self.head, self.cap) = (old.head, cap);
   }
 
-  pub(crate) fn push<'o, T: Flat>(&mut self, sink: &mut Sink<'o>, item: impl Emit<'o, T>) {
-    if self.len == self.cap {
-      self.grow::<T>(sink, (self.cap * 2).max(4));
+  /// Position of element `i`.
+  pub const fn elem<T>(&self, i: usize) -> usize {
+    self.head + 4 + i * size_of::<T>()
+  }
+
+  /// Moves the elements to a new block with room for `cap`, whose header gets the length; the
+  /// old block becomes garbage.
+  ///
+  /// # Safety
+  /// `self` is a block of `T`s in the sink's buffer whose first `len` elements are valid, and
+  /// `cap >= len`.
+  pub unsafe fn grow<T: Flat>(&mut self, sink: &mut Sink, cap: usize) {
+    let new = Self::new::<T>(sink, cap);
+    // SAFETY: per the caller, and the new block has room for the elements.
+    unsafe {
+      move_elems::<T>(sink.buf, self.elem::<T>(0), new.elem::<T>(0), self.len);
+      sink.write(new.head, self.len as u32);
     }
-    // SAFETY: element `len` is within the room.
-    unsafe { item.emit(sink, self.head + 4 + self.len * size_of::<T>()) };
+    (self.head, self.cap) = (new.head, cap);
+  }
+
+  /// Appends `item`, growing the block if it is full.
+  ///
+  /// # Safety
+  /// As for [`grow`](Self::grow).
+  unsafe fn push<T: Flat>(&mut self, sink: &mut Sink, item: impl Emit<T>) {
+    // SAFETY: per the caller; element `len` is within the room.
+    unsafe {
+      if self.len == self.cap {
+        self.grow::<T>(sink, (self.cap * 2).max(4));
+      }
+      item.emit(sink, self.elem::<T>(self.len));
+    }
     self.len += 1;
   }
 
-  fn extend<'o, T: Flat>(
-    &mut self,
-    sink: &mut Sink<'o>,
-    mut items: impl Iterator<Item: Emit<'o, T>>,
-  ) {
+  /// Appends the items.
+  ///
+  /// # Safety
+  /// As for [`grow`](Self::grow).
+  unsafe fn extend<T: Flat>(&mut self, sink: &mut Sink, mut items: impl Iterator<Item: Emit<T>>) {
     loop {
-      // Fast path: fill the room in one internal iteration, with no growth check and no
-      // header write.
-      let (room, mut at) = (self.cap - self.len, self.head + 4 + self.len * size_of::<T>());
-      items.by_ref().take(room).for_each(|item| {
+      // Fast path: fill the room in one internal iteration, with no growth check.
+      let mut at = self.elem::<T>(self.len);
+      let mut n = 0;
+      items.by_ref().take(self.cap - self.len).for_each(|item| {
         // SAFETY: `at` is an element of the room.
         unsafe { item.emit(sink, at) };
         at += size_of::<T>();
+        n += 1;
       });
-      let filled = (at - self.head - 4) / size_of::<T>();
-      let full = filled == self.cap;
-      self.len = filled;
-      let Some(item) = items.next().filter(|_| full) else { return };
-      self.push(sink, item);
+      self.len += n;
+      if self.len < self.cap {
+        return;
+      }
+      let Some(item) = items.next() else { return };
+      // SAFETY: per the caller.
+      unsafe { self.push(sink, item) };
     }
   }
 
-  /// Writes the length and links `at` to the list.
+  /// Writes the header of a built list, `[len][len]`, and links `at` to it.
   ///
   /// # Safety
-  /// `at` holds a `Near<[T]>` in the sink.
-  pub(crate) const unsafe fn finish(&self, sink: &mut Sink<'_>, at: usize) {
-    // SAFETY: the header was allocated by `new`.
+  /// `self` is a block of `T`s in the sink's buffer whose first `len` elements are valid, and
+  /// `at` holds a `Near<[T]>` there.
+  pub const unsafe fn finish(&self, sink: &mut Sink, at: usize) {
+    // SAFETY: per the caller.
     unsafe {
-      sink.put(self.head, self.len as u32);
+      sink.write(self.head - 4, self.len as u32);
+      sink.write(self.head, self.len as u32);
       sink.link(at, self.head);
     }
   }
@@ -502,11 +697,11 @@ impl List {
 /// # Safety
 /// `f(sink, at)` writes a valid `T` at `at`, given the guarantees of [`Emit::emit`].
 #[doc(hidden)]
-pub unsafe fn make<'o, T: Flat>(f: impl FnOnce(&mut Sink<'o>, usize)) -> impl Emit<'o, T> {
+pub unsafe fn make<T: Flat>(f: impl FnOnce(&mut Sink, usize)) -> impl Emit<T> {
   struct Make<F>(F);
   // SAFETY: the caller of `make` vouches for `F`.
-  unsafe impl<'o, T: Flat, F: FnOnce(&mut Sink<'o>, usize)> Emit<'o, T> for Make<F> {
-    unsafe fn emit(self, sink: &mut Sink<'o>, at: usize) {
+  unsafe impl<T: Flat, F: FnOnce(&mut Sink, usize)> Emit<T> for Make<F> {
+    unsafe fn emit(self, sink: &mut Sink, at: usize) {
       (self.0)(sink, at);
     }
   }

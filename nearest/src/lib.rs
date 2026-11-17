@@ -1,14 +1,12 @@
 //! Self-relative pointers in one buffer.
 //!
-//! A [`Region<T>`] holds a `T` and everything it points to in one contiguous buffer. Every
-//! pointer is a [`Near<T>`]: 4 bytes holding the distance from its own address to its target.
-//! Copying the buffer copies the whole graph, so `Clone` is a `memcpy`, and reading is plain
-//! `&T`. Edits are checked by the borrow checker, with no runtime checks.
+//! A [`Region<T>`] keeps a `T` and everything it points to in one buffer. A pointer is a
+//! [`Near<T>`]: 4 bytes holding the distance from its own address to its target. So copying
+//! the buffer copies the whole value (`Clone` is a `memcpy`), reading is plain `&T` with `Near`
+//! dereferencing like `Box`, and the bytes mean the same at any address.
 //!
 //! ```
-//! #![feature(pin_ergonomics)]
-//! #![allow(incomplete_features)]
-//! use nearest::{Near, Region, flat};
+//! use nearest::{Edit, Near, Region, flat};
 //!
 //! #[flat]
 //! struct Block { id: u32, insts: Near<[Inst]>, next: Option<Near<Block>> }
@@ -18,89 +16,135 @@
 //! // Build. Constructors take anything that can be written as the field's type.
 //! let mut r = Region::new(Block::new(0, (Inst::new(1, [10, 20, 30]), Inst::new(2, ())), None));
 //!
-//! // Read. It is just `&Block`.
+//! // Read. It is `&Block`.
 //! assert_eq!(r.insts[0].args[1], 20);
 //!
-//! // Clone. One memcpy.
-//! let snapshot = r.clone();
-//!
-//! // Edit. `root` is `Pin<&mut Block>`; ordinary patterns project it.
-//! r.edit(|root, slot| {
-//!   let Block { id, insts, .. } = root;
-//!   *id.get_mut() = 7;                                 // in place
-//!   slot.at(insts, |old, new| {                        // a change that needs new memory
-//!     for inst in old { if inst.op == 1 { new.push(inst) } }  // old elements move
-//!     new.push(Inst::new(9, [1, 2]));
-//!   });
-//! });
-//! assert_eq!(r.insts.iter().map(|i| i.op).collect::<Vec<_>>(), [1, 9]);
-//! assert_eq!(snapshot.insts.len(), 2);
+//! // Edit. `r.edit()` is `&mut Edit<Block>`; every field has a method of the same name.
+//! let b = r.edit();
+//! *b.id() = 7;
+//! b.insts().push(Inst::new(9, [1, 2])).args().push(3);   // `push` returns the new element
+//! b.insts().at(0).args()[1] = 21;                         // plain data is a real slice
+//! b.insts().retain(|inst| inst.op != 2);
+//! b.next().insert(Block::new(1, (), None)).insts().push(Inst::new(4, ()));
+//! assert_eq!(b.next().as_ref().map(|n| n.insts.len()), Some(1));
+//! b.next().set(None);
 //!
 //! // Compact. A copy into a new region keeps only what is reachable.
 //! r = Region::new(&*r);
 //! assert_eq!(r.id, 7);
+//! assert_eq!(r.insts.iter().map(|i| (i.op, &i.args[..])).collect::<Vec<_>>(),
+//!            [(1, &[10, 21, 30][..]), (9, &[1, 2, 3][..])]);
+//! assert!(r.next.is_none());
+//! ```
+//!
+//! Enums get a view of their variant, and `replace` hands over the old value, which moves
+//! into the new one instead of being copied:
+//!
+//! ```
+//! use nearest::{Edit, Near, Region, flat};
+//!
+//! #[flat]
+//! enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
+//!
+//! fn inner(e: &Expr) -> &Expr { match e { Expr::Neg(x) => x, e => e } }
+//!
+//! /// `--x` becomes `x`, bottom up.
+//! fn simplify(e: &mut Edit<Expr>) {
+//!   match e.as_mut() {
+//!     ExprMut::Lit(_) => {}
+//!     ExprMut::Neg(x) => simplify(x),
+//!     ExprMut::Add(args) => { simplify(args._0()); simplify(args._1()); }
+//!   }
+//!   if let Expr::Neg(x) = &**e && let Expr::Neg(_) = &**x {
+//!     e.replace(|old| old.map(|e| inner(inner(e))));   // the inner value moves up, O(1)
+//!   }
+//! }
+//!
+//! fn show(e: &Expr) -> String {
+//!   match e {
+//!     Expr::Lit(n) => n.to_string(),
+//!     Expr::Neg(x) => format!("-{}", show(x)),
+//!     Expr::Add(a, b) => format!("({} + {})", show(a), show(b)),
+//!   }
+//! }
+//!
+//! let mut r = Region::new(Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2))));
+//! simplify(r.edit());
+//! r.edit().replace(|old| Expr::neg(old));              // wrap: the old value moves, O(1)
+//! assert_eq!(show(&r), "-(1 + -2)");
+//! r.edit().replace(|old| Expr::neg(old));
+//! simplify(r.edit());
+//! assert_eq!(show(&r), "(1 + -2)");
 //! ```
 //!
 //! # Editing
 //!
-//! [`Region::edit`] hands out the root as `Pin<&mut T>` and a [`Slot`] for it. Plain data is
-//! `Unpin`, so `Pin::get_mut` gives a real `&mut`. A change that needs new memory goes through a
-//! slot: [`Slot::put`] stages a replacement, [`Slot::push`] builds a replacement list, and
-//! [`Slot::at`] narrows to a place inside the old value.
+//! [`Region::edit`] returns the handle of the root, a `&mut` [`Edit<T>`]. Handles reach every
+//! place in the region:
 //!
-//! | To do this | Write |
-//! |---|---|
-//! | assign a plain field | `*id.get_mut() = 7` |
-//! | overwrite with a plain value | `let mut e = e; e.set(Expr::Lit(0))` |
-//! | clear an optional pointer | `let mut next = next; next.set(None)` |
-//! | follow an optional pointer | `next.as_pin_mut().map(Near::as_pin_mut)` |
-//! | sort a list of plain data | `list.as_pin_mut().get_mut().sort()` |
-//! | visit list elements | `for x in list { .. }` |
-//! | compact | `region = Region::new(&*region)` |
+//! | Place | Handle | Operations |
+//! |---|---|---|
+//! | plain data (`T: Copy`) | `&mut T` | ordinary Rust |
+//! | `#[flat]` struct | generated | a method per field, `set`, `replace` |
+//! | `#[flat]` enum `X` | generated | `as_mut()` (returns `XMut`), `set`, `replace` |
+//! | `Near<T>` | the handle of the `T` | |
+//! | `Near<[T]>` | [`ListEdit<T>`] | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`, `replace` |
+//! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `set`, `replace` |
+//! | `Near<str>` | [`StrEdit`] | `set`, `replace` |
+//!
+//! Handles dereference to the value they designate, and mutably so for plain data. A handle
+//! borrows its parent handle, so one handle is usable at a time, and no reference into the
+//! buffer outlives a change that may grow it. Edits append: compact with
+//! `Region::new(&*region)`.
 //!
 //! # Safety model
 //!
 //! - A `Near` has no constructor and is not `Clone`: it only exists inside a region.
-//! - `Near` is `!Unpin`, so values containing one are only reachable as `&T` or `Pin<&mut T>`;
-//!   [`#[flat]`](flat) makes types `#[pin_v2]` so that patterns project the pin.
-//! - Each target has one owning pointer: builders make fresh targets, `&T` copies, and a
-//!   `Pin<&mut T>` moves. A slot accepts moves only from the value it replaces, which the
-//!   brand `'o` on [`Slot`] and [`Emit`] enforces.
-//! - New data is built in a scratch buffer and appended when the edit ends, so no reference
-//!   sees the buffer move. No pointer is made from an integer; Miri runs with Tree Borrows
-//!   and strict provenance.
+//! - No safe API gives a `&mut T` for a `T` that contains a `Near`; such places are reached
+//!   through handles, which are unsized, so they cannot be swapped or assigned through.
+//! - A region is a tree: builders make fresh targets, `&T` copies, and the only moves are
+//!   [`Old`] (used at most once) and list operations.
+//! - A handle holds a position, not an address, so it stays valid when the buffer grows; real
+//!   references into the buffer borrow the handle.
+//! - A panic leaves every place either unchanged or holding its complete new value.
+//! - No pointer is made from an integer. Miri runs the tests with Tree Borrows and strict
+//!   provenance.
 //!
-//! Types must have alignment at most 8, non-zero size and no drop glue (checked at compile
-//! time). A region holds at most `i32::MAX` bytes; growing past that panics.
-//!
-//! # Toolchain
-//!
-//! Requires nightly (`nightly-2026-02-10`). Crates that use [`#[flat]`](flat) enable
-//! `#![feature(pin_ergonomics)]`.
+//! Stored types must have alignment at most 8, non-zero size and no drop glue (checked at
+//! compile time). A region holds at most `i32::MAX` bytes; growing past that panics.
 #![no_std]
-#![feature(ptr_metadata)]
 #![deny(missing_docs)]
 
 extern crate alloc;
 
+mod edit;
 mod flat;
 mod near;
 mod region;
 
+pub use edit::{ListEdit, Old, OptionEdit, StrEdit};
 pub use flat::{Emit, Flat};
 pub use near::Near;
 /// Makes a struct or enum storable in a region.
 ///
-/// It implements [`Flat`], adds `#[pin_v2]`, `#[repr(C)]` to structs without a `repr` and
-/// `#[repr(u8)]` to enums, and generates constructors whose parameters take anything that can
-/// be written as the field's type ([`Emit`]): `new` for structs with fields, and one function
-/// per non-unit enum variant named after it in snake case. Generic type parameters must be
-/// [`Flat`]. Unions, `repr(packed)`, enum `repr`s other than `u8` and explicit discriminants are
-/// rejected.
+/// It implements [`Flat`] and adds `#[repr(C)]` to structs without a `repr` and `#[repr(u8)]`
+/// to enums. It generates:
+///
+/// - constructors whose parameters take anything that can be written as the field's type
+///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
+///   named after it in snake case. A parameter for a field written `Near<X>` (with `X` not a
+///   slice or `str`) takes a builder of `X` and allocates the target;
+/// - the handle, [`Edit<X>`](Edit), with `set` and `replace`, and for structs one method per
+///   field (`_0`, `_1`, .. for tuple fields; `set_` and `replace_` for fields named `set` and
+///   `replace`) returning the field's handle, with the field's visibility;
+/// - for enums with fields, `as_mut` on the handle and the enum `XMut<'a>` it returns: unit
+///   variants stay units, a variant with one field holds that field's handle, and a variant
+///   with several fields holds a handle with a method per field.
+///
+/// Generic type parameters must be [`Flat`]. Unions, `repr(packed)`, enum `repr`s other than
+/// `u8`, explicit discriminants, empty enums and enums of more than 256 variants are rejected.
 ///
 /// ```
-/// # #![feature(pin_ergonomics)]
-/// # #![allow(incomplete_features)]
 /// use nearest::{Near, Region, flat};
 ///
 /// #[flat]
@@ -112,21 +156,60 @@ pub use near::Near;
 /// struct Field { key: Near<str>, value: Json }
 ///
 /// // Tuples are lists whose elements may be different builders.
-/// let doc = Region::new(Json::obj((
+/// let mut doc = Region::new(Json::obj((
 ///   Field::new("a", Json::Num(1.0)),
 ///   Field::new("b", Json::arr((Json::Null, Json::str("x")))),
 /// )));
+/// if let JsonMut::Obj(fields) = doc.edit().as_mut() {
+///   fields.at(0).value().set(Json::Null);
+///   fields.at(1).key().set("c");
+/// }
 /// let Json::Obj(fields) = &*doc else { unreachable!() };
-/// assert_eq!(&*fields[0].key, "a");
+/// assert_eq!((&*fields[0].key, &fields[0].value), ("a", &Json::Null));
 /// assert_eq!(fields[1].value, *Region::new(Json::arr((Json::Null, Json::str("x")))));
 /// ```
 pub use nearest_derive::flat;
-pub use region::{Region, Slot};
+pub use region::Region;
+
+/// The handle of a place holding a `T`: `&mut Edit<T>` is what [`Region::edit`], field methods
+/// and [`ListEdit::at`] return.
+///
+/// For plain data it is `T` itself; for `Near<T>` it is the handle of the target; for lists,
+/// optional pointers and strings it is [`ListEdit`], [`OptionEdit`] and [`StrEdit`]; for
+/// `#[flat]` types it is generated.
+///
+/// ```
+/// use nearest::{Edit, Near, Region, flat};
+///
+/// #[flat]
+/// struct Counter { hits: u64, log: Near<[u64]> }
+///
+/// fn hit(c: &mut Edit<Counter>) {
+///   *c.hits() += 1;
+///   let n = c.hits;
+///   c.log().push(n);
+/// }
+///
+/// let mut r = Region::new(Counter::new(0, ()));
+/// hit(r.edit());
+/// hit(r.edit());
+/// assert_eq!((r.hits, &r.log[..]), (2, &[1, 2][..]));
+/// ```
+pub type Edit<T> = <T as Flat>::Edit;
 
 /// Plumbing for the code [`#[flat]`](flat) generates. Not public API.
 #[doc(hidden)]
 pub mod __private {
-  pub use crate::flat::{Sink, make};
+  pub use crate::{
+    edit::Raw,
+    flat::{Buf, Sink, fits, make},
+  };
+
+  /// Names the handle of a variant with several fields, for `XMut`.
+  pub trait Variant<const I: u8> {
+    /// The handle.
+    type Edit: ?Sized;
+  }
 }
 
 #[cfg(test)]
@@ -145,23 +228,22 @@ mod tests {
     assert!(catch_unwind(|| Region::new(Near::from_iter(0..20_000u32))).is_err());
     let mut r = Region::new(Near::from_iter(0..10u32));
     let full = catch_unwind(AssertUnwindSafe(|| {
-      r.edit(|_, slot| {
-        for i in 0.. {
-          slot.push(i);
-        }
-      });
+      for i in 0..u32::MAX {
+        r.edit().push(i);
+      }
     }));
     assert!(full.is_err());
     assert!(r.byte_len() > 1 << 15 && r.byte_len() <= 1 << 16);
-    assert_eq!(r[..], (0..10).collect::<Vec<_>>());
+    assert_eq!(r[..10], (0..10).collect::<Vec<_>>());
+    let before = r.to_vec();
+    assert!(r[10..].iter().copied().eq(0..before.len() as u32 - 10));
     // What does not fit fails the same way, and the region is still intact.
     assert!(
-      catch_unwind(AssertUnwindSafe(|| r.edit(|_, slot| slot.put(Near::from_iter(0..16_384u32)))))
-        .is_err()
+      catch_unwind(AssertUnwindSafe(|| r.edit().set(Near::from_iter(0..16_384u32)))).is_err()
     );
-    assert_eq!(r[..], (0..10).collect::<Vec<_>>());
+    assert_eq!(r[..], before);
     let compact = Region::new(&*r);
-    assert_eq!(compact.byte_len(), 4 + 4 + 40);
+    assert_eq!(compact.byte_len(), 4 + 4 + 4 + 4 * before.len());
     assert_eq!(compact[..], r[..]);
   }
 }

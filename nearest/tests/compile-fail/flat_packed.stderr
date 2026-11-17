@@ -1,5 +1,5 @@
 error: `#[flat]` types cannot be packed
- --> tests/compile-fail/flat_packed.rs:7:1
+ --> tests/compile-fail/flat_packed.rs:5:1
   |
-7 | #[repr(C, packed)]
+5 | #[repr(C, packed)]
   | ^^^^^^^^^^^^^^^^^^

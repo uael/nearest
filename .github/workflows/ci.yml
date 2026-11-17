@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-10
+          toolchain: 1.100.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all
       - run: cargo run --example expr
@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-10
+          toolchain: 1.100.0
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --tests --examples --benches -- -D warnings
@@ -40,11 +40,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # `rustfmt.toml` uses unstable options.
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-02-10
           components: rustfmt
-      - run: cargo fmt --all -- --check
+      - run: cargo +nightly-2026-02-10 fmt --all -- --check
 
   doc:
     name: Documentation
@@ -53,7 +54,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-10
+          toolchain: 1.100.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --no-deps --all
         env:
@@ -69,7 +70,7 @@ jobs:
           toolchain: nightly-2026-02-10
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
-      - run: cargo miri test -p nearest --lib --test integration
+      - run: cargo +nightly-2026-02-10 miri test -p nearest --lib --test integration
         env:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
 

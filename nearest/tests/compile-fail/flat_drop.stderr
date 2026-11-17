@@ -1,13 +1,27 @@
-error[E0080]: evaluation panicked: `#[flat]` types cannot have drop glue
- --> tests/compile-fail/flat_drop.rs:6:1
+error[E0080]: evaluation panicked: a region holds only types without drop glue
+ --> $RUST/core/src/panic.rs
   |
-6 | #[flat]
-  | ^^^^^^^ evaluation of `_::<impl nearest::Flat for D>::store::{constant#0}` failed here
+  = note: evaluation of `nearest::__private::fits::<D>::{constant#0}` failed here
+  |
+ ::: src/flat.rs
+  |
+  |     assert!(!needs_drop::<T>(), "a region holds only types without drop glue");
+  |     -------------------------------------------------------------------------- in this macro invocation
 
 note: erroneous constant encountered
- --> tests/compile-fail/flat_drop.rs:6:1
+ --> src/flat.rs
   |
-6 | #[flat]
+  | /   const {
+  | |     assert!(align_of::<T>() <= 8, "a region holds only types aligned to at most 8 bytes");
+  | |     assert!(size_of::<T>() != 0, "a region holds only types of non-zero size");
+  | |     assert!(!needs_drop::<T>(), "a region holds only types without drop glue");
+  | |   };
+  | |___^
+
+note: the above error was encountered while instantiating `fn nearest::__private::fits::<D>`
+ --> tests/compile-fail/flat_drop.rs:4:1
+  |
+4 | #[flat]
   | ^^^^^^^
   |
   = note: this note originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,0 +1,9 @@
+error[E0499]: cannot borrow `*insts` as mutable more than once at a time
+  --> tests/compile-fail/list_new_element_across_push.rs:15:3
+   |
+14 |   let new = insts.push(Inst::new(2, ()));
+   |             ----- first mutable borrow occurs here
+15 |   insts.push(Inst::new(3, ()));
+   |   ^^^^^ second mutable borrow occurs here
+16 |   *new.op() = 4;
+   |    --- first borrow later used here

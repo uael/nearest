@@ -1,12 +1,10 @@
 //! A small IR (a function of blocks of instructions) transformed by compiler-style passes.
 //!
 //! - constant folding rewrites instructions in place, with no new memory;
-//! - dead-code elimination rebuilds each block's instruction list, moving the survivors;
+//! - dead-code elimination keeps the live instructions of each block, moving them;
 //! - a final pass renames the function and appends a block.
 //!
 //! An interpreter checks that every pass keeps the function's result.
-#![feature(pin_ergonomics)]
-#![expect(incomplete_features, reason = "pin_ergonomics")]
 
 use std::collections::{HashMap, HashSet};
 
@@ -54,8 +52,8 @@ fn run(f: &Func) -> i64 {
   let mut vals = vec![0i64; 64];
   let mut block = 0;
   loop {
-    let b = &f.blocks[block];
-    for inst in &b.insts {
+    let blk = &f.blocks[block];
+    for inst in &blk.insts {
       let v = |r: u32| vals[r as usize];
       vals[inst.dst as usize] = match inst.op {
         Op::Const(c) => c,
@@ -64,7 +62,7 @@ fn run(f: &Func) -> i64 {
         Op::Copy(x) => v(x),
       };
     }
-    match b.term {
+    match blk.term {
       Term::Jump(to) => block = to as usize,
       Term::Ret(r) => return vals[r as usize],
     }
@@ -79,36 +77,33 @@ fn count(f: &Func) -> usize {
 fn fold_constants(r: &mut Region<Func>) -> usize {
   let mut known = HashMap::new();
   let mut folded = 0;
-  r.edit(|root, _| {
-    let Func { blocks, .. } = root;
-    for block in blocks {
-      let Block { insts, .. } = block;
-      // `Inst` holds no pointer, so the list is plain data: a real `&mut [Inst]`.
-      for inst in insts.as_pin_mut().get_mut() {
-        let c = |r| known.get(&r).copied();
-        let value = match inst.op {
-          Op::Const(c) => Some(c),
-          Op::Add(x, y) => c(x).zip(c(y)).map(|(x, y)| x + y),
-          Op::Mul(x, y) => c(x).zip(c(y)).map(|(x, y)| x * y),
-          Op::Copy(x) => c(x),
-        };
-        if let Some(v) = value {
-          known.insert(inst.dst, v);
-          if inst.op != Op::Const(v) {
-            inst.op = Op::Const(v);
-            folded += 1;
-          }
+  let blocks = r.edit().blocks();
+  for b in 0..blocks.len() {
+    // `Inst` holds no pointer, so the list is plain data: a real `&mut [Inst]`.
+    for inst in blocks.at(b).insts().iter_mut() {
+      let c = |r| known.get(&r).copied();
+      let value = match inst.op {
+        Op::Const(c) => Some(c),
+        Op::Add(x, y) => c(x).zip(c(y)).map(|(x, y)| x + y),
+        Op::Mul(x, y) => c(x).zip(c(y)).map(|(x, y)| x * y),
+        Op::Copy(x) => c(x),
+      };
+      if let Some(v) = value {
+        known.insert(inst.dst, v);
+        if inst.op != Op::Const(v) {
+          inst.op = Op::Const(v);
+          folded += 1;
         }
       }
     }
-  });
+  }
   folded
 }
 
 /// Removes instructions whose result is never used.
 fn eliminate_dead_code(r: &mut Region<Func>) -> usize {
   let mut used = HashSet::new();
-  for b in r.blocks.iter() {
+  for b in &*r.blocks {
     if let Term::Ret(v) = b.term {
       used.insert(v);
     }
@@ -123,16 +118,10 @@ fn eliminate_dead_code(r: &mut Region<Func>) -> usize {
     }
   }
   let before = count(r);
-  r.edit(|root, slot| {
-    let Func { blocks, .. } = root;
-    for block in blocks {
-      let Block { insts, .. } = block;
-      // The survivors move into a new list; it may be empty, which `push` alone cannot say.
-      slot.at(insts, |old, new| {
-        new.put(Near::from_iter(old.into_iter().filter(|inst| used.contains(&inst.dst))));
-      });
-    }
-  });
+  let blocks = r.edit().blocks();
+  for b in 0..blocks.len() {
+    blocks.at(b).insts().retain(|inst| used.contains(&inst.dst));
+  }
   before - count(r)
 }
 
@@ -166,11 +155,12 @@ fn main() {
   assert_eq!(expected, 11);
   println!("{}: {} instructions, {} bytes, returns {expected}", &*f.name, count(&f), f.byte_len());
 
+  let size = f.byte_len();
   let folded = fold_constants(&mut f);
-  assert_eq!(folded, 5);
+  assert_eq!((folded, f.byte_len()), (5, size));
   assert_eq!(run(&f), expected);
   let removed = eliminate_dead_code(&mut f);
-  assert_eq!(removed, 7);
+  assert_eq!((removed, f.byte_len()), (7, size));
   assert_eq!(run(&f), expected);
   assert_eq!(f.blocks[1].insts.iter().map(|i| i.op).collect::<Vec<_>>(), [Op::Const(11)]);
   println!(
@@ -180,25 +170,12 @@ fn main() {
   );
 
   // Rename, and route the exit through a new block that doubles the result.
-  f.edit(|root, slot| {
-    let Func { name, blocks } = root;
-    slot.at(name, |_, new| new.put("f.opt"));
-    slot.at(blocks, |old, new| {
-      for (i, block) in old.into_iter().enumerate() {
-        if i == 1 {
-          // Change the old block in place, then move it.
-          let mut block = block;
-          let Block { term, .. } = block.as_mut();
-          let Term::Ret(r) = *term else { unreachable!() };
-          *term.get_mut() = Term::Jump(2);
-          new.push(block);
-          new.push(Block::new([Inst { dst: 9, op: Op::Add(r, r) }], Term::Ret(9)));
-        } else {
-          new.push(block);
-        }
-      }
-    });
-  });
+  let func = f.edit();
+  func.name().set("f.opt");
+  let blocks = func.blocks();
+  let Term::Ret(r) = blocks[1].term else { unreachable!() };
+  **blocks.at(1).term() = Term::Jump(2);
+  blocks.push(Block::new([Inst { dst: 9, op: Op::Add(r, r) }], Term::Ret(9)));
   assert_eq!((&*f.name, f.blocks.len(), run(&f)), ("f.opt", 3, 2 * expected));
 
   let compact = Region::new(&*f);

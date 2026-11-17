@@ -2,10 +2,10 @@
 name = "nearest"
 version = "0.4.5"
 edition.workspace = true
+rust-version = "1.95"
 license = "Apache-2.0 OR MIT"
 description = "Self-relative pointer library for region-based allocation"
 repository = "https://github.com/uael/nearest"
-homepage = "https://github.com/uael/nearest"
 documentation = "https://docs.rs/nearest"
 readme = "../README.md"
 keywords = ["self-relative", "pointer", "region", "allocation", "arena"]
