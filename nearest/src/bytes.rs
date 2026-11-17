@@ -176,7 +176,7 @@ impl Check<'_> {
 
   /// The `O` at `at`.
   pub(crate) fn offset<O: Offset>(&self, at: usize) -> Result<isize, Error> {
-    self.bytes.get(at..).and_then(O::read).map(O::to_isize).ok_or(Error::Invalid(at))
+    self.bytes.get(at..).and_then(crate::near::read::<O>).map(O::to_isize).ok_or(Error::Invalid(at))
   }
 
   /// The length, an `O`, at `at`; a negative one is as out of bounds as any too large.

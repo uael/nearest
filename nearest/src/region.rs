@@ -357,7 +357,8 @@ impl<T, S: Unpin> Unpin for Region<T, S> {}
 
 /// With the `serde` feature: a region is its bytes, [`as_bytes`](Region::as_bytes) of the
 /// region or of a compact copy of it, written with `serialize_bytes`. Like any image, they hold
-/// native-endian integers and the layout of the target.
+/// the layout of the target, and distances and lengths in the byte order of their [`Offset`]
+/// (native-endian for `i16`, `i32`, `i64`).
 ///
 /// ```
 /// use nearest::{Near, Region, flat};

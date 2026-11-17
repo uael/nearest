@@ -43,8 +43,8 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
   _pin: PhantomPinned,
 }
 
-/// The integer in which a [`Near`] keeps its distance: `i32`, the default, or `i16` or `i64`.
-/// Implemented for these three only.
+/// The integer in which a [`Near`] keeps its distance: `i32`, the default, or `i16` or `i64`,
+/// or a type of yours.
 ///
 /// | `O` | `Near` | A region holds at most |
 /// |---|---|---|
@@ -68,34 +68,130 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// assert_eq!((small.kids[0].id, big.kids[0].id), (2, 2));
 /// assert_eq!((size_of::<Tree<i16>>(), size_of::<Tree<i64>>()), (8, 16));
 /// ```
-pub trait Offset: Flat + Copy + fmt::Debug + Eq + Ord + Hash + Sealed {
-  /// The stored form, `NonZero<Self>`.
-  #[doc(hidden)]
+/// # Implementing it
+///
+/// `i16`, `i32` and `i64` hold native-endian integers, so the bytes of a region are read back
+/// on targets of the same byte order. An `Offset` of yours decides how its bytes encode the
+/// integer: the same in every region that uses it, for example little-endian on every target.
+/// The bytes of a region hold no other integer of the region's own than its offsets and
+/// lengths; the byte order of the stored values is that of their types.
+///
+/// ```
+/// use std::num::NonZero;
+///
+/// use nearest::{Near, Offset, Region, flat};
+///
+/// /// An `i32` stored little-endian, whatever the target.
+/// #[flat]
+/// #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// #[repr(transparent)]
+/// struct I32Le(i32);
+///
+/// /// An `I32Le` that is not zero.
+/// #[derive(Clone, Copy)]
+/// #[repr(transparent)]
+/// struct NonZeroI32Le(NonZero<i32>);
+///
+/// impl From<NonZeroI32Le> for I32Le {
+///   fn from(n: NonZeroI32Le) -> Self {
+///     I32Le(n.0.get())
+///   }
+/// }
+///
+/// // SAFETY: `I32Le` is an `i32` whose bytes are those of the little-endian integer, and
+/// // `NonZeroI32Le` the same bytes when not zero; swapping bytes keeps zero zero, so the
+/// // integer 0 is the zero bytes, which are `None` for `Option<NonZero<i32>>`.
+/// unsafe impl Offset for I32Le {
+///   type NonZero = NonZeroI32Le;
+///   fn from_isize(n: isize) -> Self {
+///     I32Le((n as i32).to_le())
+///   }
+///   fn to_isize(self) -> isize {
+///     i32::from_le(self.0) as isize
+///   }
+/// }
+///
+/// #[flat]
+/// struct Table { name: Near<str, I32Le>, rows: Near<[u16], I32Le> }
+///
+/// let r = Region::new(Table::new("ab", [1, 2]));
+/// assert_eq!((&*r.name, &r.rows[..]), ("ab", &[1, 2][..]));
+/// // The length of the name, then its bytes: little-endian on every target.
+/// let bytes = r.as_bytes().unwrap();
+/// assert!(bytes.windows(6).any(|w| w == [2, 0, 0, 0, b'a', b'b']));
+/// ```
+///
+/// # Safety
+///
+/// A region reads and writes the distances and lengths of an `O` only through `from_isize` and
+/// `to_isize`, and reads stored ones as values of `Self` and [`NonZero`](Offset::NonZero) made of
+/// bytes it checked or wrote. It trusts that:
+///
+/// - **Every bit pattern** of `size_of::<Self>()` bytes is a valid `Self`, and `Self` has no
+///   padding.
+/// - **Round trip.** `from_isize(n).to_isize() == n` for every `n` from `-(LIMIT as isize)` to
+///   `LIMIT as isize`.
+/// - **Zero.** `from_isize(0)` is all zero bytes, and it is the only `Self` whose `to_isize()` is
+///   0.
+/// - **`NonZero`** is `Self` without zero: its valid values are the bit patterns of `Self` other
+///   than all zero bytes, it has the size and the alignment of `Self`, `Option<Self::NonZero>`
+///   has the size of `Self` with `None` all zero bytes (as for a `#[repr(transparent)]` wrapper
+///   of a [`core::num::NonZero`]), and `Into<Self>` keeps the bytes.
+/// - **Plain functions.** `from_isize` and `to_isize` depend only on their argument, never panic
+///   for the values above, and do nothing else.
+///
+/// What can be checked when compiling is checked where a region uses `O`: `Self` is 2, 4 or 8
+/// bytes, `NonZero` and `Option<NonZero>` have its size, `NonZero` has its alignment, and
+/// [`LIMIT`](Offset::LIMIT) is a multiple of 8 that the integers of `Self` reach.
+pub unsafe trait Offset: Flat + Copy + fmt::Debug + Eq + Ord + Hash {
+  /// The stored form: a `Self` that is not zero.
   type NonZero: Copy + Into<Self> + Send + Sync + UnwindSafe + RefUnwindSafe;
-  /// The largest region whose distances fit, a multiple of 8, whatever the target.
-  #[doc(hidden)]
-  const LIMIT: u64;
-  /// `n`, which fits.
-  #[doc(hidden)]
+  /// The largest region whose distances and lengths fit, a multiple of 8, whatever the target.
+  /// By default, the largest multiple of 8 that a signed integer of the size of `Self` holds.
+  const LIMIT: u64 = (1 << (8 * size_of::<Self>() - 1)) - 8;
+  /// The `Self` of `n`, which is within `LIMIT` of 0.
   fn from_isize(n: isize) -> Self;
-  #[doc(hidden)]
+  /// The integer of `self`.
   fn to_isize(self) -> isize;
-  /// The first bytes, if there are enough.
-  #[doc(hidden)]
-  fn read(bytes: &[u8]) -> Option<Self>;
 }
 
-/// Keeps [`Offset`] to the three integers.
-pub trait Sealed {}
+/// Rejects, at compile time, an `O` whose layout a region cannot use (see the `# Safety` of
+/// [`Offset`]). Every function that reads or writes the bytes of an `O` calls it.
+pub const fn offset<O: Offset>() {
+  const {
+    let w = size_of::<O>();
+    assert!(w == 2 || w == 4 || w == 8, "an `Offset` is 2, 4 or 8 bytes");
+    assert!(
+      size_of::<O::NonZero>() == w && align_of::<O::NonZero>() == align_of::<O>(),
+      "the `NonZero` of an `Offset` has its size and its alignment"
+    );
+    assert!(
+      size_of::<Option<O::NonZero>>() == w,
+      "`Option` of the `NonZero` of an `Offset` has the size of the `Offset`"
+    );
+    assert!(
+      O::LIMIT % 8 == 0 && O::LIMIT > 0 && O::LIMIT <= (1 << (8 * w - 1)) - 8,
+      "the `LIMIT` of an `Offset` is a multiple of 8 that its integers reach"
+    );
+  };
+}
+
+/// The `O` whose bytes start `bytes`, if there are enough.
+pub fn read<O: Offset>(bytes: &[u8]) -> Option<O> {
+  offset::<O>();
+  let bytes = bytes.get(..size_of::<O>())?;
+  // SAFETY: `size_of::<O>()` initialized bytes, any of which make an `O` (`Offset`'s contract).
+  Some(unsafe { bytes.as_ptr().cast::<O>().read_unaligned() })
+}
 
 macro_rules! offsets {
   ($($t:ty),*) => {$(
-    impl Sealed for $t {}
+    // SAFETY: an integer: any bit pattern, `as` round-trips within `MAX`, zero is the zero
+    // bytes, and `NonZero` is the integer without zero, `None` being zero.
     // Each converts one way that may truncate: never a distance or a length of a region.
     #[expect(clippy::cast_possible_truncation, reason = "values within a region fit both")]
-    impl Offset for $t {
+    unsafe impl Offset for $t {
       type NonZero = NonZero<$t>;
-      const LIMIT: u64 = <$t>::MAX as u64 & !7;
       #[inline]
       fn from_isize(n: isize) -> Self {
         n as Self
@@ -103,10 +199,6 @@ macro_rules! offsets {
       #[inline]
       fn to_isize(self) -> isize {
         self as isize
-      }
-      #[inline]
-      fn read(bytes: &[u8]) -> Option<Self> {
-        bytes.first_chunk().copied().map(Self::from_ne_bytes)
       }
     }
   )*};
@@ -117,12 +209,14 @@ impl<T: ?Sized, O: Offset> Near<T, O> {
   /// The address of the target, derived from `self` so that it keeps the provenance of the
   /// region.
   fn target(&self) -> *const u8 {
+    offset::<O>();
     let off: O = self.off.into();
     ptr::from_ref(self).cast::<u8>().wrapping_offset(off.to_isize())
   }
 
   /// The same, for writing.
   fn target_mut(&mut self) -> *mut u8 {
+    offset::<O>();
     let off: O = self.off.into();
     ptr::from_mut(self).cast::<u8>().wrapping_offset(off.to_isize())
   }

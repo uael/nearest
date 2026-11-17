@@ -177,6 +177,10 @@
 //! wide (checked at compile time), so every distance fits. Building or editing past the bound
 //! panics, as growing past a storage does, and bytes longer than it do not load.
 //!
+//! `Offset` is an `unsafe` trait that a type of yours can implement, for example to keep
+//! distances and lengths little-endian on every target, so that the bytes of a region are the
+//! same everywhere (see [`Offset`]).
+//!
 //! ```
 //! use nearest::{Near, Offset, Region, flat};
 //!
@@ -213,7 +217,9 @@
 //! (`bytes.len() / 4` entries are always enough, `/ 2` with 2-byte pointers), and say if it
 //! runs out. For bytes that are
 //! trusted, [`Region::from_bytes_unchecked`] and [`view_unchecked`] skip the check and are
-//! `unsafe`. The bytes hold native-endian integers and the layout of the target.
+//! `unsafe`. The bytes hold the layout of the target, its values in the byte order of their
+//! types, and distances and lengths as their [`Offset`] writes them (native-endian for `i16`,
+//! `i32` and `i64`).
 //!
 //! # The `serde` feature
 //!
@@ -223,8 +229,9 @@
 //! [`Region::from_bytes`], so the bytes are checked and an [`Error`] becomes the format's error.
 //! Formats that have no bytes, such as JSON, write a sequence of numbers, which is read back
 //! too. Any storage with `Default` can be read into. The bytes are the same as `as_bytes` gives:
-//! native-endian, with the layout of the target, so they suit caches and messages between
-//! builds of the same program, not a format shared across architectures.
+//! with the layout of the target, and native-endian unless the types and the [`Offset`]s fix
+//! a byte order, so they suit caches and messages between builds of the same program, and a
+//! format shared across architectures only with types of a fixed byte order.
 //!
 //! ```toml
 //! nearest = { version = "0.6", features = ["serde"] }

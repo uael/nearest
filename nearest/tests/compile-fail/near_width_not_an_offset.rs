@@ -1,4 +1,4 @@
-//! A pointer stores its distance in `i16`, `i32` or `i64`, nothing else.
+//! A pointer stores its distance in an `Offset`: `u8` is not one.
 use nearest::{Near, flat};
 
 #[flat]

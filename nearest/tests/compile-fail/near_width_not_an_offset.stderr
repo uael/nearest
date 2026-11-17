@@ -7,8 +7,8 @@ error[E0277]: the trait bound `u8: Offset` is not satisfied
 help: the following other types implement trait `Offset`
  --> src/near.rs
   |
-  |     impl Offset for $t {
-  |     ^^^^^^^^^^^^^^^^^^
+  |     unsafe impl Offset for $t {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
   |     |
   |     `i16`
   |     `i32`
@@ -32,8 +32,8 @@ error[E0277]: the trait bound `u8: Offset` is not satisfied
 help: the following other types implement trait `Offset`
  --> src/near.rs
   |
-  |     impl Offset for $t {
-  |     ^^^^^^^^^^^^^^^^^^
+  |     unsafe impl Offset for $t {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
   |     |
   |     `i16`
   |     `i32`
@@ -58,8 +58,8 @@ error[E0277]: the trait bound `u8: Offset` is not satisfied
 help: the following other types implement trait `Offset`
  --> src/near.rs
   |
-  |     impl Offset for $t {
-  |     ^^^^^^^^^^^^^^^^^^
+  |     unsafe impl Offset for $t {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
   |     |
   |     `i16`
   |     `i32`
@@ -83,8 +83,8 @@ error[E0277]: the trait bound `u8: Offset` is not satisfied
 help: the following other types implement trait `Offset`
  --> src/near.rs
   |
-  |     impl Offset for $t {
-  |     ^^^^^^^^^^^^^^^^^^
+  |     unsafe impl Offset for $t {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
   |     |
   |     `i16`
   |     `i32`
@@ -104,8 +104,8 @@ error[E0277]: the trait bound `u8: Offset` is not satisfied
 help: the following other types implement trait `Offset`
  --> src/near.rs
   |
-  |     impl Offset for $t {
-  |     ^^^^^^^^^^^^^^^^^^
+  |     unsafe impl Offset for $t {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
   |     |
   |     `i16`
   |     `i32`
@@ -129,8 +129,8 @@ error[E0277]: the trait bound `u8: Offset` is not satisfied
 help: the following other types implement trait `Offset`
  --> src/near.rs
   |
-  |     impl Offset for $t {
-  |     ^^^^^^^^^^^^^^^^^^
+  |     unsafe impl Offset for $t {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
   |     |
   |     `i16`
   |     `i32`
