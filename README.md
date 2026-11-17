@@ -194,8 +194,8 @@ let moved = r;                                       // the bytes move with it
   provenance.
 
 Stored types must have alignment at most 8, non-zero size and no drop glue (checked at compile
-time). A region holds at most 2 GiB, or what its storage gives. [`DESIGN.md`](DESIGN.md) is the
-specification.
+time). A region holds at most 2 GiB, or what its storage gives. The specification is
+[`nearest/CLAUDE.md`](nearest/CLAUDE.md).
 
 ## Getting started
 
