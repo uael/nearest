@@ -125,6 +125,45 @@
 //! left its place as an [`Old`], which can be written into any other place of the region in
 //! O(1). Edits append: compact with `Region::new(&*region)`.
 //!
+//! # Several fields at once
+//!
+//! One handle is usable at a time, because any handle may grow the buffer. `pin()` on the
+//! handle of a `#[flat]` type gives a `Pin<&mut T>` in which several places are borrowed
+//! together, for reading, writing plain data and assigning values without pointers; nothing
+//! is pushed, built or moved through it. `project()` returns the fields, pinned;
+//! [`Near::as_pin_mut`] goes to the target of a pointer and `iter_pin_mut` to the elements of a
+//! list.
+//!
+//! ```
+//! use core::pin::Pin;
+//!
+//! use nearest::{Near, Region, flat};
+//!
+//! #[flat]
+//! enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
+//!
+//! /// Adds `by` to every literal.
+//! fn bump(e: Pin<&mut Expr>, by: i64) {
+//!   match e.project() {
+//!     ExprPin::Lit(mut n) => *n += by,
+//!     ExprPin::Neg(x) => bump(x.as_pin_mut(), by),
+//!     ExprPin::Add(a, b) => {
+//!       let (a, b) = (a.as_pin_mut(), b.as_pin_mut()); // both at once
+//!       bump(a, by);
+//!       bump(b, by);
+//!     }
+//!   }
+//! }
+//!
+//! let mut r = Region::new(Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2))));
+//! bump(r.edit().pin(), 10);
+//! assert!(matches!(&*r, Expr::Add(a, _) if matches!(**a, Expr::Lit(11))));
+//! ```
+//!
+//! With the cargo feature `nightly` (nightly Rust and `#![feature(pin_ergonomics)]` in the
+//! crate that uses `#[flat]`), a pattern on a pinned value binds its fields pinned, as
+//! `project` does.
+//!
 //! # Bytes
 //!
 //! [`Region::to_bytes`] returns the compact image: the bytes a deep copy writes, borrowed from the
@@ -183,10 +222,12 @@ pub use near::Near;
 ///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
 ///   named after it in snake case. A parameter for a field written `Near<X>` takes a builder
 ///   of `X` and allocates the target (a list or string builder if `X` is a slice or `str`);
-/// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign) and `replace` (assign and return
-///   the old value as an [`Old`]), and for structs one method per field (`_0`, `_1`, .. for
-///   tuple fields; `set_` and `replace_` for fields named `set` and `replace`) returning the
-///   field's handle, with the field's visibility;
+/// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign), `replace` (assign and return the
+///   old value as an [`Old`]) and `pin` (a pinned view), and for structs one method per field
+///   (`_0`, `_1`, .. for tuple fields; `set_` and `replace_` for fields named `set` and
+///   `replace`) returning the field's handle, with the field's visibility;
+/// - `project(self: Pin<&mut X>) -> XPin<'_>`: the fields of a pinned value, all pinned, as a
+///   struct or an enum with the shape of `X`. `X` is `Unpin` exactly when its fields are;
 /// - for enums with fields, `as_mut` on the handle and the enum `XMut<'a, 'e>` it returns, all
 ///   of whose variants are tuple-like: unit variants stay units, a variant with one field holds
 ///   that field's handle, and a variant with several fields holds a handle with a method per

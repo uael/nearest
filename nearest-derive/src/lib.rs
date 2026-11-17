@@ -63,7 +63,12 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let [sink, at, shift, buf, ck] =
     ["sink", "at", "shift", "buf", "ck"].map(|s| Ident::new(s, Span::mixed_site()));
   let np = quote!(::nearest::__private);
+  let pin = quote!(::core::pin::Pin);
   let handle = format_ident!("__NearestEdit");
+  let pin_name = format_ident!("{name}Pin");
+  let mut pin_g = generics.clone();
+  pin_g.params.insert(0, GenericParam::Lifetime(parse_quote!(#lt)));
+  let (p_impl, p_ty, p_where) = pin_g.split_for_impl();
 
   // A constructor: `make` around one `emit` per field, after an optional tag. A field written
   // `Near<..>` takes what `Pointer` says: for `Near<X>` a builder of `X`, whose target the
@@ -134,6 +139,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // What differs between structs and enums.
   let (mut mirrors, mut ctors, mut methods, mut extra) = (vec![], vec![], vec![], vec![]);
   let mut view = None;
+  // The declaration of `XPin` and the body of `project`, and every field type of the type.
+  let (mut pinned, mut field_tys) = (None, vec![]);
   let (plain, any, body, checks) = match &input.data {
     Data::Union(u) => {
       return Err(Error::new(u.union_token.span, "`#[flat]` does not support unions"));
@@ -158,6 +165,28 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       };
       let any = quote!(true #(&& <#tys as ::nearest::Flat>::ANY)*);
       let checks = check(&tys, &offs);
+      if !s.fields.is_empty() {
+        let binds: Vec<_> =
+          (0..tys.len()).map(|k| format_ident!("f{k}", span = Span::mixed_site())).collect();
+        let (fvis, ftys): (Vec<_>, Vec<_>) =
+          (s.fields.iter().map(|f| (&f.vis, unself(f.ty.to_token_stream(), &self_ty)))).unzip();
+        let (decl, make) = match &s.fields {
+          Fields::Named(_) => (
+            quote!(#p_where { #(#fvis #members: #pin<&#lt mut #ftys>,)* }),
+            quote!(#pin_name { #(#members: #pin::new_unchecked(#binds),)* }),
+          ),
+          _ => (
+            quote!((#(#fvis #pin<&#lt mut #ftys>,)*) #p_where;),
+            quote!(#pin_name(#(#pin::new_unchecked(#binds),)*)),
+          ),
+        };
+        let doc = format!("The fields of a pinned `{name}`, pinned. Returned by `project`.");
+        pinned = Some((
+          quote!(#[doc = #doc] #vis struct #pin_name #p_impl #decl),
+          quote!(let Self { #(#members: #binds,)* } = self.get_unchecked_mut(); #make),
+        ));
+      }
+      field_tys.extend(tys.iter().cloned());
       (plain, any, quote!(#(#stores)*), checks)
     }
     Data::Enum(data) => {
@@ -170,6 +199,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       let mut_name = format_ident!("{name}Mut");
       let (mut arms, mut built, mut views, mut view_arms) = (vec![], vec![], vec![], vec![]);
       let (mut check_arms, mut ctor_names) = (vec![], vec![]);
+      let (mut pin_variants, mut pin_arms) = (vec![], vec![]);
       let last = data.variants.len() - 1;
       for (i, v) in data.variants.iter().enumerate() {
         if let Some((eq, expr)) = &v.discriminant {
@@ -190,6 +220,21 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         let vdoc = format!("`{name}::{vname}`.");
         let view_arm = quote!(#name::#vname { .. } => #mut_name::#vname);
         let tag_pat = if i == last { quote!(_) } else { tag.to_token_stream() };
+        let ftys = v.fields.iter().map(|f| unself(f.ty.to_token_stream(), &self_ty));
+        let pins = quote!(#(#pin::new_unchecked(#binds)),*);
+        let (pin_decl, pin_make) = match &v.fields {
+          Fields::Named(f) => {
+            let ids: Vec<_> = f.named.iter().map(|f| &f.ident).collect();
+            (
+              quote!({ #(#ids: #pin<&#lt mut #ftys>),* }),
+              quote!({ #(#ids: #pin::new_unchecked(#binds)),* }),
+            )
+          }
+          Fields::Unnamed(_) => (quote!((#(#pin<&#lt mut #ftys>),*)), quote!((#pins))),
+          Fields::Unit => (quote!(), quote!()),
+        };
+        pin_variants.push(quote!(#[doc = #vdoc] #vname #pin_decl));
+        pin_arms.push(quote!(Self::#vname #pat => #pin_name::#vname #pin_make));
         if matches!(v.fields, Fields::Unit) {
           check_arms.push(quote!(#tag_pat => {}));
           arms.push(quote!(Self::#vname => { #tag_store }));
@@ -207,6 +252,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           struct #mirror #impl_g (u8, #(#tys,)* ::core::marker::PhantomData<fn() -> #self_ty>)
             #where_c;
         });
+        field_tys.extend(tys.iter().cloned());
         let offs: Vec<_> = (1..=v.fields.len())
           .map(|k| {
             let k = Index::from(k);
@@ -282,6 +328,13 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
             #(#views,)*
           }
         });
+        let doc = format!(
+          "The variant of a pinned `{name}`, with its fields pinned. Returned by `project`."
+        );
+        pinned = Some((
+          quote!(#[doc = #doc] #vis enum #pin_name #p_impl #p_where { #(#pin_variants,)* }),
+          quote!(match self.get_unchecked_mut() { #(#pin_arms,)* }),
+        ));
       }
       let unit = data.variants.iter().all(|v| matches!(v.fields, Fields::Unit));
       let count = data.variants.len();
@@ -311,10 +364,44 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     let repr = if is_enum { parse_quote!(#[repr(u8)]) } else { parse_quote!(#[repr(C)]) };
     input.attrs.insert(0, repr);
   }
+  // A pinned value must keep its pointers, so the type is `Unpin` exactly when its fields are.
+  // On nightly `#[pin_v2]` says so and gives patterns on `Pin<&mut X>`; otherwise an impl
+  // with a bound on all the fields does, and makes any impl written by hand a conflict.
+  let unpin = if cfg!(feature = "nightly") {
+    input.attrs.insert(0, parse_quote!(#[pin_v2]));
+    quote!()
+  } else {
+    // With the bounds the user wrote, and no others.
+    let mut fields_g = input.generics.clone();
+    fields_g.params.insert(0, GenericParam::Lifetime(parse_quote!(#lt)));
+    let mut unpin_g = fields_g.clone();
+    let (f_impl, f_ty, f_where) = fields_g.split_for_impl();
+    (unpin_g.make_where_clause().predicates)
+      .push(parse_quote!(__NearestFields #f_ty: ::core::marker::Unpin));
+    let unpin_where = unpin_g.split_for_impl().2;
+    quote! {
+      #[allow(dead_code)]
+      struct __NearestFields #f_impl (::core::marker::PhantomData<&#lt ()>, #(#field_tys,)*)
+        #f_where;
+      impl #f_impl ::core::marker::Unpin for #self_ty #unpin_where {}
+    }
+  };
+  let (pin_decl, project) = pinned.map_or((None, None), |(decl, body)| {
+    let project = quote! {
+      /// The fields of a pinned value, pinned, all at once.
+      #vis fn project<#lt>(self: #pin<&#lt mut Self>) -> #pin_name #p_ty {
+        // Fields of a pinned value are pinned, and nothing moves out of them.
+        unsafe { #body }
+      }
+    };
+    (Some(decl), Some(project))
+  });
   Ok(quote! {
     #input
     #view
+    #pin_decl
     const _: () = {
+      #unpin
       #(#mirrors)*
       unsafe impl #impl_g ::nearest::Flat for #self_ty #where_c {
         type Edit<#e> = #handle #h_ty;
@@ -351,6 +438,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       }
       impl #impl_g #self_ty #where_c {
         #(#ctors)*
+        #project
       }
       #[doc = #handle_doc]
       #[repr(transparent)]
@@ -366,6 +454,11 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           value: impl ::nearest::Emit<#self_ty>,
         ) -> ::nearest::Old<#e, #self_ty> {
           self.0.replace(value)
+        }
+        /// The value, pinned: a view in which several fields can be borrowed at once (see
+        /// `project`). Nothing can be pushed, built or moved through it.
+        #vis fn pin(&mut self) -> #pin<&mut #self_ty> {
+          self.0.pin()
         }
         #update
         #(#methods)*

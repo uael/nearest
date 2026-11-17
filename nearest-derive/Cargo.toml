@@ -17,6 +17,8 @@ proc-macro = true
 [features]
 # Enabled by `nearest/unstable`: also generates `update` on handles.
 unstable = []
+# Enabled by `nearest/nightly`: marks types `#[pin_v2]`, for patterns on `Pin<&mut X>`.
+nightly = []
 
 [dependencies]
 syn = { version = "2", features = ["full"] }

@@ -2,9 +2,10 @@ use core::{
   cmp::Ordering,
   fmt,
   hash::{Hash, Hasher},
-  marker::PhantomData,
+  marker::{PhantomData, PhantomPinned},
   num::NonZero,
   ops::Deref,
+  pin::Pin,
   ptr, slice, str,
 };
 
@@ -16,9 +17,10 @@ use crate::{
 /// A 4-byte pointer to a `T` in the same [`Region`](crate::Region), stored as the distance
 /// from its own address. It dereferences like a `Box`.
 ///
-/// A `Near` has no constructor and is neither `Clone` nor `Copy`: it exists only inside a
-/// region, as a field of a value there. `Near<[T]>` and `Near<str>` point at a `u32` length
-/// followed by the elements. `Option<Near<T>>` is also 4 bytes.
+/// A `Near` has no constructor and is neither `Clone`, `Copy` nor `Unpin`: it exists only
+/// inside a region, as a field of a value there, and a pinned value keeps its pointers.
+/// `Near<[T]>` and `Near<str>` point at a `u32` length followed by the elements.
+/// `Option<Near<T>>` is also 4 bytes.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -36,6 +38,7 @@ use crate::{
 pub struct Near<T: ?Sized> {
   pub(crate) off: NonZero<i32>,
   _t: PhantomData<T>,
+  _pin: PhantomPinned,
 }
 
 impl<T: ?Sized> Near<T> {
@@ -76,6 +79,67 @@ impl<T: Flat> Near<T> {
   /// ```
   pub fn new(value: impl Emit<T>) -> impl Emit<Self> + Emit<Option<Self>> {
     New(value)
+  }
+}
+
+impl<T> Near<T> {
+  /// The target, pinned: the way down in a pinned view (see `pin` on handles).
+  ///
+  /// ```
+  /// use core::pin::Pin;
+  ///
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Pair { left: Near<u32>, right: Near<u32> }
+  ///
+  /// let mut r = Region::new(Pair::new(1, 2));
+  /// // Both fields at once.
+  /// let PairPin { left, right } = r.edit().pin().project();
+  /// let mut left: Pin<&mut u32> = left.as_pin_mut();
+  /// let right: Pin<&mut u32> = right.as_pin_mut();
+  /// *left += *right;
+  /// assert_eq!(*r.left, 3);
+  /// ```
+  #[must_use]
+  pub fn as_pin_mut(self: Pin<&mut Self>) -> Pin<&mut T> {
+    // SAFETY: the target is not moved while the pointer is pinned: a pinned view borrows the
+    // handle it comes from, so nothing can grow the buffer; and a `Near` owns its target alone.
+    unsafe {
+      let this = Pin::get_unchecked_mut(self);
+      let target = ptr::from_mut(this).cast::<u8>().wrapping_offset(this.off.get() as isize);
+      Pin::new_unchecked(&mut *target.cast::<T>())
+    }
+  }
+}
+
+impl<T> Near<[T]> {
+  /// The elements, pinned, all at once.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Node { id: u32, kids: Near<[Node]> }
+  ///
+  /// let mut r = Region::new(Node::new(0, [Node::new(1, ()), Node::new(2, ())]));
+  /// let NodePin { mut id, kids } = r.edit().pin().project();
+  /// for kid in kids.iter_pin_mut() {
+  ///   *kid.project().id += 10;
+  ///   *id += 1;
+  /// }
+  /// assert_eq!((r.id, r.kids[0].id, r.kids[1].id), (2, 11, 12));
+  /// ```
+  pub fn iter_pin_mut(self: Pin<&mut Self>) -> impl ExactSizeIterator<Item = Pin<&mut T>> {
+    // SAFETY: as for `Near::as_pin_mut`; the elements are disjoint and stay where they are.
+    unsafe {
+      let this = Pin::get_unchecked_mut(self);
+      let len = ptr::from_mut(this).cast::<u8>().wrapping_offset(this.off.get() as isize);
+      let count = len.cast::<u32>().read_unaligned() as usize;
+      slice::from_raw_parts_mut(len.add(4).cast::<T>(), count)
+        .iter_mut()
+        .map(|element| Pin::new_unchecked(element))
+    }
   }
 }
 

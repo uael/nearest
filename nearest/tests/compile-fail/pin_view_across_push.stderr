@@ -1,0 +1,10 @@
+error[E0499]: cannot borrow `*l` as mutable more than once at a time
+  --> tests/compile-fail/pin_view_across_push.rs:15:3
+   |
+13 |   let ListPin { items } = l.pin().project();
+   |                           - first mutable borrow occurs here
+14 |   let first = items.iter_pin_mut().next().unwrap();
+15 |   l.items().push(2);
+   |   ^ second mutable borrow occurs here
+16 |   let _ = *first;
+   |            ----- first borrow later used here

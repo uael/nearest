@@ -13,7 +13,7 @@ cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=o
 cargo run --example expr             # Examples (also: ir); they assert their results
 cargo bench --bench region           # Benchmarks (criterion)
 cargo test -p nearest --features unstable  # The same with the `unstable` feature (adds `update`)
-MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --features unstable --lib --test integration  # Miri
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --features unstable,nightly --lib --test integration  # Miri, all features
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
 cargo xtask fmt --check              # Check formatting
 cargo xtask lint                     # Clippy (workspace, tests, examples, benches, -D warnings) + format check
@@ -35,17 +35,17 @@ limit, index bounds and the check of loaded bytes. `DESIGN.md` is the specificat
 
 ### Workspace Crates
 
-- **`nearest/`** — the library (`#![no_std]` + `alloc`; one opt-in feature, `unstable`)
+- **`nearest/`** — the library (`#![no_std]` + `alloc`; opt-in features `unstable` and `nightly`)
 - **`nearest-derive/`** — the `#[flat]` attribute, re-exported as `nearest::flat`
 - **`xtask/`** — dev automation (fmt, lint)
 
 ### Public surface
 
 `#[flat]`, `trait Flat` (`type Edit<'e>`), `trait Emit<T>`, `type Edit<'e, T>`, `Near<T>` (`new`,
-`from_iter`), `Region<T>` (`new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`, and the
+`from_iter`, `as_pin_mut`, `iter_pin_mut`), `Region<T>` (`new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`, and the
 `unsafe` `from_bytes_unchecked`, `view_unchecked`),
 `ListEdit<'e, T>` (`push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `get_mut`,
-`set`, `replace`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`, `set`), `StrEdit<'e>` (`set`,
+`set`, `replace`, `iter_pin_mut`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`, `set`), `StrEdit<'e>` (`set`,
 `replace`), `Old<'e, T>` (no methods), `Invalid`, plus the trait impls listed in `DESIGN.md`.
 Hidden plumbing for the macro: `nearest::__private::{Raw, Buf, Sink, Check, fits, make,
 Variant, Pointer}` and the hidden items of the two traits. Do not add public items.
@@ -55,6 +55,18 @@ handle: `Raw::update`, its wrappers on `ListEdit`, `OptionEdit`, `StrEdit`, and 
 one. Its `Old<'a, T>` has the lifetime of the handle's borrow, not of the edit. Test both
 configurations: `cargo test --all` and `cargo test -p nearest --features unstable`; `cargo
 xtask lint` runs clippy with and without the feature.
+
+The pinned view: `pin()` on generated handles (`Raw::pin`) gives `Pin<&mut X>`; the macro
+generates `X::project` and `XPin<'a>` (a struct or an enum with the shape of `X`, every field
+`Pin<&'a mut Field>`); `Near::as_pin_mut` and `iter_pin_mut` go down. `Near` holds a
+`PhantomPinned`. A stored type must be `Unpin` exactly when its fields are: the macro emits
+`impl Unpin for X where __NearestFields<'a, ..>: Unpin` (all field types), which makes a
+hand-written impl a conflict. With the cargo feature `nightly` (forwarded to the macro) it
+emits `#[pin_v2]` instead, which forbids such impls and makes patterns project; crates using
+`#[flat]` then need `#![feature(pin_ergonomics)]`, so only `--lib --test integration` build
+with it (not doc tests, examples or benches), on the pinned nightly:
+`cargo +nightly-2026-02-10 test -p nearest --features unstable,nightly --lib --test integration`.
+Never use `--all-features` on stable.
 
 ### Files (nearest/src/)
 

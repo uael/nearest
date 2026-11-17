@@ -87,9 +87,9 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 |---|---|
 | `#[flat]` | makes a struct or enum storable; generates constructors and the handle |
 | `Region<T>` | the buffer: `new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`; `unsafe` `from_bytes_unchecked`, `view_unchecked` |
-| `Near<T>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)` |
+| `Near<T>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
-| `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `get_mut`, `set`, `replace` |
+| `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `get_mut`, `set`, `replace`, `iter_pin_mut` |
 | `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set` |
 | `StrEdit<'e>` | the handle of a `Near<str>`: `set`, `replace` |
 | `Old<'e, T>` | a value that left its place: write it anywhere to move it there |
@@ -109,6 +109,32 @@ the buffer outlives a change that may grow it. Every handle has `set` (assign); 
 that left. Such an `Old` keeps the region borrowed for the whole edit and can be written
 into any place of it in O(1): wrapping, hoisting, swapping and moving elements between lists
 are ordinary statements.
+
+## Several fields at once
+
+One handle is usable at a time, because any handle may grow the buffer. Where an edit only
+reads, writes plain data or assigns values without pointers, `pin()` on a handle gives a
+`Pin<&mut T>` in which several places are borrowed together:
+
+```rust
+/// Adds `by` to every literal.
+fn bump(e: Pin<&mut Expr>, by: i64) {
+  match e.project() {                        // generated: the fields, pinned
+    ExprPin::Lit(mut n) => *n += by,
+    ExprPin::Neg(x) => bump(x.as_pin_mut(), by),
+    ExprPin::Add(a, b) => {                  // both at once
+      bump(a.as_pin_mut(), by);
+      bump(b.as_pin_mut(), by);
+    }
+  }
+}
+
+bump(r.edit().pin(), 10);
+```
+
+Nothing is pushed, built or moved through a pin; the handle is borrowed meanwhile and edits
+again afterwards. With the `nightly` feature (nightly Rust and `#![feature(pin_ergonomics)]`
+in your crate) a pattern does what `project` does: `match e { Expr::Add(a, b) => .. }`.
 
 ## Bytes
 

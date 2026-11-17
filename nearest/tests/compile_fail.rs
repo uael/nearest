@@ -1,3 +1,5 @@
+// The expected errors are those of the pinned stable toolchain.
+#[cfg(not(feature = "nightly"))]
 #[test]
 fn compile_fail() {
   let t = trybuild::TestCases::new();

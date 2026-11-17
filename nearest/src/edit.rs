@@ -2,6 +2,7 @@ use core::{
   marker::PhantomData,
   mem::{self, MaybeUninit},
   ops::{Deref, DerefMut},
+  pin::Pin,
   ptr, slice,
 };
 
@@ -72,6 +73,14 @@ impl<'e, T: Flat> Raw<'e, T> {
   {
     // SAFETY: as for `get`; a `Copy` type has no `Near`, so assigning to it is sound.
     unsafe { &mut *(*self.buf()).ptr().add(self.at()).cast::<T>() }
+  }
+
+  /// The `T`, pinned: a view in which several fields can be borrowed at once. It borrows the
+  /// handle, so nothing can grow the buffer while it lives, and being pinned it gives no
+  /// `&mut` to anything that contains a `Near`.
+  pub fn pin(&mut self) -> Pin<&mut T> {
+    // SAFETY: as for `get`; the value stays where it is while the handle is borrowed.
+    unsafe { Pin::new_unchecked(&mut *(*self.buf()).ptr().add(self.at()).cast::<T>()) }
   }
 
   /// Writes `value` over the `T`. The old bytes wait on the stack and come back if writing
@@ -584,6 +593,27 @@ impl<'e, T: Flat> ListEdit<'e, T> {
   #[cfg(feature = "unstable")]
   pub fn update<'a, E: Emit<Near<[T]>>>(&'a mut self, f: impl FnOnce(Old<'a, Near<[T]>>) -> E) {
     self.0.update(f);
+  }
+}
+
+impl<T: Flat> ListEdit<'_, T> {
+  /// The elements, pinned, all at once: a view for reading and for writing plain data, in
+  /// which nothing can be pushed, built or moved. See `pin` on the handles of `#[flat]` types.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Node { id: u32, kids: Near<[Node]> }
+  ///
+  /// let mut r = Region::new(Node::new(0, [Node::new(1, ()), Node::new(2, ())]));
+  /// let mut kids: Vec<_> = r.edit().kids().iter_pin_mut().map(|kid| kid.project().id).collect();
+  /// kids.swap(0, 1); // all the handles are live together
+  /// *kids[0] += 10;
+  /// assert_eq!((r.kids[0].id, r.kids[1].id), (1, 12));
+  /// ```
+  pub fn iter_pin_mut(&mut self) -> impl ExactSizeIterator<Item = Pin<&mut T>> {
+    self.0.pin().iter_pin_mut()
   }
 }
 

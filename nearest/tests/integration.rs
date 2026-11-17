@@ -1,4 +1,7 @@
 #![expect(clippy::many_single_char_names, reason = "short names for regions and models")]
+// With `nightly`, `#[flat]` marks types `#[pin_v2]`.
+#![cfg_attr(feature = "nightly", feature(pin_ergonomics))]
+#![cfg_attr(feature = "nightly", expect(incomplete_features, reason = "pin_ergonomics"))]
 
 use std::{
   borrow::Cow,
@@ -1929,5 +1932,120 @@ mod unstable {
       });
     });
     assert!(boom.is_err());
+  }
+}
+
+/// The pinned view: several fields at once, for reading, writing plain data and assigning
+/// values without pointers. The handle is borrowed meanwhile, so nothing grows the buffer.
+mod pinned {
+  use std::pin::Pin;
+
+  use nearest::{Near, Region, flat};
+
+  use super::{Block, BlockPin, Expr, ExprPin, Inst, InstPin, show};
+
+  #[flat]
+  struct Node {
+    id: u32,
+    kids: Near<[Node]>,
+    next: Option<Near<Node>>,
+  }
+
+  /// Adds `by` to every literal, visiting both sides of an addition with both borrowed.
+  fn bump(e: Pin<&mut Expr>, by: i64) {
+    match e.project() {
+      ExprPin::Lit(mut n) => *n += by,
+      ExprPin::Neg(x) => bump(x.as_pin_mut(), by),
+      ExprPin::Add(a, b) => {
+        let (a, b) = (a.as_pin_mut(), b.as_pin_mut());
+        bump(b, by);
+        bump(a, by);
+      }
+    }
+  }
+
+  #[test]
+  fn several_fields_are_borrowed_at_once() {
+    let mut r =
+      Region::new(Expr::add(Expr::neg(Expr::Lit(1)), Expr::add(Expr::Lit(2), Expr::Lit(3))));
+    let e = r.edit();
+    bump(e.pin(), 10);
+    assert_eq!(show(e), "(-11 + (12 + 13))");
+    // A value without pointers is assigned in place; what it replaces is garbage.
+    if let ExprPin::Add(a, b) = e.pin().project() {
+      let (mut a, b) = (a.as_pin_mut(), b.as_pin_mut());
+      assert_eq!(show(&b), "(12 + 13)");
+      a.set(Expr::Lit(7));
+    }
+    assert_eq!(show(e), "(7 + (12 + 13))");
+    // The view is over: the handle edits again.
+    e.set(Expr::neg(Expr::Lit(1)));
+    bump(r.edit().pin(), 1);
+    assert_eq!(show(&r), "-2");
+  }
+
+  #[test]
+  fn struct_fields_and_list_elements() {
+    let mut r = Region::new(Block::new(1, (Inst::new(1, [1, 2]), Inst::new(2, [3])), None));
+    let b = r.edit();
+    let BlockPin { mut id, insts, next } = b.pin().project();
+    assert!(next.as_pin_mut().is_none());
+    // Every element at once, each with its fields at once.
+    let mut insts: Vec<InstPin<'_>> = insts.iter_pin_mut().map(Inst::project).collect();
+    insts.reverse();
+    for (i, inst) in insts.iter_mut().enumerate() {
+      *inst.op += 10 * (i as u8 + 1);
+      *id += u32::from(*inst.op);
+    }
+    assert_eq!((b.id, b.insts[0].op, b.insts[1].op), (1 + 12 + 21, 21, 12));
+    // From a list handle too, and plain elements are plain.
+    let total: u32 = b.insts().iter_pin_mut().map(|inst| inst.args.iter().sum::<u32>()).sum();
+    for mut arg in b.insts().at(0).args().iter_pin_mut() {
+      *arg += total;
+    }
+    assert_eq!(b.insts[0].args[..], [7, 8]);
+    b.insts().push(Inst::new(3, ()));
+    assert_eq!(r.insts.len(), 3);
+
+    let mut n =
+      Region::new(Node::new(0, [Node::new(1, (), None)], Near::new(Node::new(2, (), None))));
+    let NodePin { mut id, kids, next } = n.edit().pin().project();
+    let mut next = next.as_pin_mut().map(Near::as_pin_mut).unwrap().project();
+    for kid in kids.iter_pin_mut() {
+      *id += *kid.project().id + *next.id;
+    }
+    // Clearing an optional pointer is an assignment of a value without pointers.
+    next.next.set(None);
+    assert_eq!((n.id, n.next.as_ref().unwrap().id), (3, 2));
+  }
+
+  /// With `nightly`, patterns bind the fields of a pinned value, pinned.
+  #[cfg(feature = "nightly")]
+  #[test]
+  fn patterns_on_pinned_values() {
+    fn bump(e: Pin<&mut Expr>, by: i64) {
+      match e {
+        // A binding is the pinned field; `mut` would copy the number out instead.
+        Expr::Lit(n) => *n.get_mut() += by,
+        Expr::Neg(x) => bump(x.as_pin_mut(), by),
+        Expr::Add(a, b) => {
+          let (a, b) = (a.as_pin_mut(), b.as_pin_mut());
+          bump(b, by);
+          bump(a, by);
+        }
+      }
+    }
+    let mut r = Region::new(Expr::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2)));
+    bump(r.edit().pin(), 5);
+    assert_eq!(show(&r), "(-6 + 7)");
+    let mut b = Region::new(Block::new(1, [Inst::new(1, [1])], None));
+    let Block { id, insts, .. } = b.edit().pin();
+    let id = id.get_mut();
+    for inst in insts.iter_pin_mut() {
+      let Inst { op, .. } = inst;
+      *op.get_mut() += 1;
+      *id += 1;
+    }
+    assert_eq!((b.id, b.insts[0].op), (2, 2));
   }
 }
