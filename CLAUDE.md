@@ -12,9 +12,11 @@ cargo test --test integration TESTNAME  # Run a single integration test
 cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
 cargo run --example expr             # Examples (also: ir); they assert their results
 cargo bench --bench region           # Benchmarks (criterion)
-MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --features nightly --lib --test integration --test pin_v2  # Miri
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --lib --test integration  # Miri
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --features nightly --test pin_v2  # Miri, `nightly` feature
 RUSTFLAGS="-D warnings" cargo +nightly-2026-02-10 test -p nearest --features nightly --lib --test integration --test pin_v2  # The `nightly` feature
 RUSTFLAGS="-D warnings" cargo +nightly-2026-02-10 test -p nearest --features nightly --doc  # Its doc tests
+cargo +nightly-2026-02-10 clippy --workspace --features nearest/nightly --tests --examples --benches -- -D warnings  # Its clippy
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
 cargo xtask fmt --check              # Check formatting
 cargo xtask lint                     # Clippy (workspace, tests, examples, benches, -D warnings) + format check
@@ -24,8 +26,9 @@ cargo deny check                     # License/advisory/ban auditing
 ```
 
 The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`; `rust-version` is
-1.95). A pinned nightly (`nightly-2026-02-10`) is used only by `cargo xtask fmt` (`rustfmt.toml`
-uses unstable options) and by Miri. Generate trybuild `.stderr` files with the pinned stable.
+1.95). A pinned nightly (`nightly-2026-02-10`) is used by `cargo xtask fmt` (`rustfmt.toml`
+uses unstable options), by Miri, and to build and test the `nightly` feature. Generate trybuild
+`.stderr` files with the pinned stable; the trybuild test runs on stable only.
 
 ## Architecture
 
@@ -49,7 +52,8 @@ limit, index bounds and the check of loaded bytes. `DESIGN.md` is the specificat
 `set`, `replace`, `update`, `iter_pin_mut`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`,
 `set`, `update`), `StrEdit<'e>` (`set`, `replace`, `update`), `Old<'e, T>` (no methods), `Invalid`, plus the trait impls listed in `DESIGN.md`.
 Hidden plumbing for the macro: `nearest::__private::{Raw, Buf, Sink, Check, fits, make,
-Variant, Pointer}` and the hidden items of the two traits. Do not add public items.
+Variant, Pointer}`, and `unpin` with the feature; the hidden items of the two traits (with the
+feature, also `Flat::UNPIN`). Do not add public items.
 
 Every handle has `update`, the closure form of `replace`: `Raw::update` (which shares
 `Raw::swap_in` with `replace`), its wrappers on `ListEdit`, `OptionEdit`, `StrEdit`, and the
@@ -60,9 +64,10 @@ generates `X::project` and `XPin<'a>` (a struct or an enum with the shape of `X`
 `Pin<&'a mut Field>`); `Near::as_pin_mut` and `iter_pin_mut` go down. `Near` holds a
 `PhantomPinned`. A stored type must be `Unpin` exactly when its fields are: the macro emits
 `impl Unpin for X where __NearestFields<'a, ..>: Unpin` (all field types), which makes a
-hand-written impl a conflict. For a type the user also marked `#[pin_v2]` (nightly, feature
-`pin_ergonomics`) the macro skips that impl: the compiler forbids `Unpin` impls there and
-makes patterns project.
+hand-written impl a conflict. Without the feature it always writes that impl, and rejects a
+`#[pin_v2]` it sees on the input (`#[pin_v2]` needs the feature, which adds it); a `#[pin_v2]`
+added by another macro after `#[flat]` ran meets the impl, so soundness does not depend on the
+macro seeing the attribute.
 
 The feature `nightly` (`nearest/nightly` forwards to `nearest-derive/nightly`; nightly compiler
 only) makes `#[flat]` add `#[pin_v2]` to every type, through
@@ -76,9 +81,11 @@ types, `false` for pointers without looking at the target, `__private::unpin::<S
 F1::UNPIN & ..)` for generated types) asserts that a type is not `Unpin` unless its fields
 are. `Raw::pin`, `Near::as_pin_mut` and `Near::<[T]>::iter_pin_mut` evaluate it
 (`unpin::pinned::<T>()`), so a hand-written impl on a type holding a `Near` fails the build
-where it, or a type holding it by value, is pinned. Without the feature nothing changes.
-`tests/pin_v2.rs` is built only with the feature; the feature's own `compile_fail` doc tests
-are on `nearest/src/unpin.rs`. The trybuild test runs on stable only.
+where it, or a type holding it by value, is pinned (in a build that generates code, not
+`cargo check`). A `#[pin_v2]` written by hand is kept, not repeated. Without the feature nothing
+changes. `tests/pin_v2.rs` is built only with the feature; the feature's own `compile_fail` doc
+tests are on `nearest/src/unpin.rs`, including the compiler's rule in a crate with
+`pin_ergonomics`. The trybuild test runs on stable only.
 Names the generated code keeps: a field called `set`, `replace`, `pin` or `update` gets a
 trailing underscore, and a variant called `Project` gets the constructor `project_`.
 
@@ -92,6 +99,7 @@ trailing underscore, and a variant called `Project` gets the constructor `projec
 | `bytes.rs` | `Invalid`, the checker `Check` and its steps (`target`, `list`, `text`, `items`), `check` |
 | `near.rs` | `Near<T>`: three `Deref` impls (`T`, `[T]`, `str`), builders, trait impls |
 | `region.rs` | `Region<T>`, including `to_bytes`, `from_bytes`, `view` |
+| `unpin.rs` | `nightly` feature only (`specialization`): `unpin` and `pinned`, the guard against a hand-written `Unpin` |
 
 `nearest-derive/src/lib.rs` generates, inside `const _: () = { .. }`: the `Flat` impl (`Edit<'e>`,
 `PLAIN`, `ANY`, `store`, `edit`, `check`, each checking `fits`), constructors (`new`, or one snake-case

@@ -111,6 +111,34 @@
 //! let mut r = Region::new(Root::new([Leaf::new(None)]));
 //! let _ = r.edit().leaves().iter_pin_mut().count();
 //! ```
+//!
+//! In a crate with `pin_ergonomics`, the compiler rejects the impl itself, pinned or not:
+//!
+//! ```compile_fail
+//! #![feature(pin_ergonomics)]
+//! #![expect(incomplete_features, reason = "pin_ergonomics")]
+//! use nearest::{Near, flat};
+//!
+//! #[flat]
+//! struct Node { value: u32, next: Option<Near<Node>> }
+//! impl Unpin for Node {}
+//! ```
+//!
+//! And without the impl, a pattern projects the pinned value:
+//!
+//! ```
+//! #![feature(pin_ergonomics)]
+//! #![expect(incomplete_features, reason = "pin_ergonomics")]
+//! use nearest::{Near, Region, flat};
+//!
+//! #[flat]
+//! struct Node { value: u32, next: Option<Near<Node>> }
+//! let mut r = Region::new(Node::new(1, None));
+//! let Node { value, next } = r.edit().pin();
+//! *value.get_mut() += 1;
+//! assert!(next.is_none());
+//! assert_eq!(r.value, 2);
+//! ```
 
 use crate::Flat;
 
@@ -129,6 +157,10 @@ impl<T: ?Sized + Unpin> IsUnpin for T {
 
 /// `Flat::UNPIN` of a `#[flat]` type, given whether all its fields are `Unpin`: the type may
 /// be `Unpin` only if they all are.
+///
+/// # Panics
+/// At compile time, where `UNPIN` is evaluated, if `T` is `Unpin` but `fields` is `false`.
+#[must_use]
 pub const fn unpin<T>(fields: bool) -> bool {
   assert!(
     fields || !<T as IsUnpin>::V,

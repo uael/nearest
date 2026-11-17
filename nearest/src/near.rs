@@ -159,6 +159,7 @@ impl<T: Flat> Near<[T]> {
   /// }
   /// assert_eq!((r.id, r.kids[0].id, r.kids[1].id), (2, 11, 12));
   /// ```
+  #[must_use = "the iterator does nothing unless it is used"]
   pub fn iter_pin_mut(self: Pin<&mut Self>) -> impl ExactSizeIterator<Item = Pin<&mut T>> {
     #[cfg(feature = "nightly")]
     crate::unpin::pinned::<T>();

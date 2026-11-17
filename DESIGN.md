@@ -276,27 +276,32 @@ if let Some(next) = next.as_pin_mut() {          // `Option::as_pin_mut`, from `
   pin lives: a pin holds an address, which is exactly what growing would invalidate. Nothing is
   pushed, built or moved through a pin; that is what handles are for.
 - `X::project(self: Pin<&mut X>) -> XPin<'_>` is generated: `XPin` has the fields of a struct,
-  or the variants of an enum with their fields, each as `Pin<&mut Field>`. On nightly Rust a
-  type that is also marked `#[pin_v2]` is projected by patterns, in a crate that enables
-  `pin_ergonomics`: `match e.pin() { Expr::Add(a, b) => .. }`. Mark it by hand, or enable the
-  `nightly` feature, under which `#[flat]` marks every type.
+  or the variants of an enum with their fields, each as `Pin<&mut Field>`. On nightly Rust,
+  with the `nightly` feature, every `#[flat]` type is also marked `#[pin_v2]` and is projected
+  by patterns, in a crate that enables `pin_ergonomics`:
+  `match e.pin() { Expr::Add(a, b) => .. }`. The feature is the way to that mark: without it,
+  `#[flat]` rejects a `#[pin_v2]` written on the type, since it gives the type the `Unpin` impl
+  below, which a `#[pin_v2]` type cannot have.
 - `Near::as_pin_mut` pins the target of a pointer, `Near::<[T]>::iter_pin_mut` the elements of
   a list (also on `ListEdit`), and `core` provides `Option::as_pin_mut`.
 - A `Near` is `!Unpin`, and a stored type is `Unpin` exactly when its fields are: the macro
   implements `Unpin` under a bound on all the fields, which makes an impl written by hand a
   conflict. So a `Pin<&mut T>` gives a `&mut T` only for data without pointers (I2), where it
   is harmless. A `Region` is always `Unpin`: it owns its buffer.
-- A type marked `#[pin_v2]` cannot have that impl: in a crate that enables `pin_ergonomics`,
-  the compiler forbids every `Unpin` impl of such a type, the macro's and a hand-written one
-  alike. So the macro writes none, and in that crate the compiler keeps the rule. Under the
-  `nightly` feature every type is `#[pin_v2]`, also in crates without `pin_ergonomics`, where
-  the compiler accepts a hand-written `Unpin` impl. There the check is the library's: every
-  place that hands out a `Pin<&mut T>` (`pin`, `Near::as_pin_mut`, `iter_pin_mut`) evaluates,
-  at compile time, a hidden constant of `T` that asks, through `specialization`, whether `T`
-  and each type it holds by value is `Unpin`, and fails the build if one is while one of its
-  fields is not. A hand-written impl on a type holding a `Near` is thus rejected when the type,
-  or a type holding it by value, is first pinned; an impl on data without pointers is accepted,
-  and harmless.
+- A type marked `#[pin_v2]` cannot have that impl: in a crate that enables `pin_ergonomics`, the
+  compiler forbids every `Unpin` impl of such a type, the macro's and a hand-written one alike. So
+  under the `nightly` feature, where every type is `#[pin_v2]`, the macro writes none, and in that
+  crate the compiler keeps the rule. Without the feature the impl is always written: a `#[pin_v2]`
+  that another macro adds after `#[flat]` ran meets it, and a hand-written impl then conflicts with
+  it. Under the feature the types are `#[pin_v2]` also in crates without `pin_ergonomics`, where the
+  compiler accepts a hand-written `Unpin` impl. There the check is the library's: every place that
+  hands out a `Pin<&mut T>` (`pin`, `Near::as_pin_mut`, `iter_pin_mut`) evaluates, at compile time,
+  a hidden constant of `T` that asks, through `specialization`, whether `T` and each type it holds
+  by value is `Unpin`, and fails the build if one is while one of its fields is not. A hand-written
+  impl on a type holding a `Near` is thus rejected when the type, or a type holding it by value, is
+  first pinned; an impl on data without pointers is accepted, and harmless. Like the other
+  compile-time checks (alignment, size, drop glue), it is evaluated where code is generated, so it
+  fails a build, not `cargo check`.
 - `Pin::set` assigns a value held by value, which cannot contain a pointer (I1): the place then
   holds a complete value, and what it pointed to is garbage, as after `set` on a handle.
 

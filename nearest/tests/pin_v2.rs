@@ -31,6 +31,7 @@ struct Inst {
 }
 
 /// Adds `by` to every literal.
+#[expect(clippy::needless_pass_by_value, reason = "the pattern below consumes the pin")]
 fn bump(e: Pin<&mut Expr>, by: i64) {
   match e {
     // A binding is the pinned field; `mut` would copy the number out instead.

@@ -136,9 +136,10 @@ impl<'e, T: Flat> Raw<'e, T> {
   /// borrow of this handle: kept past the call, it freezes every handle of the region, so it
   /// can only move into what `f` returns, and anywhere else it is a copy.
   ///
-  /// The old value is used at most once:
+  /// The old value is used at most once (these three cases are also trybuild programs,
+  /// `tests/compile-fail/update_*.rs`, which pin the reason down):
   ///
-  /// ```compile_fail,E0382
+  /// ```compile_fail
   /// # use nearest::{Near, Region, flat};
   /// # #[flat]
   /// # enum Expr { Lit(i64), Add(Near<Expr>, Near<Expr>) }
@@ -148,9 +149,7 @@ impl<'e, T: Flat> Raw<'e, T> {
   ///
   /// The handle is borrowed while the closure runs:
   ///
-  // The nightly of the `nightly` feature reports this as E0500 and E0501.
-  #[cfg_attr(not(feature = "nightly"), doc = "```compile_fail,E0499")]
-  #[cfg_attr(feature = "nightly", doc = "```compile_fail")]
+  /// ```compile_fail
   /// # use nearest::{Near, Region, flat};
   /// # #[flat]
   /// # enum Expr { Lit(i64), Neg(Near<Expr>) }
@@ -164,7 +163,7 @@ impl<'e, T: Flat> Raw<'e, T> {
   ///
   /// And for as long as the old value is kept, so it cannot move back in later:
   ///
-  /// ```compile_fail,E0499
+  /// ```compile_fail
   /// # use nearest::{Near, Region, flat};
   /// # #[flat]
   /// # enum Expr { Lit(i64), Neg(Near<Expr>) }

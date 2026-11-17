@@ -70,8 +70,12 @@ jobs:
           toolchain: nightly-2026-02-10
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
-      # With the `nightly` feature, which also builds `tests/pin_v2.rs`.
-      - run: cargo +nightly-2026-02-10 miri test -p nearest --features nightly --lib --test integration --test pin_v2
+      # The default configuration; the `nightly` feature adds `tests/pin_v2.rs` (the `nightly`
+      # job runs the other tests natively with the feature).
+      - run: cargo +nightly-2026-02-10 miri test -p nearest --lib --test integration
+        env:
+          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
+      - run: cargo +nightly-2026-02-10 miri test -p nearest --features nightly --test pin_v2
         env:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
 
@@ -86,7 +90,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-02-10
+          components: clippy
       - uses: Swatinem/rust-cache@v2
+      - run: cargo +nightly-2026-02-10 clippy --workspace --features nearest/nightly --tests --examples --benches -- -D warnings
       # The trybuild test stays on stable: its expected messages are those of the pinned stable.
       - run: cargo +nightly-2026-02-10 test -p nearest --features nightly --lib --test integration --test pin_v2
       - run: cargo +nightly-2026-02-10 test -p nearest --features nightly --doc

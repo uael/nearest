@@ -162,9 +162,10 @@
 //! assert!(matches!(&*r, Expr::Add(a, _) if matches!(**a, Expr::Lit(11))));
 //! ```
 //!
-//! On nightly Rust, a type that is also marked `#[pin_v2]` is projected by patterns, as
-//! `project` does, in a crate that enables `pin_ergonomics`: `match e { Expr::Add(a, b) => .. }`.
-//! Mark the type by hand, or enable the `nightly` feature.
+//! On nightly Rust, with the `nightly` feature, every `#[flat]` type is also marked `#[pin_v2]`
+//! and is projected by patterns, as `project` does, in a crate that enables `pin_ergonomics`:
+//! `match e { Expr::Add(a, b) => .. }`. Without the feature, `#[flat]` rejects a `#[pin_v2]`
+//! written on the type.
 //!
 //! # The `nightly` feature
 //!
@@ -175,7 +176,7 @@
 //! value needs `pin_ergonomics`. An `Unpin` impl written by hand for a type that holds a `Near`
 //! would give a `&mut` to it through `Pin::get_mut`: in a crate with `pin_ergonomics` the
 //! compiler rejects it, and in one without, the build fails where the type, or a type holding
-//! it by value, is pinned.
+//! it by value, is pinned (a build that generates code: `cargo check` does not report it).
 //!
 //! # Bytes
 //!
@@ -253,7 +254,8 @@ pub use near::Near;
 ///
 /// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
 /// `repr`s other than `u8`, explicit discriminants, empty enums, enums of more than 256
-/// variants and variants whose constructors would have the same name are rejected.
+/// variants, variants whose constructors would have the same name and, without the `nightly`
+/// feature, `#[pin_v2]` are rejected.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
