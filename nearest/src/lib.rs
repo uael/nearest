@@ -196,12 +196,12 @@
 //! # Storage
 //!
 //! A region keeps its buffer in a [`Storage`]: `Region<T>` is `Region<T, Heap>`, on the
-//! [`Heap`], which grows as needed ([`Region::with_capacity`] makes room up front). [`Inline<N>`] keeps it in `N` bytes inside the `Region`
-//! value, with no heap; growing past them panics, as growing past 2 GiB does. A storage of
+//! [`Heap`], which grows as needed ([`Heap::with_capacity`] makes room up front).
+//! [`Inline<N>`] keeps it in `N` bytes inside the `Region` value, with no heap; growing past them panics, as growing past 2 GiB does. A storage of
 //! your own, such as an arena or a memory-mapped file, implements the `unsafe` trait
-//! [`Storage`]: two accessors to its memory and, if it grows, `grow`. A region in any storage
-//! is built with [`Region::new_in`], or with [`Region::from_bytes`] when the storage has a
-//! `Default`; everything else is the same. A storage may move with its region; a region cannot
+//! [`Storage`]: two accessors to its memory, the second of which grows it if it can. A region in
+//! any storage is built with [`Region::new_in`], or with [`Region::from_bytes`] when the storage
+//! has a `Default`; everything else is the same. A storage may move with its region; a region cannot
 //! move while something borrows it, and every edit starts from where it is.
 //!
 //! ```
@@ -462,9 +462,15 @@ mod tests {
     assert_eq!(compact[..], r[..]);
   }
 
+  /// Memory past the size limit is there, but not used.
   #[test]
-  fn capacity_past_the_size_limit_panics() {
-    assert!(catch_unwind(|| Region::with_capacity((1 << 16) + 1, 1u8)).is_err());
-    assert_eq!(*Region::with_capacity(1 << 16, 1u8), 1);
+  fn capacity_past_the_size_limit_is_not_used() {
+    let mut r = Region::new_in(crate::Heap::with_capacity((1 << 16) + 64), Near::from_iter([0u32]));
+    let full = catch_unwind(AssertUnwindSafe(|| {
+      for i in 0..1 << 15 {
+        r.edit().push(i);
+      }
+    }));
+    assert!(full.is_err() && r.byte_len() <= 1 << 16);
   }
 }
