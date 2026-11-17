@@ -35,6 +35,10 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     }
   }
 
+  if let Some(l) = input.generics.lifetimes().next() {
+    return Err(Error::new_spanned(l, "`#[flat]` types are `'static`: no lifetime parameters"));
+  }
+
   let name = &input.ident;
   let vis = &input.vis;
   let mut generics = input.generics.clone();
@@ -45,13 +49,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let (impl_g, ty_g, where_c) = generics.split_for_impl();
   let self_ty = quote!(#name #ty_g);
   // `'a`: the borrow of a handle; `'e`: the edit.
-  let [lt, e] = ["a", "e"].map(|base| {
-    let mut name = String::from(base);
-    while input.generics.lifetimes().any(|l| l.lifetime.ident == name) {
-      name.push('_');
-    }
-    Lifetime::new(&format!("'{name}"), Span::call_site())
-  });
+  let [lt, e] = ["'a", "'e"].map(|name| Lifetime::new(name, Span::call_site()));
   let mut handle_g = generics.clone();
   handle_g.params.insert(0, GenericParam::Lifetime(parse_quote!(#e)));
   let (h_impl, h_ty, h_where) = handle_g.split_for_impl();

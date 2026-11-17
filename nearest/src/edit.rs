@@ -13,9 +13,13 @@ use crate::{
 /// The core of every handle: a `&'a mut Raw<'e, T>` is a fat reference whose address is the
 /// region's `Buf` and whose length is the position of a `T` in it. It never holds an address
 /// inside the buffer, so it stays valid when the buffer grows. `'e` is the edit.
+///
+/// It is neither `Send` nor `Sync` (the `*mut ()`), and so is every handle: an edit stays on
+/// one thread. An [`Old`] reads its region without borrowing a handle, so a handle on another
+/// thread could grow the buffer under it.
 #[doc(hidden)]
 #[repr(transparent)]
-pub struct Raw<'e, T>(PhantomData<(&'e mut (), T)>, [()]);
+pub struct Raw<'e, T>(PhantomData<(&'e mut (), T, *mut ())>, [()]);
 
 impl<'e, T> Raw<'e, T> {
   /// The handle of the `T` at `at`.
@@ -134,7 +138,8 @@ impl<'e, T: Flat> Raw<'e, T> {
 /// It can only be written somewhere: into a place of the same region it moves there in O(1),
 /// whatever the size of what it points to; anywhere else (another region, `Region::new`) it is
 /// copied. It is neither `Copy` nor `Clone`, and it keeps the region borrowed while it lives.
-/// Dropped, it is garbage until the region is compacted.
+/// Dropped, it is garbage until the region is compacted. Like handles, it stays on the thread
+/// of its edit.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};

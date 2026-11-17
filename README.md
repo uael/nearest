@@ -129,6 +129,7 @@ integers and the layout of the target.
   written again, so an `Old` stays intact for as long as the edit lasts.
 - A handle holds a position, not an address, so it stays valid when the buffer grows. Every
   access of an edit goes through one pointer stored in the region's buffer.
+- Handles and `Old` are neither `Send` nor `Sync`: an edit stays on one thread.
 - A panic leaves every place either unchanged or holding its complete new value.
 - No pointer is made from an integer. Miri runs the tests with Tree Borrows and strict
   provenance.
@@ -140,9 +141,8 @@ time). A region holds at most 2 GiB. [`DESIGN.md`](DESIGN.md) is the specificati
 
 Stable Rust (1.95 or later), `#![no_std]` + `alloc`, no dependencies besides the macro.
 
-```toml
-[dependencies]
-nearest = "0.4"
+```sh
+cargo add nearest
 ```
 
 Examples: [`expr.rs`](nearest/examples/expr.rs) simplifies an expression tree by rewriting it

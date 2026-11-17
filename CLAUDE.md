@@ -99,6 +99,9 @@ for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), hidden `#[repr(C)]` mir
   `Old`) goes through that pointer, each access a reborrow that ends with the statement. Never
   keep a `&mut Buf`/`&Buf` across a call that touches the buffer. Allocate before taking
   references into the buffer.
+- An edit stays on one thread (I9): `Raw` holds a `PhantomData<*mut ()>`, so handles are
+  neither `Send` nor `Sync`, and neither is `Old`. An `Old` reads its region without borrowing
+  a handle, so a handle on another thread could grow the buffer under it.
 - Self-relative pointers are resolved from `&self` (Tree Borrows; Stacked Borrows is not
   supported). No integer-to-pointer casts. Miri runs with `-Zmiri-tree-borrows
   -Zmiri-strict-provenance`.

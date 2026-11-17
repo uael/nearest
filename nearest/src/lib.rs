@@ -143,6 +143,7 @@
 //!   written again, so an `Old` stays intact for the whole edit, which it keeps borrowed.
 //! - A handle holds a position, not an address, so it stays valid when the buffer grows; real
 //!   references into the buffer borrow the handle.
+//! - Handles and [`Old`] are neither `Send` nor `Sync`: an edit stays on one thread.
 //! - A panic leaves every place either unchanged or holding its complete new value.
 //! - No pointer is made from an integer. Miri runs the tests with Tree Borrows and strict
 //!   provenance.
@@ -182,8 +183,9 @@ pub use near::Near;
 ///   that field's handle, and a variant with several fields holds a handle with a method per
 ///   field (and no `set` or `replace`, so the variant cannot change under it).
 ///
-/// Generic type parameters must be [`Flat`]. Unions, `repr(packed)`, enum `repr`s other than
-/// `u8`, explicit discriminants, empty enums and enums of more than 256 variants are rejected.
+/// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
+/// `repr`s other than `u8`, explicit discriminants, empty enums and enums of more than 256
+/// variants are rejected.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};

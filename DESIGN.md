@@ -170,6 +170,10 @@ Plain data means `T: Copy`. A `Copy` type cannot contain a `Near`, so it is safe
   the `Buf` itself (`me`). A handle only ever reads `me` through its own reference; every other
   access of the edit, by any handle or `Old`, goes through the pointer read from `me`. So no
   access of an edit can invalidate a pointer kept by another part of it (Tree Borrows).
+- **I9 — an edit stays on one thread.** Handles and `Old` are neither `Send` nor `Sync`. An
+  `Old` reads its region without borrowing a handle (when it is copied into another region),
+  so a handle on another thread could grow the buffer under it. Real references obtained from
+  a handle (`&T`, `&mut` to plain data) and the `Region` itself are `Send`/`Sync` as usual.
 
 ## Handles
 
@@ -360,6 +364,8 @@ The crates build on stable Rust (pinned in `rust-toolchain`). A pinned nightly i
   leave the closure and the closure could then panic, which would leave it in two places. Use a
   placeholder, as with `mem::replace`.
 - No reading of an `Old`, and no `Old` kept across two calls of `Region::edit`.
+- No handle or `Old` sent to another thread (I9). Send the `&mut Region` and edit there, or
+  send the `&mut [T]` of plain data.
 - No in-place reuse of freed space: compact with `Region::new(&*region)`.
 - Copies recurse once per level of nesting (`Region::new(&*region)`, and so `to_bytes` of an
   edited region), like `Clone` for a `Box`. Checking bytes does not.
