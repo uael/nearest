@@ -192,20 +192,50 @@
 //! trusted, [`Region::from_bytes_unchecked`] and [`view_unchecked`] skip the check and are
 //! `unsafe`. The bytes hold native-endian integers and the layout of the target.
 //!
-//! With the `serde` feature, a [`Region`] is `Serialize` and `Deserialize` as these bytes:
-//! written with `serialize_bytes` (a compact copy if the region was edited), and read back
-//! through [`Region::from_bytes`], whose [`Error`] becomes the format's error.
+//! # The `serde` feature
+//!
+//! With the opt-in cargo feature `serde` (which turns on `alloc`), a [`Region`] is `Serialize`
+//! and `Deserialize`, as its bytes: it is written with `serialize_bytes` ([`Region::as_bytes`],
+//! or the bytes of a compact copy if the region was edited), and read back through
+//! [`Region::from_bytes`], so the bytes are checked and an [`Error`] becomes the format's error.
+//! Formats that have no bytes, such as JSON, write a sequence of numbers, which is read back
+//! too. Any storage with `Default` can be read into. The bytes are the same as `as_bytes` gives:
+//! native-endian, with the layout of the target, so they suit caches and messages between
+//! builds of the same program, not a format shared across architectures.
+//!
+//! ```toml
+//! nearest = { version = "0.6", features = ["serde"] }
+//! ```
+//!
+//! ```
+//! # #[cfg(feature = "serde")] {
+//! use nearest::{Near, Region, flat};
+//!
+//! #[flat]
+//! #[derive(Debug, PartialEq)]
+//! struct Msg { id: u32, body: Near<str> }
+//!
+//! let mut r = Region::new(Msg::new(1, "hi"));
+//! r.edit().body().set("hello"); // edited: written as a compact copy
+//! let json = serde_json::to_string(&r).unwrap();
+//! let back: Region<Msg> = serde_json::from_str(&json).unwrap();
+//! assert_eq!(back, r);
+//! // Bytes that are not a `Msg` are an error of the format, not a panic.
+//! assert!(serde_json::from_str::<Region<Msg>>("[1, 2, 3]").is_err());
+//! # }
+//! ```
 //!
 //! # Storage
 //!
 //! A region keeps its buffer in a [`Storage`]: `Region<T>` is `Region<T, Heap>`, on the
 //! [`Heap`], which grows as needed ([`Heap::with_capacity`] makes room up front).
-//! [`Inline<N>`] keeps it in `N` bytes inside the `Region` value, with no heap; growing past them panics, as growing past 2 GiB does. A storage of
-//! your own, such as an arena or a memory-mapped file, implements the `unsafe` trait
-//! [`Storage`]: two accessors to its memory, the second of which grows it if it can. A region in
-//! any storage is built with [`Region::new_in`], or with [`Region::from_bytes`] when the storage
-//! has a `Default`; everything else is the same. A storage may move with its region; a region cannot
-//! move while something borrows it, and every edit starts from where it is.
+//! [`Inline<N>`] keeps it in `N` bytes inside the `Region` value, with no heap; growing past
+//! them panics, as growing past 2 GiB does. A storage of your own, such as an arena or a
+//! memory-mapped file, implements the `unsafe` trait [`Storage`]: two accessors to its memory,
+//! the second of which grows it if it can. A region in any storage is built with
+//! [`Region::new_in`], or with [`Region::from_bytes`] when the storage has a `Default`;
+//! everything else is the same. A storage may move with its region; a region cannot move while
+//! something borrows it, and every edit starts from where it is.
 //!
 //! ```
 //! use nearest::{Inline, Near, Region, flat};
