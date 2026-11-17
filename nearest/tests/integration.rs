@@ -1063,6 +1063,13 @@ fn bytes_round_trip() {
   let back = Region::<Rec>::from_bytes(&shifted[1..]).unwrap();
   assert_eq!(*back, *r);
   assert!(matches!(back.to_bytes(), Cow::Borrowed(b) if *b == *image));
+  // Trusted bytes can skip the check.
+  // SAFETY: `image` comes from `to_bytes` for the same type.
+  let trusted = unsafe { Region::<Rec>::from_bytes_unchecked(&image) };
+  assert_eq!((&*trusted, trusted.byte_len()), (&*r, image.len()));
+  let own = trusted.to_bytes();
+  // SAFETY: as above, and a region's own buffer is 8-aligned.
+  assert_eq!(unsafe { Region::<Rec>::view_unchecked(&own) }, &*r);
   // `view` needs an 8-aligned slice.
   let words = aligned(&shifted);
   // SAFETY: `words` holds `shifted.len()` initialized bytes.
@@ -1800,5 +1807,116 @@ fn random_expression_rewrites_match_a_model() {
     }
     assert_eq!(model(&r), m, "step {step}");
     assert_eq!(model(&other), om, "step {step}");
+  }
+}
+
+/// The `unstable` feature: `update` builds the new value from the old one in a closure.
+#[cfg(feature = "unstable")]
+mod unstable {
+  use std::{
+    cell::Cell,
+    panic::{AssertUnwindSafe, catch_unwind},
+  };
+
+  use nearest::{Edit, Near, Old, Region, flat};
+
+  use super::{Expr, ExprMut, show};
+
+  #[flat]
+  struct Node {
+    value: u32,
+    name: Near<str>,
+    kids: Near<[Node]>,
+    next: Option<Near<Node>>,
+  }
+
+  fn chain(n: &Node) -> Vec<u32> {
+    std::iter::successors(Some(n), |n| n.next.as_deref()).map(|n| n.value).collect()
+  }
+
+  /// Wraps every literal in a negation, in place.
+  fn negate_literals(e: &mut Edit<Expr>) {
+    match e.as_mut() {
+      ExprMut::Lit(_) => e.update(Expr::neg),
+      ExprMut::Neg(x) => negate_literals(x),
+      ExprMut::Add(args) => {
+        negate_literals(args._0());
+        negate_literals(args._1());
+      }
+    }
+  }
+
+  #[test]
+  fn update_builds_from_the_old_value() {
+    let mut r = Region::new(Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2))));
+    let e = r.edit();
+    e.update(Expr::neg); // wrap, without a placeholder
+    e.update(|old| Expr::add(Expr::Lit(0), old));
+    assert_eq!(show(e), "(0 + -(1 + -2))");
+    let before = r.byte_len();
+    for _ in 0..50 {
+      r.edit().update(|old| old); // the old value moves back in: no copy
+    }
+    assert!(r.byte_len() <= before + 50 * 2 * size_of::<Expr>());
+    negate_literals(r.edit());
+    assert_eq!(show(&r), "(-0 + -(-1 + --2))");
+
+    let mut n = Region::new(Node::new(1, "a", [Node::new(7, "k", (), None)], None));
+    let node = n.edit();
+    node.next().insert(Node::new(3, "c", (), None));
+    node.next().update(|rest| Near::new(Node::new(2, "b", (), rest))); // goes in front
+    node.kids().update(|old| [Node::new(8, "group", old, None)]); // the kids go one level down
+    node.name().update(|old| old);
+    assert_eq!((chain(&n), &*n.name), (vec![1, 2, 3], "a"));
+    assert_eq!((n.kids.len(), n.kids[0].value, n.kids[0].kids[0].value), (1, 8, 7));
+  }
+
+  #[test]
+  fn update_restores_the_old_value_when_the_closure_panics() {
+    let mut r = Region::new(Expr::neg(Expr::Lit(7)));
+    let e = r.edit();
+    let boom = catch_unwind(AssertUnwindSafe(|| e.update(|_| -> Expr { panic!("boom") })));
+    assert!(boom.is_err());
+    assert_eq!(show(e), "-7");
+    e.update(Expr::neg);
+    assert_eq!(show(&r), "--7");
+  }
+
+  /// While a panic unwinds, copies the kept value into another region.
+  struct CopyOut<'s, 'a>(&'s mut Region<Expr>, &'s Cell<Option<Old<'a, Expr>>>);
+
+  impl Drop for CopyOut<'_, '_> {
+    fn drop(&mut self) {
+      if let Some(old) = self.1.take() {
+        self.0.edit().set(old);
+      }
+      assert_eq!(show(self.0), "--7");
+    }
+  }
+
+  #[test]
+  fn an_old_that_leaves_its_closure_is_a_copy_elsewhere() {
+    let (mut a, mut b) = (Region::new(Expr::neg(Expr::Lit(7))), Region::new(Expr::Lit(0)));
+    let mut stash = None;
+    a.edit().update(|old| {
+      stash = Some(old);
+      Expr::Lit(1)
+    });
+    // It keeps `a` borrowed, so it can only go to another region, as a copy.
+    b.edit().set(Expr::neg(stash.take().unwrap()));
+    assert_eq!((show(&a), show(&b)), ("1".to_owned(), "--7".to_owned()));
+    // Also when the closure then panics: `update` puts the old value back, and the kept one,
+    // which still borrows its region, is copied out while the panic unwinds.
+    let boom = catch_unwind(|| {
+      let mut a = Region::new(Expr::Lit(0));
+      let mut b = Region::new(Expr::neg(Expr::neg(Expr::Lit(7))));
+      let stash = Cell::new(None);
+      let _copy = CopyOut(&mut a, &stash);
+      b.edit().update(|old| -> Expr {
+        stash.set(Some(old));
+        panic!("boom")
+      });
+    });
+    assert!(boom.is_err());
   }
 }

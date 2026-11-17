@@ -107,6 +107,64 @@ impl<'e, T: Flat> Raw<'e, T> {
 
   /// Writes `value` over the `T` and returns the old one, moved to fresh bytes.
   pub fn replace(&mut self, value: impl Emit<T>) -> Old<'e, T> {
+    let (buf, at) = self.swap_in(|_, _| value);
+    Old { buf, at, _e: PhantomData }
+  }
+
+  /// Writes over the `T` what `f` builds from the old one. That `Old` lives as long as the
+  /// borrow of this handle: kept past the call, it freezes every handle of the region, so it
+  /// can only move into what `f` returns, and anywhere else it is a copy.
+  ///
+  /// The old value is used at most once:
+  ///
+  /// ```compile_fail,E0382
+  /// # use nearest::{Near, Region, flat};
+  /// # #[flat]
+  /// # enum Expr { Lit(i64), Add(Near<Expr>, Near<Expr>) }
+  /// let mut r = Region::new(Expr::Lit(1));
+  /// r.edit().update(|old| Expr::add(old, old));
+  /// ```
+  ///
+  /// The handle is borrowed while the closure runs:
+  ///
+  /// ```compile_fail,E0499
+  /// # use nearest::{Near, Region, flat};
+  /// # #[flat]
+  /// # enum Expr { Lit(i64), Neg(Near<Expr>) }
+  /// let mut r = Region::new(Expr::Lit(1));
+  /// let e = r.edit();
+  /// e.update(|old| {
+  ///   e.set(Expr::Lit(2));
+  ///   Expr::neg(old)
+  /// });
+  /// ```
+  ///
+  /// And for as long as the old value is kept, so it cannot move back in later:
+  ///
+  /// ```compile_fail,E0499
+  /// # use nearest::{Near, Region, flat};
+  /// # #[flat]
+  /// # enum Expr { Lit(i64), Neg(Near<Expr>) }
+  /// let mut r = Region::new(Expr::neg(Expr::Lit(1)));
+  /// let e = r.edit();
+  /// let mut stash = None;
+  /// e.update(|old| {
+  ///   stash = Some(old);
+  ///   Expr::Lit(2)
+  /// });
+  /// e.set(Expr::Lit(3));
+  /// drop(stash);
+  /// ```
+  #[cfg(feature = "unstable")]
+  pub fn update<'a, E: Emit<T>>(&'a mut self, f: impl FnOnce(Old<'a, T>) -> E) {
+    self.swap_in(|buf, at| f(Old { buf, at, _e: PhantomData }));
+  }
+
+  /// Moves the old `T` to fresh bytes, writes over it what `f` makes given where the old one
+  /// went, and returns that place: the buffer and the position, for exactly one `Old`. If `f`
+  /// or the writing unwinds, the old value moves back.
+  #[expect(clippy::needless_pass_by_ref_mut, reason = "it writes the place, through the buffer")]
+  fn swap_in<E: Emit<T>>(&mut self, f: impl FnOnce(*mut Buf, usize) -> E) -> (*mut Buf, usize) {
     /// Moves the old value back.
     struct Restore<T: Flat> {
       buf: *mut Buf,
@@ -125,10 +183,11 @@ impl<'e, T: Flat> Raw<'e, T> {
     // SAFETY: a `T` is at `at`.
     let kept = unsafe { detach::<T>(buf, at) };
     let restore = Restore::<T> { buf, at, kept, _t: PhantomData };
+    let value = f(buf, kept);
     // SAFETY: `at` holds a `T`; the old value is no longer reachable from it.
     unsafe { value.emit(&mut Sink::new(buf), at) };
     mem::forget(restore);
-    Old { buf, at: kept, _e: PhantomData }
+    (buf, kept)
   }
 }
 
@@ -485,6 +544,25 @@ impl<'e, T: Flat> ListEdit<'e, T> {
   pub fn replace(&mut self, value: impl Emit<Near<[T]>>) -> Old<'e, Near<[T]>> {
     self.0.replace(value)
   }
+
+  /// Replaces the list with what `f` builds from the old one, which moves into it. Needs the
+  /// `unstable` feature.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Tree { id: u32, kids: Near<[Tree]> }
+  ///
+  /// let mut r = Region::new(Tree::new(0, [Tree::new(1, ()), Tree::new(2, ())]));
+  /// // The children go under a new child, without a copy.
+  /// r.edit().kids().update(|old| [Tree::new(9, old)]);
+  /// assert_eq!((r.kids.len(), r.kids[0].id, r.kids[0].kids.len()), (1, 9, 2));
+  /// ```
+  #[cfg(feature = "unstable")]
+  pub fn update<'a, E: Emit<Near<[T]>>>(&'a mut self, f: impl FnOnce(Old<'a, Near<[T]>>) -> E) {
+    self.0.update(f);
+  }
 }
 
 impl<T: Flat> Deref for ListEdit<'_, T> {
@@ -617,6 +695,29 @@ impl<'e, T: Flat> OptionEdit<'e, T> {
   pub fn set(&mut self, value: impl Emit<Option<Near<T>>>) {
     self.0.set(value);
   }
+
+  /// Replaces the pointer with what `f` builds from the old one, which moves into it. Needs
+  /// the `unstable` feature.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Node { value: u32, next: Option<Near<Node>> }
+  ///
+  /// let mut r = Region::new(Node::new(1, Near::new(Node::new(3, None))));
+  /// // A node goes in front of the rest of the chain.
+  /// r.edit().next().update(|rest| Near::new(Node::new(2, rest)));
+  /// let next = r.next.as_ref().unwrap();
+  /// assert_eq!((next.value, next.next.as_ref().unwrap().value), (2, 3));
+  /// ```
+  #[cfg(feature = "unstable")]
+  pub fn update<'a, E: Emit<Option<Near<T>>>>(
+    &'a mut self,
+    f: impl FnOnce(Old<'a, Option<Near<T>>>) -> E,
+  ) {
+    self.0.update(f);
+  }
 }
 
 impl<T: Flat> Deref for OptionEdit<'_, T> {
@@ -681,6 +782,23 @@ impl<'e> StrEdit<'e> {
   /// ```
   pub fn replace(&mut self, value: impl Emit<Near<str>>) -> Old<'e, Near<str>> {
     self.0.replace(value)
+  }
+
+  /// Replaces the string with what `f` builds from the old one. Needs the `unstable` feature.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Func { name: Near<str> }
+  ///
+  /// let mut r = Region::new(Func::new("f"));
+  /// r.edit().name().update(|old| old); // the old string moves back in
+  /// assert_eq!(&*r.name, "f");
+  /// ```
+  #[cfg(feature = "unstable")]
+  pub fn update<'a, E: Emit<Near<str>>>(&'a mut self, f: impl FnOnce(Old<'a, Near<str>>) -> E) {
+    self.0.update(f);
   }
 }
 

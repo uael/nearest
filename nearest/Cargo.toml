@@ -11,6 +11,10 @@ readme = "../README.md"
 keywords = ["self-relative", "pointer", "region", "allocation", "arena"]
 categories = ["data-structures", "memory-management"]
 
+[features]
+# APIs that may change in any release. Today: `update` on every handle.
+unstable = ["nearest-derive/unstable"]
+
 [dependencies]
 nearest-derive = { version = "=0.3.5", path = "../nearest-derive" }
 
@@ -21,6 +25,9 @@ trybuild = "1"
 [[bench]]
 name = "region"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lints]
 workspace = true

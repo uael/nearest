@@ -131,7 +131,16 @@
 //! region when it has not been edited since it was built. [`Region::from_bytes`] checks and
 //! copies bytes; [`Region::view`] checks an 8-aligned slice and reads it in place. Checking
 //! accepts exactly the compact images of valid values, in one pass, without recursion or
-//! panics. The bytes hold native-endian integers and the layout of the target.
+//! panics. For bytes that are trusted, [`Region::from_bytes_unchecked`] and
+//! [`Region::view_unchecked`] skip the check and are `unsafe`. The bytes hold native-endian
+//! integers and the layout of the target.
+//!
+//! # The `unstable` feature
+//!
+//! The cargo feature `unstable` adds `update` to every handle, the closure form of `replace`:
+//! `e.update(Expr::neg)` or `e.update(|old| Expr::add(old, Expr::Lit(1)))` wraps a value
+//! without a placeholder. It works on stable
+//! Rust; what the feature gates may change in any release.
 //!
 //! # Safety model
 //!

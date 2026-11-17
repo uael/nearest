@@ -12,7 +12,8 @@ cargo test --test integration TESTNAME  # Run a single integration test
 cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
 cargo run --example expr             # Examples (also: ir); they assert their results
 cargo bench --bench region           # Benchmarks (criterion)
-MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --lib --test integration  # Miri
+cargo test -p nearest --features unstable  # The same with the `unstable` feature (adds `update`)
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-02-10 miri test -p nearest --features unstable --lib --test integration  # Miri
 cargo xtask fmt                      # Format code (cargo fmt on the pinned nightly)
 cargo xtask fmt --check              # Check formatting
 cargo xtask lint                     # Clippy (workspace, tests, examples, benches, -D warnings) + format check
@@ -34,19 +35,26 @@ limit, index bounds and the check of loaded bytes. `DESIGN.md` is the specificat
 
 ### Workspace Crates
 
-- **`nearest/`** — the library (`#![no_std]` + `alloc`, no features)
+- **`nearest/`** — the library (`#![no_std]` + `alloc`; one opt-in feature, `unstable`)
 - **`nearest-derive/`** — the `#[flat]` attribute, re-exported as `nearest::flat`
 - **`xtask/`** — dev automation (fmt, lint)
 
 ### Public surface
 
 `#[flat]`, `trait Flat` (`type Edit<'e>`), `trait Emit<T>`, `type Edit<'e, T>`, `Near<T>` (`new`,
-`from_iter`), `Region<T>` (`new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`),
+`from_iter`), `Region<T>` (`new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`, and the
+`unsafe` `from_bytes_unchecked`, `view_unchecked`),
 `ListEdit<'e, T>` (`push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`,
 `replace`), `OptionEdit<'e, T>` (`as_mut`, `insert`, `take`, `set`), `StrEdit<'e>` (`set`,
 `replace`), `Old<'e, T>` (no methods), `Invalid`, plus the trait impls listed in `DESIGN.md`.
 Hidden plumbing for the macro: `nearest::__private::{Raw, Buf, Sink, Check, fits, make,
 Variant, Pointer}` and the hidden items of the two traits. Do not add public items.
+
+The cargo feature `unstable` (forwarded to `nearest-derive/unstable`) adds `update` to every
+handle: `Raw::update`, its wrappers on `ListEdit`, `OptionEdit`, `StrEdit`, and the generated
+one. Its `Old<'a, T>` has the lifetime of the handle's borrow, not of the edit. Test both
+configurations: `cargo test --all` and `cargo test -p nearest --features unstable`; `cargo
+xtask lint` runs clippy with and without the feature.
 
 ### Files (nearest/src/)
 
@@ -81,7 +89,7 @@ for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), hidden `#[repr(C)]` mir
   did not match its size hint writes its real capacity and clears the compact mark.
 - `set` keeps the old bytes on the stack and restores them on unwind. `replace` moves the old
   value to fresh bytes (`detach`), writes the new one (moving the old one back on unwind) and
-  returns an `Old`; `ListEdit::remove` and `OptionEdit::take` also return one. An `Old` written
+  returns an `Old` (`Raw::swap_in`, shared with `update`); `ListEdit::remove` and `OptionEdit::take` also return one. An `Old` written
   into its own region (same `me`) is a move, anywhere else a deep copy.
 - Bytes: a region's compact image is what a deep copy writes. `Flat::check` (safe, generated)
   walks an image in that order without recursion; each pointer must aim exactly where the copy

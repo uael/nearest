@@ -86,7 +86,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | Item | |
 |---|---|
 | `#[flat]` | makes a struct or enum storable; generates constructors and the handle |
-| `Region<T>` | the buffer: `new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len` |
+| `Region<T>` | the buffer: `new`, `edit`, `to_bytes`, `from_bytes`, `view`, `byte_len`; `unsafe` `from_bytes_unchecked`, `view_unchecked` |
 | `Near<T>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)` |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
 | `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `set`, `replace` |
@@ -116,8 +116,22 @@ are ordinary statements.
 buffer when the region has not been edited since it was built or loaded. `from_bytes` checks
 bytes and copies them into a new region; `view` checks an 8-aligned slice, such as a
 memory-mapped file, and reads it in place. Checking accepts exactly the compact images of valid
-values, in one pass, in safe code, without recursion or panics. The bytes hold native-endian
-integers and the layout of the target.
+values, in one pass, in safe code, without recursion or panics. For bytes you trust,
+`from_bytes_unchecked` and `view_unchecked` skip the check and are `unsafe`. The bytes hold
+native-endian integers and the layout of the target.
+
+## The `unstable` feature
+
+`nearest = { version = "..", features = ["unstable"] }` adds `update` to every handle: the
+closure form of `replace`, so that wrapping a value needs no placeholder.
+
+```rust
+e.update(Expr::neg);                                         // wrap
+e.update(|old| Expr::add(old, Expr::Lit(1)));
+node.next().update(|rest| Near::new(Node::new(2, rest)));    // put a node in front
+```
+
+It works on stable Rust; "unstable" is about the API, which may change in any release.
 
 ## Safety model
 

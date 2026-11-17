@@ -14,6 +14,10 @@ categories = ["data-structures"]
 [lib]
 proc-macro = true
 
+[features]
+# Enabled by `nearest/unstable`: also generates `update` on handles.
+unstable = []
+
 [dependencies]
 syn = { version = "2", features = ["full"] }
 quote = "1"
