@@ -169,7 +169,7 @@
 //!
 //! # The `nightly` feature
 //!
-//! The one cargo feature, `nightly`, needs a nightly compiler for the whole build. With it
+//! The opt-in cargo feature `nightly` needs a nightly compiler for the whole build. With it
 //! `#[flat]` marks every type `#[pin_v2]`, and gives it no `Unpin` impl of its own. It uses
 //! `specialization` and `allow_internal_unstable` inside this crate and `nearest-derive`; crates
 //! that use `#[flat]` need no `#![feature]` for it, only code that writes a pattern on a pinned
@@ -181,12 +181,47 @@
 //! # Bytes
 //!
 //! [`Region::to_bytes`] returns the compact image: the bytes a deep copy writes, borrowed from the
-//! region when it has not been edited since it was built. [`Region::from_bytes`] checks and
+//! region when it has not been edited since it was built; [`Region::as_bytes`] returns it only
+//! then, and never allocates. [`Region::from_bytes`] checks and
 //! copies bytes; [`Region::view`] checks an 8-aligned slice and reads it in place. Checking
 //! accepts exactly the compact images of valid values, in one pass, without recursion or
-//! panics. For bytes that are trusted, [`Region::from_bytes_unchecked`] and
-//! [`Region::view_unchecked`] skip the check and are `unsafe`. The bytes hold native-endian
-//! integers and the layout of the target.
+//! panics; an error, [`Invalid`], says where the bytes went wrong, or that a valid image does
+//! not fit the storage. Checking keeps the pointers still to visit in memory that grows with
+//! the nesting of the data: [`Region::view_with`] and [`Region::from_bytes_with`] take it from
+//! the caller, as a slice of [`Pending`] (`bytes.len() / 4` entries are always enough), and
+//! return `None` if it runs out. For bytes that are trusted, [`Region::from_bytes_unchecked`]
+//! and [`Region::view_unchecked`] skip the check and are `unsafe`. The bytes hold
+//! native-endian integers and the layout of the target.
+//!
+//! # Storage
+//!
+//! A region keeps its buffer in a [`Storage`]: `Region<T>` is `Region<T, Heap>`, on the
+//! [`Heap`], which grows as needed. [`Inline<N>`] keeps it in `N` bytes inside the `Region`
+//! value, with no heap; growing past them panics, as growing past 2 GiB does. A storage of
+//! your own, such as an arena or a memory-mapped file, implements the `unsafe` trait
+//! [`Storage`]: two accessors to its memory, the second of which grows it if it can. A region in
+//! any storage is built with [`Region::new_in`], or with [`Region::from_bytes`] when the storage
+//! has a `Default`; everything else is the same. A storage may move with its region; a region cannot
+//! move while something borrows it, and every edit starts from where it is.
+//!
+//! ```
+//! use nearest::{Inline, Near, Region, flat};
+//!
+//! #[flat]
+//! #[derive(Debug, PartialEq)]
+//! struct Block { id: u32, insts: Near<[u8]> }
+//!
+//! let mut r = Region::new_in(Inline::<256>::default(), Block::new(0, [1, 2]));
+//! r.edit().insts().push(3);
+//! let moved = r;
+//! assert_eq!(moved.insts[..], [1, 2, 3]);
+//! assert_eq!(*Region::new(&*moved), *moved); // the same value, on the heap
+//! ```
+//!
+//! The default feature `alloc` makes the heap a storage. Without it the crate needs no
+//! allocator: a `Region<T>` cannot be built, and `to_bytes`, `from_bytes` and `view` are not
+//! available, while [`Region::as_bytes`], [`Region::from_bytes_with`] and
+//! [`Region::view_with`], which take the memory for checking from the caller, are.
 //!
 //! # Safety model
 //!
@@ -204,7 +239,8 @@
 //!   provenance.
 //!
 //! Stored types must have alignment at most 8, non-zero size and no drop glue (checked at
-//! compile time). A region holds at most `i32::MAX` bytes; growing past that panics.
+//! compile time). A region holds at most `i32::MAX` bytes, or what its storage gives; growing
+//! past that panics.
 #![no_std]
 #![deny(missing_docs)]
 // The `nightly` feature: `unpin` asks whether a type implements `Unpin` (see `mod unpin`).
@@ -214,6 +250,7 @@
   expect(incomplete_features, reason = "`specialization`, only to ask whether a type is `Unpin`")
 )]
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
 mod bytes;
@@ -221,10 +258,11 @@ mod edit;
 mod flat;
 mod near;
 mod region;
+mod storage;
 #[cfg(feature = "nightly")]
 mod unpin;
 
-pub use bytes::Invalid;
+pub use bytes::{Invalid, Pending};
 pub use edit::{ListEdit, Old, OptionEdit, StrEdit};
 pub use flat::{Emit, Flat};
 pub use near::Near;
@@ -284,6 +322,7 @@ pub use near::Near;
 /// ```
 pub use nearest_derive::flat;
 pub use region::Region;
+pub use storage::{Heap, Inline, Storage};
 
 /// The handle of a place holding a `T`, during the edit `'e`: `&mut Edit<'e, T>` is what
 /// [`Region::edit`], field methods and [`ListEdit::at`] return.
@@ -364,7 +403,7 @@ pub mod __private {
   }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod tests {
   extern crate std;
   use std::{

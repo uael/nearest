@@ -12,6 +12,12 @@ keywords = ["self-relative", "pointer", "region", "allocation", "arena"]
 categories = ["data-structures", "memory-management"]
 
 [features]
+default = ["alloc"]
+# The heap: `Region<T>`, its default storage, `to_bytes`, and `from_bytes` and `view`, whose
+# check takes memory from the heap. Without it, regions live in other storage
+# (`Region<T, Inline<N>>`), and loaded bytes are checked with memory from the caller
+# (`from_bytes_with`, `view_with`).
+alloc = []
 # Nightly Rust only: `#[flat]` marks every type `#[pin_v2]`, so that patterns on a pinned value
 # bind its fields pinned. Crates that use `#[flat]` need no `#![feature]` for it.
 nightly = ["nearest-derive/nightly"]
