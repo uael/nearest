@@ -5,6 +5,7 @@ use core::{
   marker::{PhantomData, PhantomPinned},
   num::NonZero,
   ops::Deref,
+  panic::{RefUnwindSafe, UnwindSafe},
   pin::Pin,
   ptr, slice, str,
 };
@@ -14,13 +15,14 @@ use crate::{
   flat::{New, Seq},
 };
 
-/// A 4-byte pointer to a `T` in the same [`Region`](crate::Region), stored as the distance
-/// from its own address. It dereferences like a `Box`.
+/// A pointer to a `T` in the same [`Region`](crate::Region), stored as the distance from its
+/// own address in an [`Offset`] `O`: 4 bytes (`i32`) unless `O` says otherwise. It
+/// dereferences like a `Box`.
 ///
 /// A `Near` has no constructor and is neither `Clone`, `Copy` nor `Unpin`: it exists only
 /// inside a region, as a field of a value there, and a pinned value keeps its pointers.
-/// `Near<[T]>` and `Near<str>` point at a `u32` length followed by the elements.
-/// `Option<Near<T>>` is also 4 bytes.
+/// `Near<[T]>` and `Near<str>` point at a length, an `O`, followed by the elements.
+/// `Option<Near<T>>` is the size of a `Near<T>`.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -35,33 +37,106 @@ use crate::{
 /// assert_eq!(size_of::<Option<Near<Pair>>>(), 4);
 /// ```
 #[repr(transparent)]
-pub struct Near<T: ?Sized> {
-  pub(crate) off: NonZero<i32>,
+pub struct Near<T: ?Sized, O: Offset = i32> {
+  pub(crate) off: O::NonZero,
   _t: PhantomData<T>,
   _pin: PhantomPinned,
 }
 
-impl<T: ?Sized> Near<T> {
+/// The integer in which a [`Near`] keeps its distance: `i32`, the default, or `i16` or `i64`.
+/// Implemented for these three only.
+///
+/// | `O` | `Near` | A region holds at most |
+/// |---|---|---|
+/// | `i16` | 2 bytes | 32 KiB |
+/// | `i32` | 4 bytes | 2 GiB |
+/// | `i64` | 8 bytes | what the address space holds (`isize::MAX` bytes) |
+///
+/// List and string lengths are `O`s too. The pointers of the root of a region bound it, so
+/// pointers may only get wider going down: a `Near<T, O>` to a `T` that holds a narrower
+/// pointer does not build. Types can take the width as a parameter.
+///
+/// ```
+/// use nearest::{Near, Offset, Region, flat};
+///
+/// #[flat]
+/// #[derive(Debug, PartialEq)]
+/// struct Tree<O: Offset> { id: u32, kids: Near<[Tree<O>], O> }
+///
+/// let small = Region::new(Tree::<i16>::new(1, [Tree::new(2, ())]));
+/// let big = Region::new(Tree::<i64>::new(1, [Tree::new(2, ())]));
+/// assert_eq!((small.kids[0].id, big.kids[0].id), (2, 2));
+/// assert_eq!((size_of::<Tree<i16>>(), size_of::<Tree<i64>>()), (8, 16));
+/// ```
+pub trait Offset: Flat + Copy + fmt::Debug + Eq + Ord + Hash + Sealed {
+  /// The stored form, `NonZero<Self>`.
+  #[doc(hidden)]
+  type NonZero: Copy + Into<Self> + Send + Sync + UnwindSafe + RefUnwindSafe;
+  /// The largest region whose distances fit, a multiple of 8, whatever the target.
+  #[doc(hidden)]
+  const LIMIT: u64;
+  /// `n`, which fits.
+  #[doc(hidden)]
+  fn from_isize(n: isize) -> Self;
+  #[doc(hidden)]
+  fn to_isize(self) -> isize;
+  /// The first bytes, if there are enough.
+  #[doc(hidden)]
+  fn read(bytes: &[u8]) -> Option<Self>;
+}
+
+/// Keeps [`Offset`] to the three integers.
+pub trait Sealed {}
+
+macro_rules! offsets {
+  ($($t:ty),*) => {$(
+    impl Sealed for $t {}
+    // Each converts one way that may truncate: never a distance or a length of a region.
+    #[expect(clippy::cast_possible_truncation, reason = "values within a region fit both")]
+    impl Offset for $t {
+      type NonZero = NonZero<$t>;
+      const LIMIT: u64 = <$t>::MAX as u64 & !7;
+      #[inline]
+      fn from_isize(n: isize) -> Self {
+        n as Self
+      }
+      #[inline]
+      fn to_isize(self) -> isize {
+        self as isize
+      }
+      #[inline]
+      fn read(bytes: &[u8]) -> Option<Self> {
+        bytes.first_chunk().copied().map(Self::from_ne_bytes)
+      }
+    }
+  )*};
+}
+offsets!(i16, i32, i64);
+
+impl<T: ?Sized, O: Offset> Near<T, O> {
   /// The address of the target, derived from `self` so that it keeps the provenance of the
   /// region.
-  const fn target(&self) -> *const u8 {
-    ptr::from_ref(self).cast::<u8>().wrapping_offset(self.off.get() as isize)
+  fn target(&self) -> *const u8 {
+    let off: O = self.off.into();
+    ptr::from_ref(self).cast::<u8>().wrapping_offset(off.to_isize())
   }
 
   /// The same, for writing.
-  const fn target_mut(&mut self) -> *mut u8 {
-    ptr::from_mut(self).cast::<u8>().wrapping_offset(self.off.get() as isize)
+  fn target_mut(&mut self) -> *mut u8 {
+    let off: O = self.off.into();
+    ptr::from_mut(self).cast::<u8>().wrapping_offset(off.to_isize())
   }
 
   /// A list's length and elements.
   ///
   /// # Safety
-  /// `self` is a `Near<[_]>` or a `Near<str>` in a region.
-  const unsafe fn list<E>(&self) -> &[E] {
+  /// `self` is a `Near<[_], O>` or a `Near<str, O>` in a region.
+  unsafe fn list<E>(&self) -> &[E] {
     let p = self.target();
-    // SAFETY: the target is a `u32` length followed by the elements.
+    // SAFETY: the target is a length, an `O`, followed by the elements.
     unsafe {
-      slice::from_raw_parts(p.add(4).cast::<E>(), p.cast::<u32>().read_unaligned() as usize)
+      let len = p.cast::<O>().read_unaligned().to_isize().cast_unsigned();
+      slice::from_raw_parts(p.add(size_of::<O>()).cast::<E>(), len)
     }
   }
 
@@ -69,16 +144,17 @@ impl<T: ?Sized> Near<T> {
   ///
   /// # Safety
   /// As for [`list`](Self::list); the elements are reached only through the result.
-  const unsafe fn list_mut<E>(&mut self) -> &mut [E] {
+  unsafe fn list_mut<E>(&mut self) -> &mut [E] {
     let p = self.target_mut();
     // SAFETY: as for `list`.
     unsafe {
-      slice::from_raw_parts_mut(p.add(4).cast::<E>(), p.cast::<u32>().read_unaligned() as usize)
+      let len = p.cast::<O>().read_unaligned().to_isize().cast_unsigned();
+      slice::from_raw_parts_mut(p.add(size_of::<O>()).cast::<E>(), len)
     }
   }
 }
 
-impl<T: Flat> Near<T> {
+impl<T: Flat, O: Offset> Near<T, O> {
   /// Builder of a pointer to a new `T` written from `value`; also accepted where an
   /// `Option<Near<T>>` is expected.
   ///
@@ -126,7 +202,7 @@ impl<T: Flat> Near<T> {
   }
 }
 
-impl<T: Flat> Near<[T]> {
+impl<T: Flat, O: Offset> Near<[T], O> {
   /// Builder of a list of the items of an iterator.
   ///
   /// ```
@@ -171,7 +247,7 @@ impl<T: Flat> Near<[T]> {
   }
 }
 
-impl<T> Deref for Near<T> {
+impl<T, O: Offset> Deref for Near<T, O> {
   type Target = T;
   fn deref(&self) -> &T {
     // SAFETY: a `&Near` only exists inside a region, which holds the target at the offset.
@@ -179,7 +255,7 @@ impl<T> Deref for Near<T> {
   }
 }
 
-impl<T> Deref for Near<[T]> {
+impl<T, O: Offset> Deref for Near<[T], O> {
   type Target = [T];
   fn deref(&self) -> &[T] {
     // SAFETY: as above; the target is a list.
@@ -187,7 +263,7 @@ impl<T> Deref for Near<[T]> {
   }
 }
 
-impl Deref for Near<str> {
+impl<O: Offset> Deref for Near<str, O> {
   type Target = str;
   fn deref(&self) -> &str {
     // SAFETY: as above; the target is a length and UTF-8 bytes.
@@ -208,7 +284,7 @@ impl Deref for Near<str> {
 /// for x in &r.items { n += u32::from(*x) }
 /// assert_eq!(n, 294);
 /// ```
-impl<'a, T> IntoIterator for &'a Near<[T]> {
+impl<'a, T, O: Offset> IntoIterator for &'a Near<[T], O> {
   type Item = &'a T;
   type IntoIter = slice::Iter<'a, T>;
   fn into_iter(self) -> Self::IntoIter {
@@ -216,7 +292,7 @@ impl<'a, T> IntoIterator for &'a Near<[T]> {
   }
 }
 
-impl<T: ?Sized + fmt::Debug> fmt::Debug for Near<T>
+impl<T: ?Sized + fmt::Debug, O: Offset> fmt::Debug for Near<T, O>
 where
   Self: Deref<Target = T>,
 {
@@ -236,7 +312,7 @@ where
 /// let r = Region::new(Greeting::new("world", 3));
 /// assert_eq!(format!("hello {} x{}", r.to, r.times), "hello world x3");
 /// ```
-impl<T: ?Sized + fmt::Display> fmt::Display for Near<T>
+impl<T: ?Sized + fmt::Display, O: Offset> fmt::Display for Near<T, O>
 where
   Self: Deref<Target = T>,
 {
@@ -245,7 +321,7 @@ where
   }
 }
 
-impl<T: ?Sized + PartialEq> PartialEq for Near<T>
+impl<T: ?Sized + PartialEq, O: Offset> PartialEq for Near<T, O>
 where
   Self: Deref<Target = T>,
 {
@@ -254,9 +330,9 @@ where
   }
 }
 
-impl<T: ?Sized + Eq> Eq for Near<T> where Self: Deref<Target = T> {}
+impl<T: ?Sized + Eq, O: Offset> Eq for Near<T, O> where Self: Deref<Target = T> {}
 
-impl<T: ?Sized + PartialOrd> PartialOrd for Near<T>
+impl<T: ?Sized + PartialOrd, O: Offset> PartialOrd for Near<T, O>
 where
   Self: Deref<Target = T>,
 {
@@ -265,7 +341,7 @@ where
   }
 }
 
-impl<T: ?Sized + Ord> Ord for Near<T>
+impl<T: ?Sized + Ord, O: Offset> Ord for Near<T, O>
 where
   Self: Deref<Target = T>,
 {
@@ -274,7 +350,7 @@ where
   }
 }
 
-impl<T: ?Sized + Hash> Hash for Near<T>
+impl<T: ?Sized + Hash, O: Offset> Hash for Near<T, O>
 where
   Self: Deref<Target = T>,
 {

@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 use core::{fmt, str};
 
 use crate::{
-  Flat,
-  flat::{MAX, fits},
+  Flat, Offset,
+  flat::{fits, fits_behind, limit},
 };
 
 /// Why bytes could not be loaded: the error of every loader ([`view`], [`view_with`],
@@ -60,11 +60,12 @@ type Step = fn(&mut Check<'_>, usize, usize) -> Result<(), Error>;
 /// [`view_with`] and [`Region::from_bytes_with`](crate::Region::from_bytes_with) take a slice of
 /// them.
 ///
-/// `bytes.len() / 4` entries are enough for any bytes: each entry waits for its own 4 bytes of
-/// the image (a pointer, or the start of the next element of a list), so an image that fits a
-/// storage of `N` bytes never needs more than `N / 4`. Most data needs far fewer: about as many
-/// as the pointers that wait at once while the walk goes down the deepest path. An entry is 16
-/// bytes on a 64-bit target, 12 on a 32-bit one.
+/// `bytes.len() / 4` entries are enough for any bytes (`bytes.len() / 2` with 2-byte pointers,
+/// `Near<_, i16>`): each entry waits for its own bytes of the image, at least as many as a
+/// pointer has (a pointer, or the start of the next element of a list, which holds one), so an
+/// image that fits a storage of `N` bytes never needs more than `N / 4`. Most data needs far
+/// fewer: about as many as the pointers that wait at once while the walk goes down the deepest
+/// path. An entry is 24 bytes on a 64-bit target, 12 on a 32-bit one.
 ///
 /// ```
 /// use nearest::{Error, Near, Pending, Region, flat};
@@ -82,7 +83,7 @@ type Step = fn(&mut Check<'_>, usize, usize) -> Result<(), Error>;
 /// # Ok::<(), nearest::Error>(())
 /// ```
 #[derive(Clone, Copy, Debug)]
-pub struct Pending(u32, u32, Step);
+pub struct Pending(usize, usize, Step);
 
 impl Default for Pending {
   fn default() -> Self {
@@ -170,19 +171,35 @@ impl Check<'_> {
 
   /// Queues a pointer, or the rest of a list. If the scratch is full, the walk ends.
   pub(crate) fn push(&mut self, at: usize, count: usize, step: Step) -> Result<(), Error> {
-    // Positions and counts are below `MAX`, which the length of the bytes is.
-    let item = u32::try_from(at).ok().zip(u32::try_from(count).ok());
-    let pushed = item.is_some_and(|(at, count)| self.todo.push(Pending(at, count, step)));
-    if pushed { Ok(()) } else { Err(Error::ScratchFull) }
+    if self.todo.push(Pending(at, count, step)) { Ok(()) } else { Err(Error::ScratchFull) }
   }
 
-  /// The next block, of `size` bytes aligned to `align`: the pointer at `ptr` must aim `lead`
-  /// bytes into it, which is where a deep copy would have put it. Returns its position.
-  fn claim(&mut self, ptr: usize, lead: usize, align: usize, size: usize) -> Result<usize, Error> {
-    let off = i32::from_ne_bytes(self.get(ptr)?);
-    let at = self.next.checked_next_multiple_of(align).ok_or(Error::Invalid(ptr))?;
-    let aim = (ptr as u64).wrapping_add_signed(i64::from(off));
-    let aimed = at.checked_add(lead).is_some_and(|a| usize::try_from(aim) == Ok(a));
+  /// The `O` at `at`.
+  pub(crate) fn offset<O: Offset>(&self, at: usize) -> Result<isize, Error> {
+    self.bytes.get(at..).and_then(O::read).map(O::to_isize).ok_or(Error::Invalid(at))
+  }
+
+  /// The length, an `O`, at `at`; a negative one is as out of bounds as any too large.
+  fn len<O: Offset>(&self, at: usize) -> Result<usize, Error> {
+    Ok(usize::try_from(self.offset::<O>(at)?).unwrap_or(usize::MAX))
+  }
+
+  /// The next block, of `size` bytes whose byte `inset` is aligned to `align`: the pointer of
+  /// `O` at `ptr` must aim `lead` bytes into it, which is where a deep copy would have put it.
+  /// Returns its position.
+  fn claim<O: Offset>(
+    &mut self,
+    ptr: usize,
+    lead: usize,
+    inset: usize,
+    align: usize,
+    size: usize,
+  ) -> Result<usize, Error> {
+    let off = self.offset::<O>(ptr)?;
+    let at = (self.next.checked_add(inset).and_then(|n| n.checked_next_multiple_of(align)))
+      .ok_or(Error::Invalid(ptr))?
+      - inset;
+    let aimed = ptr.checked_add_signed(off) == Some(at + lead);
     let end = (at.checked_add(size).filter(|&end| aimed && end <= self.bytes.len()))
       .ok_or(Error::Invalid(ptr))?;
     self.next = end;
@@ -195,34 +212,33 @@ impl Check<'_> {
     self.next = end.ok_or(Error::Invalid(at))?;
     Ok(())
   }
-
-  fn u32(&self, at: usize) -> Result<usize, Error> {
-    Ok(u32::from_ne_bytes(self.get(at)?) as usize)
-  }
 }
 
-/// The target of the `Near<T>` at `ptr`.
-pub fn target<T: Flat>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
-  fits::<T>();
-  let at = ck.claim(ptr, 0, align_of::<T>(), size_of::<T>())?;
+/// The target of the `Near<T, O>` at `ptr`.
+pub fn target<T: Flat, O: Offset>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
+  fits_behind::<T, O>();
+  let at = ck.claim::<O>(ptr, 0, 0, align_of::<T>(), size_of::<T>())?;
   T::check(ck, at)
 }
 
-/// The list block of the `Near<[T]>` at `ptr`: `[len][len]`, then the elements.
-pub fn list<T: Flat>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
-  fits::<T>();
-  let at = ck.claim(ptr, 4, align_of::<T>().max(4), 8)?;
-  let (cap, len) = (ck.u32(at)?, ck.u32(at + 4)?);
+/// The list block of the `Near<[T], O>` at `ptr`: `[len][len]`, `O`s, then the elements,
+/// aligned for `T` and for `O`.
+pub fn list<T: Flat, O: Offset>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
+  fits_behind::<T, O>();
+  let w = size_of::<O>();
+  let at = ck.claim::<O>(ptr, w, 2 * w, align_of::<T>().max(w), 2 * w)?;
+  let (cap, len) = (ck.len::<O>(at)?, ck.len::<O>(at + w)?);
   ck.extend(at, len.checked_mul(size_of::<T>()).filter(|_| cap == len))?;
-  items::<T>(ck, at + 8, len)
+  items::<T>(ck, at + 2 * w, len)
 }
 
-/// The text of the `Near<str>` at `ptr`: `[len]`, then UTF-8.
-pub fn text(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
-  let at = ck.claim(ptr, 0, 4, 4)?;
-  let len = ck.u32(at)?;
+/// The text of the `Near<str, O>` at `ptr`: `[len]`, an `O`, then UTF-8.
+pub fn text<O: Offset>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
+  let w = size_of::<O>();
+  let at = ck.claim::<O>(ptr, 0, 0, w, w)?;
+  let len = ck.len::<O>(at)?;
   ck.extend(at, Some(len))?;
-  match ck.bytes.get(at + 4..ck.next).map(str::from_utf8) {
+  match ck.bytes.get(at + w..ck.next).map(str::from_utf8) {
     Some(Ok(_)) => Ok(()),
     _ => Err(Error::Invalid(at)),
   }
@@ -253,7 +269,7 @@ fn items<T: Flat>(ck: &mut Check<'_>, first: usize, count: usize) -> Result<(), 
 /// into a region, it rejects at compile time the types a region cannot hold.
 pub fn check<T: Flat>(bytes: &[u8], todo: Stack<'_>) -> Result<(), Error> {
   fits::<T>();
-  if bytes.len() < size_of::<T>() || bytes.len() > MAX {
+  if bytes.len() < size_of::<T>() || bytes.len() > limit::<T>() {
     return Err(Error::Invalid(0));
   }
   walk::<T>(&mut Check { bytes, next: size_of::<T>(), todo })
@@ -286,7 +302,7 @@ pub fn view<T: Flat>(bytes: &[u8]) -> Result<&T, Error> {
 }
 
 /// [`view`], checking with `scratch` for memory. `bytes.len() / 4` entries are always enough
-/// (see [`Pending`]). It needs no `alloc`.
+/// (`bytes.len() / 2` with 2-byte pointers; see [`Pending`]). It needs no `alloc`.
 ///
 /// ```
 /// use nearest::{Error, Near, Pending, Region, flat};
@@ -359,7 +375,7 @@ fn walk<T: Flat>(ck: &mut Check<'_>) -> Result<(), Error> {
     ck.todo.top(mark).reverse();
     let Some(Pending(at, count, step)) = ck.todo.pop() else { break };
     mark = ck.todo.len();
-    step(ck, at as usize, count as usize)?;
+    step(ck, at, count)?;
   }
   if ck.next == ck.bytes.len() { Ok(()) } else { Err(Error::Invalid(ck.next)) }
 }

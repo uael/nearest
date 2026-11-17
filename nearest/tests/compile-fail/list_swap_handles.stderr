@@ -8,7 +8,7 @@ error[E0277]: the size for values of type `[()]` cannot be known at compilation 
 note: required because it appears within the type `ListEdit<'_, Inst>`
   --> src/edit.rs
    |
-   | pub struct ListEdit<'e, T>(Raw<'e, Near<[T]>>);
+   | pub struct ListEdit<'e, T, O: Offset = i32>(Raw<'e, Near<[T], O>>);
    |            ^^^^^^^^
 note: required by an implicit `Sized` bound in `std::mem::swap`
   --> $RUST/core/src/mem/mod.rs

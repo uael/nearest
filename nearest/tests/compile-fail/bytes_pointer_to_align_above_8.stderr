@@ -19,7 +19,7 @@ note: erroneous constant encountered
   | |___^
 
 note: the above error was encountered while instantiating `fn nearest::__private::fits::<A>`
- --> src/bytes.rs
+ --> src/flat.rs
   |
   |   fits::<T>();
   |   ^^^^^^^^^^^

@@ -8,9 +8,9 @@
 **Self-relative pointers in one buffer. Clone is `memcpy`.**
 
 A `Region<T>` keeps a `T` and everything it points to in one buffer. A pointer is a `Near<T>`:
-4 bytes holding the distance from its own address to its target. So copying the buffer copies
-the whole value, reading is plain `&T` with `Near` dereferencing like `Box`, and the bytes mean
-the same at any address, so a region can be written out and read back.
+4 bytes (or 2, or 8) holding the distance from its own address to its target. So copying the
+buffer copies the whole value, reading is plain `&T` with `Near` dereferencing like `Box`, and
+the bytes mean the same at any address, so a region can be written out and read back.
 
 ```rust
 use nearest::{Edit, Near, Region, flat};
@@ -89,7 +89,8 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `Region<T, S = Heap>` | the buffer, in a storage: `new`, `new_in`, `edit`, `as_bytes`, `from_bytes`, `from_bytes_with`, `byte_len`; `unsafe` `from_bytes_unchecked` |
 | `view`, `view_with` | functions: the value whose image is an 8-aligned slice, checked and read in place; `unsafe` `view_unchecked` |
 | `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap (`Heap::with_capacity`), `N` bytes inside the region |
-| `Near<T>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
+| `Near<T, O = i32>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
+| `Offset` | the integer a `Near` keeps its distance in: `i16`, `i32` or `i64` |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
 | `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
 | `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `update` |
@@ -148,6 +149,25 @@ again afterwards. On nightly Rust, with the `nightly` feature, `#[flat]` marks e
 `match e { Expr::Add(a, b) => .. }`. The feature is the way to that mark: without it, `#[flat]`
 rejects a `#[pin_v2]` written on the type.
 
+## Pointer widths
+
+A `Near<T>` keeps its distance in an `i32`, so a region holds at most 2 GiB. `Near<T, O>` picks
+another width: `i16`, 2 bytes, for regions of at most 32 KiB, or `i64`, 8 bytes, for regions as
+large as memory. List and string lengths follow. Each field picks its width, and a type can take
+it as a parameter:
+
+```rust
+#[flat]
+struct Table<O: Offset> { name: Near<str, O>, rows: Near<[u64], O> }
+
+let small = Region::new(Table::<i16>::new("small", [1, 2, 3]));   // 4 bytes at the root
+let large = Region::new(Table::<i64>::new("large", [1, 2, 3]));   // 16 bytes at the root
+```
+
+The pointers of the root bound the region, and a pointer may only lead to types whose pointers
+are at least as wide (checked at compile time), so every distance fits. Building or editing past
+the bound panics, and bytes longer than it do not load.
+
 ## Bytes
 
 `as_bytes` returns the compact image of a region, the bytes a deep copy writes, borrowed: a
@@ -159,7 +179,8 @@ values, in one pass, in safe code, without recursion or panics. Every loader ret
 `Error::StorageFull` that a valid image is larger than the storage of `from_bytes`. Checking
 keeps the pointers still to visit in memory that grows with the nesting of the data;
 `from_bytes_with` and `view_with` take it from the caller, as `&mut [Pending]`, and return
-`Error::ScratchFull` if it runs out: `bytes.len() / 4` entries are always enough. For bytes you
+`Error::ScratchFull` if it runs out: `bytes.len() / 4` entries are always enough (`/ 2` with
+2-byte pointers). For bytes you
 trust, `from_bytes_unchecked` and `view_unchecked` skip the check and are `unsafe`. The bytes
 hold native-endian integers and the layout of the target.
 
@@ -194,7 +215,8 @@ let moved = r;                                       // the bytes move with it
   provenance.
 
 Stored types must have alignment at most 8, non-zero size and no drop glue (checked at compile
-time). A region holds at most 2 GiB, or what its storage gives. The specification is
+time). A region holds at most what the pointers of its root reach (2 GiB by default), or what
+its storage gives. The specification is
 [`nearest/CLAUDE.md`](nearest/CLAUDE.md).
 
 ## Getting started
@@ -209,7 +231,7 @@ The default feature `alloc` provides the heap. Without it (`default-features = f
 crate needs no allocator: regions live in other storage, and `Heap` (so `Region<T>`),
 `from_bytes` and `view` are not available. `as_bytes` is, and so are `from_bytes_with` and
 `view_with`, which check loaded bytes with memory from the caller: a slice of `Pending`, of
-which `bytes.len() / 4` entries are always enough.
+which `bytes.len() / 4` entries are always enough (`/ 2` with 2-byte pointers).
 
 The opt-in feature `nightly` needs a nightly compiler for the whole build: `#[flat]` then
 marks every type `#[pin_v2]`. It uses `specialization` and `allow_internal_unstable` inside

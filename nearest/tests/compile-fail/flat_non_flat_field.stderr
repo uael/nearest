@@ -5,9 +5,9 @@ error[E0277]: the trait bound `String: Flat` is not satisfied
   | ^^^^^^^ the trait `Flat` is not implemented for `String`
   |
   = help: the following other types implement trait `Flat`:
-            Near<T>
-            Near<[T]>
-            Near<str>
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
             NonZero<i16>
             NonZero<i32>
             NonZero<i64>
@@ -28,9 +28,9 @@ error[E0277]: the trait bound `String: Flat` is not satisfied
   | ^^^^^^^ the trait `Flat` is not implemented for `String`
   |
   = help: the following other types implement trait `Flat`:
-            Near<T>
-            Near<[T]>
-            Near<str>
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
             NonZero<i16>
             NonZero<i32>
             NonZero<i64>
@@ -46,9 +46,9 @@ error[E0277]: the trait bound `String: Flat` is not satisfied
   |                  ^^^^^^ the trait `Flat` is not implemented for `String`
   |
   = help: the following other types implement trait `Flat`:
-            Near<T>
-            Near<[T]>
-            Near<str>
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
             NonZero<i16>
             NonZero<i32>
             NonZero<i64>
@@ -71,9 +71,9 @@ error[E0277]: the trait bound `String: Flat` is not satisfied
   |                  ^^^^^^ the trait `Flat` is not implemented for `String`
   |
   = help: the following other types implement trait `Flat`:
-            Near<T>
-            Near<[T]>
-            Near<str>
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
             NonZero<i16>
             NonZero<i32>
             NonZero<i64>

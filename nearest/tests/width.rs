@@ -1,0 +1,334 @@
+//! Pointers of every width, `Near<T, O>` with `O` = `i16`, `i32` (the default) or `i64`: the
+//! same tests for each, on types generic over the width; the limit a width sets; mixed widths.
+
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use nearest::{Edit, Error, Heap, Inline, Near, Offset, Pending, Region, flat};
+
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Tree<O: Offset> {
+  /// 8-aligned, so that lists of trees are 8-aligned behind 2-byte headers too.
+  id: u64,
+  name: Near<str, O>,
+  kids: Near<[Tree<O>], O>,
+  next: Option<Near<Tree<O>, O>>,
+}
+
+#[flat]
+#[derive(Debug, PartialEq)]
+enum Expr<O: Offset> {
+  Lit(i64),
+  Neg(Near<Expr<O>, O>),
+  Add(Near<Expr<O>, O>, Near<Expr<O>, O>),
+}
+
+fn leaf<O: Offset>(id: u64, name: &str) -> impl nearest::Emit<Tree<O>> {
+  Tree::new(id, name, (), None)
+}
+
+fn tree<O: Offset>() -> Region<Tree<O>> {
+  Region::new(Tree::new(
+    1,
+    "root",
+    (leaf(2, "a"), Tree::new(3, "b", [leaf(4, "c")], None)),
+    Near::new(leaf(5, "next")),
+  ))
+}
+
+fn ids<O: Offset>(t: &Tree<O>) -> Vec<u64> {
+  let mut out = vec![t.id];
+  for k in &t.kids {
+    out.extend(ids(k));
+  }
+  out.extend(t.next.as_deref().map(ids).unwrap_or_default());
+  out
+}
+
+fn show<O: Offset>(e: &Expr<O>) -> String {
+  match e {
+    Expr::Lit(n) => n.to_string(),
+    Expr::Neg(x) => format!("-{}", show(x)),
+    Expr::Add(a, b) => format!("({} + {})", show(a), show(b)),
+  }
+}
+
+/// A pointer, an optional pointer, a list and a string are each one `O`.
+fn sizes<O: Offset>() {
+  let w = size_of::<O>();
+  assert_eq!(size_of::<Near<u8, O>>(), w);
+  assert_eq!(size_of::<Option<Near<u8, O>>>(), w);
+  assert_eq!(size_of::<Near<[u8], O>>(), w);
+  assert_eq!(size_of::<Near<str, O>>(), w);
+  assert_eq!(size_of::<Tree<O>>(), 8 + (3 * w).next_multiple_of(8));
+}
+
+fn build_and_read<O: Offset>() {
+  let r = tree::<O>();
+  assert_eq!(ids(&r), [1, 2, 3, 4, 5]);
+  assert_eq!((&*r.name, &*r.kids[1].kids[0].name), ("root", "c"));
+  assert_eq!(r.next.as_ref().map(|n| &*n.name), Some("next"));
+  assert!(r.kids.iter().all(|k| (&raw const *k).addr().is_multiple_of(8)));
+  assert_eq!(r.clone(), r);
+  assert_eq!(Region::new(&*r), r);
+  let e = Region::new(Expr::<O>::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2)));
+  assert_eq!(show(&e), "(-1 + 2)");
+  assert_eq!(format!("{:?}", r.kids[0].name), "\"a\"");
+}
+
+/// Every handle, and moves inside the region and copies out of it.
+fn edit<O: Offset>() {
+  let mut r = tree::<O>();
+  let t = r.edit();
+  *t.id() = 10;
+  t.name().set("renamed");
+  let old = t.kids().at(1).name().replace("b2");
+  t.kids().at(0).name().set(old); // a move
+  t.kids().push(leaf(6, "d"));
+  for i in 0..20 {
+    t.kids().at(1).kids().push(leaf(100 + i, "x")); // grows, moves the block
+  }
+  t.kids().at(1).kids().retain(|k| k.id % 2 == 0);
+  t.kids().at(1).kids().truncate(5);
+  let c = t.kids().at(1).kids().remove(0);
+  t.kids().insert(0, c);
+  t.kids().swap(0, 3);
+  let next = t.next().take().unwrap();
+  t.kids().at(0).next().set(Near::new(next));
+  t.kids().at(0).update(|old| Tree::new(7, "wrapped", [old], None));
+  t.next().insert(leaf(8, "new")).name().update(|s| s);
+  assert_eq!(t.kids().try_at(9).map(|k| k.id), None);
+  assert_eq!(ids(&r), [10, 7, 6, 5, 2, 3, 100, 102, 104, 106, 4, 8]);
+  let names = r.kids.iter().map(|k| &*k.name).collect::<Vec<_>>();
+  assert_eq!((&*r.name, names), ("renamed", vec!["wrapped", "b", "b2", "c"]));
+  let compact = Region::new(&*r);
+  assert!(compact.byte_len() < r.byte_len());
+  assert_eq!(compact, r);
+  // Into another region, of another storage: a copy.
+  let mut other = Region::new_in(Inline::<4096>::default(), leaf::<O>(0, ""));
+  let e = r.edit();
+  let moved = e.kids().remove(0);
+  other.edit().kids().push(moved);
+  assert_eq!(ids(&other), [0, 7, 6, 5]);
+  assert_eq!(ids(&r), [10, 2, 3, 100, 102, 104, 106, 4, 8]);
+  let mut e = Region::new(Expr::<O>::Lit(1));
+  for i in 2..=5 {
+    e.edit().update(|sum| Expr::add(sum, Expr::neg(Expr::Lit(i))));
+  }
+  assert_eq!(show(&e), "((((1 + -2) + -3) + -4) + -5)");
+  // Several fields at once, pinned.
+  let TreePin { mut id, kids, .. } = r.edit().pin().project();
+  for kid in kids.iter_pin_mut() {
+    *id += kid.id;
+  }
+  assert_eq!(r.id, 10 + 2 + 3 + 4);
+}
+
+/// A helper that takes the handle of a generic type, and returns one.
+fn first<'a, 'e, O: Offset>(t: &'a mut Edit<'e, Tree<O>>) -> &'a mut Edit<'e, Tree<O>> {
+  t.kids().at(0)
+}
+
+fn helpers<O: Offset>() {
+  let mut r = tree::<O>();
+  *first(r.edit()).id() = 20;
+  assert_eq!(r.kids[0].id, 20);
+}
+
+/// The `O` at `at`, which is not negative: a distance forward or a length.
+fn pos<O>(bytes: &[u8], at: usize) -> usize {
+  usize::try_from(int::<O>(bytes, at)).unwrap()
+}
+
+/// The `O` at `at`.
+fn int<O>(bytes: &[u8], at: usize) -> i64 {
+  let b = &bytes[at..];
+  match size_of::<O>() {
+    2 => i16::from_ne_bytes(b[..2].try_into().unwrap()).into(),
+    4 => i32::from_ne_bytes(b[..4].try_into().unwrap()).into(),
+    _ => i64::from_ne_bytes(b[..8].try_into().unwrap()),
+  }
+}
+
+/// Writes `v` as the `O` at `at`.
+fn put<O>(bytes: &mut [u8], at: usize, v: i64) {
+  let b = &mut bytes[at..];
+  match size_of::<O>() {
+    2 => b[..2].copy_from_slice(&i16::try_from(v).unwrap().to_ne_bytes()),
+    4 => b[..4].copy_from_slice(&i32::try_from(v).unwrap().to_ne_bytes()),
+    _ => b[..8].copy_from_slice(&v.to_ne_bytes()),
+  }
+}
+
+/// The layout: an `O` pointer, list headers of two `O`s before elements aligned for their type,
+/// string lengths of one `O`.
+fn layout<O: Offset>() {
+  let w = size_of::<O>();
+  let list = Region::<Near<[u64], O>>::new(Near::from_iter([7u64]));
+  let bytes = list.as_bytes().unwrap();
+  let elems = (3 * w).next_multiple_of(8);
+  assert_eq!(bytes.len(), elems + 8);
+  assert_eq!(pos::<O>(bytes, 0), elems - w); // to the length
+  assert_eq!((pos::<O>(bytes, elems - 2 * w), pos::<O>(bytes, elems - w)), (1, 1));
+  assert_eq!(bytes[elems..], 7u64.to_ne_bytes());
+  let text = Region::<Near<str, O>>::new("hi");
+  let bytes = text.as_bytes().unwrap();
+  assert_eq!(bytes.len(), 2 * w + 2);
+  assert_eq!((pos::<O>(bytes, 0), pos::<O>(bytes, w)), (w, 2));
+  assert_eq!(&bytes[2 * w..], b"hi");
+}
+
+/// Bytes: saved, checked, loaded and viewed; a bad image is an error.
+fn bytes<O: Offset>() {
+  let mut r = tree::<O>();
+  r.edit().kids().at(0).kids().push(leaf(9, "late"));
+  let compact = Region::new(&*r);
+  let image = compact.as_bytes().unwrap();
+  assert_eq!(Region::<Tree<O>>::from_bytes(image), Ok(Region::new(&*r)));
+  assert_eq!(nearest::view::<Tree<O>>(image), Ok(&*r));
+  let mut scratch = vec![Pending::default(); image.len() / size_of::<O>().min(4)];
+  assert_eq!(nearest::view_with::<Tree<O>>(image, &mut scratch), Ok(&*r));
+  assert_eq!(Region::<Tree<O>>::from_bytes_with(image, &mut []).err(), Some(Error::ScratchFull));
+  // Cut, padded, or a pointer one byte off.
+  let cut = &image[..image.len() - 1];
+  assert!(matches!(Region::<Tree<O>>::from_bytes(cut), Err(Error::Invalid(_))));
+  let mut long = image.to_vec();
+  long.push(0);
+  assert_eq!(Region::<Tree<O>>::from_bytes(&long).err(), Some(Error::Invalid(image.len())));
+  let name = std::mem::offset_of!(Tree<O>, name);
+  for n in [1, -1] {
+    let mut bad = image.to_vec();
+    put::<O>(&mut bad, name, int::<O>(image, name) + n);
+    assert_eq!(Region::<Tree<O>>::from_bytes(&bad).err(), Some(Error::Invalid(name)));
+  }
+  // A negative length is as bad as one too long.
+  let text = Region::<Near<str, O>>::new("hi");
+  let mut bad = text.as_bytes().unwrap().to_vec();
+  let w = size_of::<O>();
+  put::<O>(&mut bad, w, -1);
+  assert_eq!(Region::<Near<str, O>>::from_bytes(&bad).err(), Some(Error::Invalid(w)));
+}
+
+macro_rules! widths {
+  ($($test:ident),*) => {
+    mod w16 { $(#[test] fn $test() { super::$test::<i16>() })* }
+    mod w32 { $(#[test] fn $test() { super::$test::<i32>() })* }
+    mod w64 { $(#[test] fn $test() { super::$test::<i64>() })* }
+  };
+}
+widths!(sizes, build_and_read, edit, helpers, layout, bytes);
+
+// ---------------------------------------------------------------------------------------------
+// The limit a width sets
+
+/// A list behind a 2-byte pointer: a region of at most 32 KiB, so the limit is cheap to reach.
+type Small = Near<[u32], i16>;
+
+/// What a 2-byte pointer reaches: 32 KiB, rounded down to 8 bytes.
+const LIMIT: usize = i16::MAX as usize & !7;
+
+#[test]
+fn the_size_limit_panics_and_leaves_a_valid_region() {
+  assert!(catch_unwind(|| Region::<Small>::new(Near::from_iter(0..10_000u32))).is_err());
+  let mut r = Region::<Small>::new(Near::from_iter(0..10u32));
+  let full = catch_unwind(AssertUnwindSafe(|| {
+    for i in 0..u32::MAX {
+      r.edit().push(i);
+    }
+  }));
+  assert!(full.is_err());
+  assert!(r.byte_len() > LIMIT / 2 && r.byte_len() <= LIMIT);
+  assert_eq!(r[..10], (0..10).collect::<Vec<_>>());
+  let before = r.to_vec();
+  assert!(r[10..].iter().copied().eq(0..before.len() as u32 - 10));
+  // What does not fit fails the same way, and the region is still intact.
+  assert!(catch_unwind(AssertUnwindSafe(|| r.edit().set(Near::from_iter(0..8_192u32)))).is_err());
+  assert_eq!(r[..], before);
+  // The root, 2 bytes of padding, the header, then the elements, which are 4-aligned.
+  let compact = Region::new(&*r);
+  assert_eq!(compact.byte_len(), 2 + 2 + 4 + 4 * before.len());
+  assert_eq!(compact[..], r[..]);
+}
+
+#[test]
+fn capacity_past_the_size_limit_is_not_used() {
+  let mut r = Region::<Small>::new_in(Heap::with_capacity(2 * LIMIT), Near::from_iter([0u32]));
+  let full = catch_unwind(AssertUnwindSafe(|| {
+    for i in 0..LIMIT as u32 {
+      r.edit().push(i);
+    }
+  }));
+  assert!(full.is_err() && r.byte_len() <= LIMIT);
+}
+
+#[test]
+fn bytes_past_the_size_limit_are_invalid() {
+  let r = Region::<Small>::new(Near::from_iter([1u32, 2]));
+  let mut long = r.as_bytes().unwrap().to_vec();
+  assert_eq!(Region::<Small>::from_bytes(&long).map(|r| r.to_vec()), Ok(vec![1, 2]));
+  long.resize(LIMIT + 8, 0);
+  assert_eq!(Region::<Small>::from_bytes(&long).err(), Some(Error::Invalid(0)));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mixed widths
+
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Wide {
+  items: Near<[u8], i64>,
+}
+
+/// Narrow pointers above wide ones: the root's pointers bound the region.
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Narrow {
+  wide: Near<Wide, i16>,
+  name: Near<str>,
+}
+
+#[test]
+fn wider_pointers_below_narrower_ones() {
+  let mut r = Region::new(Narrow::new(Wide::new([1, 2]), "n"));
+  assert_eq!((&r.wide.items[..], &*r.name), (&[1, 2][..], "n"));
+  r.edit().wide().items().push(3);
+  assert_eq!(r.wide.items[..], [1, 2, 3]);
+  let bytes = Region::new(&*r).as_bytes().unwrap().to_vec();
+  assert_eq!(Region::<Narrow>::from_bytes(&bytes).unwrap(), r);
+  // The region is bounded by the `i16` at its root.
+  let bytes = vec![0u8; LIMIT];
+  let big = catch_unwind(AssertUnwindSafe(|| r.edit().wide().items().set(&bytes[..])));
+  assert!(big.is_err());
+  assert_eq!(r.wide.items[..], [1, 2, 3]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Past 2 GiB
+
+#[flat]
+struct Big {
+  data: Near<[u8], i64>,
+  tail: Near<str, i64>,
+}
+
+/// A region larger than 2 GiB, with a pointer that reaches past 2 GiB: built, edited, checked.
+#[cfg(target_pointer_width = "64")]
+#[test]
+#[ignore = "builds a region of more than 2 GiB; CI runs it in release"]
+fn a_region_past_2_gib() {
+  let n = (1usize << 31) + 1000;
+  let mut r = Region::new_in(
+    Heap::with_capacity(n + 4096),
+    Big::new(Near::from_iter(std::iter::repeat_n(7u8, n)), "end"),
+  );
+  assert!(r.byte_len() > n);
+  assert_eq!((r.data.len(), r.data[n - 1], &*r.tail), (n, 7, "end"));
+  let e = r.edit();
+  e.data()[n - 1] = 8;
+  e.tail().set("moved");
+  assert_eq!((r.data[n - 1], &*r.tail), (8, "moved"));
+  let copy = Region::new_in(Heap::with_capacity(r.byte_len()), &*r);
+  let bytes = copy.as_bytes().unwrap();
+  let big = nearest::view::<Big>(bytes).unwrap();
+  assert_eq!((big.data.len(), big.data[n - 1], &*big.tail), (n, 8, "moved"));
+}

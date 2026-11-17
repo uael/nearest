@@ -1,0 +1,23 @@
+error[E0080]: evaluation panicked: a `Near` cannot lead to a type holding a narrower `Near`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: evaluation of `nearest::flat::fits_behind::<Inner, i32>::{constant#0}` failed here
+  |
+ ::: src/flat.rs
+  |
+  |     assert!(T::REACH >= O::LIMIT, "a `Near` cannot lead to a type holding a narrower `Near`");
+  |     ----------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/flat.rs
+  |
+  | /   const {
+  | |     assert!(T::REACH >= O::LIMIT, "a `Near` cannot lead to a type holding a narrower `Near`");
+  | |   };
+  | |___^
+
+note: the above error was encountered while instantiating `fn nearest::flat::fits_behind::<Inner, i32>`
+ --> src/bytes.rs
+  |
+  |   fits_behind::<T, O>();
+  |   ^^^^^^^^^^^^^^^^^^^^^
