@@ -383,7 +383,8 @@ fn lists_stay_aligned<O: nearest::Offset, S: nearest::Storage + Default>() {
   let expected = |r: &Bytes<O>| {
     [
       r.quads.iter().map(|q| u64::from(u32::from_ne_bytes(*q))).sum::<u64>(),
-      r.numbers.iter().map(|n| u64::from(n.get().cast_unsigned())).sum(),
+      // An `i32le` read as a `u32` of the target: its bytes, in the byte order of the target.
+      r.numbers.iter().map(|n| u64::from(u32::from_ne_bytes(n.to_bytes()))).sum(),
       r.octets.iter().map(|o| u64::from_ne_bytes(*o)).sum(),
       r.pairs.iter().map(|p| u64::from(u16::from_ne_bytes(*p))).sum(),
     ]
@@ -443,7 +444,7 @@ fn quads_stay_aligned<O: nearest::Offset>() {
     );
     assert_eq!(
       words.numbers.iter().sum::<u32>(),
-      r.numbers.iter().map(|n| n.get().cast_unsigned()).sum()
+      r.numbers.iter().map(|n| u32::from_ne_bytes(n.to_bytes())).sum()
     );
   }
 }
