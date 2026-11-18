@@ -47,25 +47,26 @@ files with the pinned stable; the trybuild test runs on stable only.
 What `unsafe` code assumes of the target (the alignment of a primitive, the width of `usize` and
 `isize`, the byte order) is a `const` assertion where it is used, or a constant derived from the
 target (`ALIGN = align_of::<u64>()`, never "8 because words"), and the tests run under Miri on a
-target where the assumption does not hold: `i686-unknown-linux-gnu` (32 bits, a `u64` aligned to
-4) and `s390x-unknown-linux-gnu` (big-endian): see the `miri` job of `ci.yml` for which tests run
-where (on a target, what the target can change). A target that is only
-built (`thumbv7em`, `msp430`) finds no undefined behavior, and a sentence of the specification is
-not a check: 0.7.1 was released with "memory is `u64` words, so 8-aligned", which no test ever
-ran where it is false, and with `i64` offsets truncated on 32 bits. A new `unsafe` block that
-reads a type at an address comes with the test that stresses it (an over-aligned type, an integer
-wider than `isize`, the other byte order); tests write sizes and alignments with `size_of`,
-`align_of` and `to_ne_bytes`, not as x86-64 numbers. The list of assumptions and what holds each
-is in the specification (Target assumptions): keep it in step.
+target where the assumption does not hold: `i686-unknown-linux-gnu` (32 bits, a `u64` aligned to 4)
+and `s390x-unknown-linux-gnu` (big-endian): see the `miri` job of `ci.yml` for which tests run where
+(on a target, what the target can change). A target that is only built (`thumbv7em`, `msp430`) finds
+no undefined behavior, and a sentence of the specification is not a check: 0.7.1 was released with
+"memory is `u64` words, so 8-aligned", which no test ever ran where it is false, and with `i64`
+offsets truncated on 32 bits. A new `unsafe` block that reads a type at an address comes with the
+test that stresses it (an over-aligned type, an integer wider than `isize`, the other byte order);
+tests write sizes and alignments with `size_of`, `align_of` and `to_ne_bytes`, not as x86-64
+numbers. The list of assumptions and what holds each is in the specification (Target assumptions):
+keep it in step.
 
-Every job that CI runs on a push takes at most a minute, build included: read the time of a new
-job on GitHub before keeping it, and split it (a matrix, `fail-fast: false`) rather than let it
-grow. Under Miri, a test that loops is a fraction of its size (`cfg!(miri)`), and the time that
-Miri reports for a test is not the one that passes: measure with a clock. Miri takes a second to start each test binary, so tests are given to it by
-name, and the standard library that it builds for a target is cached with the sources it was
-built from (`MIRI_SYSROOT` in `ci.yml`: Miri builds it again when the modification time of a
-source changes, which a fresh install of the toolchain does). The time that counts is the one
-of the job on GitHub, where runners are slower than a workstation and vary by a third.
+Every job that CI runs on a push takes at most a minute, build included: read the time of a new job
+on GitHub before keeping it, and split it (a matrix, `fail-fast: false`) rather than let it grow.
+Under Miri, a test that loops is a fraction of its size (`cfg!(miri)`), and the time that Miri
+reports for a test is not the one that passes: measure with a clock. Miri takes a second to start
+each test binary, so tests are given to it by name, and the standard library that it builds for a
+target is cached with the sources it was built from (`MIRI_SYSROOT` in `ci.yml`: Miri builds it
+again when the modification time of a source changes, which a fresh install of the toolchain does).
+The time that counts is the one of the job on GitHub, where runners are slower than a workstation
+and vary by a third.
 
 ## Architecture
 
