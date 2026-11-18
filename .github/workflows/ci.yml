@@ -9,8 +9,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # In four jobs, each under a minute: the tests (with the compile-fail cases), the features
-  # (without `alloc`, `serde`) and the examples, a region past 2 GiB, the benchmarks.
+  # In five jobs, each under a minute: the tests, the compile-fail cases, the features (without
+  # `alloc`, `serde`) and the examples, a region past 2 GiB, the benchmarks.
   test:
     name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -18,8 +18,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `cargo test --all` in two: the compile-fail cases (trybuild builds each program) apart.
           - name: all
-            run: cargo test --all
+            run: cargo test --all -- --skip compile_fail
+          - name: compile-fail
+            run: cargo test -p nearest --test compile_fail
           - name: features, examples
             run: >-
               cargo test -p nearest --no-default-features --lib --test no_alloc &&
