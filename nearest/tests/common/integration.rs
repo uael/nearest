@@ -867,11 +867,12 @@ fn moves_in_a_tree() {
   assert!(r.byte_len() - before <= 12 * size_of::<Expr>(), "moves, no deep copies");
   // Many wraps: the buffer reallocates under the moves.
   let e = r.edit();
-  for i in 0..200 {
+  let wraps = if cfg!(miri) { 30 } else { 200 };
+  for i in 0..wraps {
     let old = e.replace(Expr::Lit(0));
     e.set(Expr::add(old, Expr::Lit(i)));
   }
-  assert_eq!(eval(&r), 3 + 13 + (0..200).sum::<i64>());
+  assert_eq!(eval(&r), 3 + 13 + (0..wraps).sum::<i64>());
   let copy = Region::new_in(Store::default(), &*r);
   assert_eq!(show(&copy), show(&r));
   assert!(copy.byte_len() < r.byte_len());
@@ -1230,7 +1231,7 @@ fn small_corruptions_are_rejected_or_harmless() {
       }
       Err(_) => rejected += 1,
     };
-  let step = if cfg!(miri) { 61 } else { 1 };
+  let step = if cfg!(miri) { 127 } else { 1 };
   for i in (0..image.len()).step_by(step) {
     for v in [0u8, 1, 2, 4, 8, 0x7f, 0x80, 0xff, image[i].wrapping_add(1), image[i] ^ 0x10] {
       let mut bytes = image.clone();
@@ -1442,7 +1443,9 @@ impl Iterator for Liar {
 
 #[test]
 fn size_hint_may_lie() {
-  for (n, hint) in [(3, 1000), (1000, 0), (50, 3), (0, 10)] {
+  // The long list is a tenth of its length under Miri: it grows as many times but four.
+  let long = if cfg!(miri) { 100 } else { 1000 };
+  for (n, hint) in [(3, 1000), (long, 0), (50, 3), (0, 10)] {
     let r = Region::new_in(Store::default(), Inst::new(0, Near::from_iter(Liar { n, hint })));
     assert_eq!(r.args.to_vec(), (0..n).rev().collect::<Vec<_>>());
     // Elements that allocate while the list grows.
