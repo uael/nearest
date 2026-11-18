@@ -190,12 +190,38 @@ jobs:
               --test integration -- --exact moves_in_a_tree random_edits_match_a_model
               random_expression_rewrites_match_a_model
           - where: x86-64
-            name: inline
+            name: inline, 1 of 2
+            tests: >-
+              --test inline -- --exact
+              a_panic_in_a_list_operation_leaves_a_valid_list a_panic_leaves_the_old_value a_region_is_aligned_as_its_words a_region_moves_with_its_storage
+              a_value_overwrites_every_pointer a_very_deep_value_is_checked_without_recursion build_and_read builders_compose
+              builders_write_the_compact_image bytes_round_trip compaction constructors_box_pointer_fields
+              enum_handles enums_generics_and_nesting every_emit_source every_primitive
+              full_inline_storage
+          - where: x86-64
+            name: inline, 2 of 2
             tests: >-
               --test inline -- --exact --skip small_corruptions_are_rejected_or_harmless
               --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
               --skip noise_is_rejected_without_panicking
               --skip random_expression_rewrites_match_a_model
+              --skip a_panic_in_a_list_operation_leaves_a_valid_list
+              --skip a_panic_leaves_the_old_value
+              --skip a_region_is_aligned_as_its_words
+              --skip a_region_moves_with_its_storage
+              --skip a_value_overwrites_every_pointer
+              --skip a_very_deep_value_is_checked_without_recursion
+              --skip build_and_read
+              --skip builders_compose
+              --skip builders_write_the_compact_image
+              --skip bytes_round_trip
+              --skip compaction
+              --skip constructors_box_pointer_fields
+              --skip enum_handles
+              --skip enums_generics_and_nesting
+              --skip every_emit_source
+              --skip every_primitive
+              --skip full_inline_storage
           - where: x86-64
             name: user storage
             tests: >-
@@ -247,12 +273,39 @@ jobs:
               --skip random_expression_rewrites_match_a_model
           - where: 32 bits
             target: i686-unknown-linux-gnu
-            name: inline
+            name: inline, 1 of 2
+            tests: >-
+              --test inline -- --exact
+              a_panic_in_a_list_operation_leaves_a_valid_list a_panic_leaves_the_old_value a_region_is_aligned_as_its_words a_region_moves_with_its_storage
+              a_value_overwrites_every_pointer a_very_deep_value_is_checked_without_recursion build_and_read builders_compose
+              builders_write_the_compact_image bytes_round_trip compaction constructors_box_pointer_fields
+              enum_handles enums_generics_and_nesting every_emit_source every_primitive
+              full_inline_storage
+          - where: 32 bits
+            target: i686-unknown-linux-gnu
+            name: inline, 2 of 2
             tests: >-
               --test inline -- --exact --skip small_corruptions_are_rejected_or_harmless
               --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
               --skip noise_is_rejected_without_panicking
               --skip random_expression_rewrites_match_a_model
+              --skip a_panic_in_a_list_operation_leaves_a_valid_list
+              --skip a_panic_leaves_the_old_value
+              --skip a_region_is_aligned_as_its_words
+              --skip a_region_moves_with_its_storage
+              --skip a_value_overwrites_every_pointer
+              --skip a_very_deep_value_is_checked_without_recursion
+              --skip build_and_read
+              --skip builders_compose
+              --skip builders_write_the_compact_image
+              --skip bytes_round_trip
+              --skip compaction
+              --skip constructors_box_pointer_fields
+              --skip enum_handles
+              --skip enums_generics_and_nesting
+              --skip every_emit_source
+              --skip every_primitive
+              --skip full_inline_storage
           - where: 32 bits
             target: i686-unknown-linux-gnu
             name: user storage
