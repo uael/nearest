@@ -4,8 +4,7 @@ use nearest::{Near, Region, flat};
 #[flat]
 struct Inner { next: Option<Near<Inner, i16>> }
 
-// Not a `Pun` type until `Option<Near<..>>` is one.
-#[flat(no_pun)]
+#[flat]
 struct Outer { items: Near<[Inner]> }
 
 fn main() {

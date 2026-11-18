@@ -243,12 +243,23 @@
 //! ```
 //!
 //! What `#[pun(..)]` says of a type, `valid(..)` of a field and `assert(..)` of a struct, are
-//! requirements that `puns` checks where it does not prove them. A region does not check them
-//! when it builds or edits a value: like a field of a struct that safe code can write, a value of
-//! a region may not meet them, and nothing relies on it. Until `puns` describes `Option` of a
-//! pointer and the signed `NonZero` integers, a type with a field written `Option<Near<..>>` or
-//! `NonZero<iN>` is not a `Pun` type, and a type that holds or points to one says so with
-//! `#[flat(no_pun)]`.
+//! requirements: the loaders check them, and `puns` where it does not prove them. A region does
+//! not check them when it builds or edits a value: like a field of a struct that safe code can
+//! write, a value of a region may not meet them, and nothing relies on it; such a value is saved
+//! by [`Region::as_bytes`] and refused when loaded.
+//!
+//! ```
+//! use nearest::{Error, Region, flat};
+//!
+//! #[flat]
+//! #[pun(assert(lo <= hi))]
+//! struct Span { lo: u32, hi: u32 }
+//!
+//! let backwards = Region::new(Span::new(2, 1)); // built: rules are not checked here
+//! let bytes = backwards.as_bytes().unwrap();
+//! assert_eq!(Region::<Span>::from_bytes(bytes).err(), Some(Error::Invalid(0)));
+//! assert!(Region::<Span>::from_bytes(Region::new(Span::new(1, 2)).as_bytes().unwrap()).is_ok());
+//! ```
 //!
 //! # The `nightly` feature
 //!
@@ -424,10 +435,6 @@ pub use near::{Near, Offset};
 ///   of whose variants are tuple-like: unit variants stay units, a variant with one field holds
 ///   that field's handle, and a variant with several fields holds a handle with a method per
 ///   field (and no `set` or `replace`, so the variant cannot change under it).
-///
-/// `#[flat(no_pun)]` leaves `Pun` out, for a type that holds or points to one that is not a
-/// `Pun` type yet (one with a field written `Option<Near<..>>` or `NonZero<iN>`, which leave it
-/// out by themselves).
 ///
 /// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
 /// `repr`s other than `u8`, explicit discriminants, empty enums, enums of more than 256

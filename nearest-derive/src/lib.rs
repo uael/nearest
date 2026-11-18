@@ -31,9 +31,8 @@ pub fn flat(
 fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream> {
   // `#[flat(..)]` is read here and left out of the output: on the type it says nothing, on a
   // variant it may rename the constructor, on a field it may make its parameter `impl Into`.
-  let mut args = Args::default();
-  syn::meta::parser(read_args(&mut args, Place::Type)).parse2(attr)?;
-  let no_pun = args.no_pun.is_some() || take_args(&mut input.attrs, Place::Type)?.no_pun.is_some();
+  syn::meta::parser(read_args(&mut Args::default(), Place::Type)).parse2(attr)?;
+  take_args(&mut input.attrs, Place::Type)?;
   let intos = |fields: &mut Fields| -> syn::Result<Vec<bool>> {
     (fields.iter_mut())
       .map(|f| match take_args(&mut f.attrs, Place::Field)?.into {
@@ -109,8 +108,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let mut handle_g = generics.clone();
   handle_g.params.insert(0, GenericParam::Lifetime(parse_quote!(#e)));
   let (h_impl, h_ty, h_where) = handle_g.split_for_impl();
-  let [sink, at, shift, buf, ck] =
-    ["sink", "at", "shift", "buf", "ck"].map(|s| Ident::new(s, Span::mixed_site()));
+  let [sink, at, shift, buf] =
+    ["sink", "at", "shift", "buf"].map(|s| Ident::new(s, Span::mixed_site()));
   let np = quote!(::nearest::__private);
   let pin = quote!(::core::pin::Pin);
   let handle = format_ident!("__NearestEdit");
@@ -175,7 +174,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     }
   };
   let store = |field: TokenStream, off: &TokenStream| quote!(::nearest::Flat::store(#field, #sink, #at + #off, #shift););
-  let check = |tys: &[TokenStream], offs: &[TokenStream]| quote!(#(<#tys as ::nearest::Flat>::check(#ck, #at + #offs)?;)*);
   // A method of a handle whose `.0` is the `Raw` of the value, returning a field's handle.
   let field_method = |f: &Field, i: usize, fvis: TokenStream, off: &TokenStream| {
     let mname = match &f.ident {
@@ -202,7 +200,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let mut view = None;
   // The declaration of `XPin` and the body of `project`, and every field type of the type.
   let (mut pinned, mut field_tys) = (None, vec![]);
-  let (plain, any, body, checks) = match &input.data {
+  let body = match &input.data {
     Data::Union(u) => {
       return Err(Error::new(u.union_token.span, "`#[flat]` does not support unions"));
     }
@@ -220,12 +218,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         methods.push(field_method(f, i, f.vis.to_token_stream(), &off));
       }
       let stores = members.iter().zip(&offs).map(|(m, off)| store(quote!(&self.#m), off));
-      let plain = quote! {
-        true #(&& <#tys as ::nearest::Flat>::PLAIN)*
-          && ::core::mem::size_of::<Self>() == 0 #(+ ::core::mem::size_of::<#tys>())*
-      };
-      let any = quote!(true #(&& <#tys as ::nearest::Flat>::ANY)*);
-      let checks = check(&tys, &offs);
       if !s.fields.is_empty() {
         let binds: Vec<_> =
           (0..tys.len()).map(|k| format_ident!("f{k}", span = Span::mixed_site())).collect();
@@ -249,7 +241,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         ));
       }
       field_tys.extend(tys.iter().map(|ty| unself(ty.clone(), &self_ty)));
-      (plain, any, quote!(#(#stores)*), checks)
+      quote!(#(#stores)*)
     }
     Data::Enum(data) => {
       if let Some(v) = data.variants.iter().nth(256) {
@@ -260,9 +252,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       }
       let mut_name = format_ident!("{name}Mut");
       let (mut arms, mut built, mut views, mut view_arms) = (vec![], vec![], vec![], vec![]);
-      let (mut check_arms, mut ctor_names) = (vec![], vec![]);
+      let mut ctor_names = vec![];
       let (mut pin_variants, mut pin_arms) = (vec![], vec![]);
-      let last = data.variants.len() - 1;
       for (i, v) in data.variants.iter().enumerate() {
         if let Some((eq, expr)) = &v.discriminant {
           return Err(Error::new_spanned(quote!(#eq #expr), "`#[flat]` numbers variants in order"));
@@ -281,7 +272,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         let tag_store = store(quote!(&#tag), &quote!(0));
         let vdoc = format!("`{name}::{vname}`.");
         let view_arm = quote!(#name::#vname { .. } => #mut_name::#vname);
-        let tag_pat = if i == last { quote!(_) } else { tag.to_token_stream() };
         let ftys = v.fields.iter().map(|f| unself(f.ty.to_token_stream(), &self_ty));
         let pins = quote!(#(#pin::new_unchecked(#binds)),*);
         let (pin_decl, pin_make) = match &v.fields {
@@ -302,7 +292,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           if let Some(r) = &renames[i] {
             return Err(Error::new_spanned(r, "a unit variant has no constructor to rename"));
           }
-          check_arms.push(quote!(#tag_pat => {}));
           arms.push(quote!(Self::#vname => { #tag_store }));
           views.push(quote!(#[doc = #vdoc] #vname));
           view_arms.push(view_arm);
@@ -325,8 +314,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
             quote!(::core::mem::offset_of!(#mirror #ty_g, #k))
           })
           .collect();
-        let checks = check(&tys, &offs);
-        check_arms.push(quote!(#tag_pat => { #checks }));
         let doc = format!("Builds `{name}::{vname}` from its fields, in declaration order.");
         let tag_emit = quote!(::nearest::Emit::<u8>::emit(#tag, #sink, #at););
         let cname = renames[i].clone().unwrap_or_else(|| snake(vname));
@@ -410,11 +397,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           quote!(match self.get_unchecked_mut() { #(#pin_arms,)* }),
         ));
       }
-      let unit = data.variants.iter().all(|v| matches!(v.fields, Fields::Unit));
-      let count = data.variants.len();
-      let checks = quote!(match #ck.tag(#at, #count)? { #(#check_arms)* });
-      // A tag is never any byte.
-      (quote!(#unit), quote!(false), quote!(#(#built)* match self { #(#arms)* }), checks)
+      quote!(#(#built)* match self { #(#arms)* })
     }
   };
 
@@ -437,19 +420,17 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     input.attrs.insert(0, repr);
   }
   // The type is a `Pun` type: its layout and its valid values, for `puns` (the crate that
-  // `nearest` re-exports), so that `#[pun(..)]` can be written on it. First, so that the
-  // `#[pun(..)]` attributes of the user come after the derive that reads them. Until `puns` makes
-  // `Option` of a pointer and the signed `NonZero` integers `Pun` types, a type with a field
-  // written `Option<Near<..>>` or `NonZero<iN>` is not one, nor one with `#[flat(no_pun)]`.
-  let blocked = match &input.data {
-    Data::Struct(s) => s.fields.iter().any(|f| is_blocked(&f.ty)),
-    Data::Enum(e) => e.variants.iter().flat_map(|v| &v.fields).any(|f| is_blocked(&f.ty)),
-    Data::Union(_) => false,
-  };
-  if !blocked && !no_pun {
-    input.attrs.insert(0, parse_quote!(#[pun(crate = ::nearest::puns)]));
-    input.attrs.insert(0, parse_quote!(#[derive(::nearest::puns::Pun)]));
-  }
+  // `nearest` re-exports), which checks loaded bytes, reads a value as another type, and reads
+  // the `#[pun(..)]` attributes of the user. First, so that those come after the derive. Bounded
+  // as the impls of this macro are, every type parameter `Flat` (so `Pun`), and by nothing that
+  // the derive would find from the fields: through pointers, the bounds of types that hold each
+  // other would go round in a circle.
+  let flat_params = input.generics.type_params().map(|p| &p.ident);
+  input.attrs.insert(
+    0,
+    parse_quote!(#[pun(crate = ::nearest::puns, bound(#(#flat_params: ::nearest::Flat),*))]),
+  );
+  input.attrs.insert(0, parse_quote!(#[derive(::nearest::puns::Pun)]));
   // A pinned value must keep its pointers, so the type is `Unpin` exactly when its fields are.
   // An impl with a bound on all the fields says so, and makes any impl written by hand a
   // conflict. A type marked `#[pin_v2]` cannot have it: with `pin_ergonomics` on, the compiler
@@ -519,11 +500,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       #(#mirrors)*
       unsafe impl #impl_g ::nearest::Flat for #self_ty #where_c {
         type Edit<#e> = #handle #h_ty;
-        const PLAIN: bool = {
-          #np::fits::<Self>();
-          #plain
-        };
-        const ANY: bool = #any;
         #reach
         #unpin_const
         unsafe fn store(
@@ -542,14 +518,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           #np::fits::<Self>();
           let raw = unsafe { #np::Raw::<#e, Self>::new(#buf, #at) };
           unsafe { &mut *(::core::ptr::from_mut(raw) as *mut #handle #h_ty) }
-        }
-        fn check(
-          #ck: &mut #np::Check<'_>,
-          #at: usize,
-        ) -> ::core::result::Result<(), ::nearest::Error> {
-          #np::fits::<Self>();
-          #checks
-          ::core::result::Result::Ok(())
         }
       }
       impl #impl_g #self_ty #where_c {
@@ -609,20 +577,12 @@ enum Place {
 struct Args {
   rename: Option<Ident>,
   into: Option<Span>,
-  no_pun: Option<Span>,
 }
 
 /// Reads one argument of `#[flat(..)]` at `place` into `args`, rejecting what does not belong
 /// there.
 fn read_args(args: &mut Args, place: Place) -> impl FnMut(ParseNestedMeta) -> syn::Result<()> {
   move |meta| {
-    if meta.path.is_ident("no_pun") {
-      if place != Place::Type {
-        return Err(meta.error("`no_pun` is for the type: write it there"));
-      }
-      args.no_pun = Some(meta.path.span());
-      return Ok(());
-    }
     if meta.path.is_ident("into") {
       if place != Place::Field {
         return Err(meta.error("`into` is for the parameter of a field: write it there"));
@@ -638,7 +598,7 @@ fn read_args(args: &mut Args, place: Place) -> impl FnMut(ParseNestedMeta) -> sy
     }
     if !meta.path.is_ident("rename") {
       return Err(meta.error(match place {
-        Place::Type => "`#[flat]` takes no arguments but `no_pun`",
+        Place::Type => "`#[flat]` takes no arguments",
         Place::Variant => "unknown argument: a variant takes `#[flat(rename = \"name\")]`",
         Place::Field => "unknown argument: a field takes `#[flat(into)]`",
       }));
@@ -677,15 +637,6 @@ fn near_target(ty: &Type) -> Option<&Type> {
 /// `Option<Near<..>>`.
 fn is_pointer(ty: &Type) -> bool {
   near_target(ty).or_else(|| type_arg(ty, "Option", 1).and_then(near_target)).is_some()
-}
-
-/// Whether `ty` is written `Option<Near<..>>` or `NonZero<iN>`, which `puns` has no layout of yet.
-fn is_blocked(ty: &Type) -> bool {
-  let signed = |ty: &Type| {
-    ["i8", "i16", "i32", "i64"].iter().any(|i| matches!(ty, Type::Path(p) if p.path.is_ident(i)))
-  };
-  type_arg(ty, "Option", 1).and_then(near_target).is_some()
-    || type_arg(ty, "NonZero", 1).is_some_and(signed)
 }
 
 /// `X` if `ty` is written `name<X, ..>`: any path ending in `name` with at least one and at most

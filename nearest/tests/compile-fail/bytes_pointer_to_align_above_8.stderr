@@ -31,8 +31,8 @@ note: erroneous constant encountered
   |
  ::: src/near.rs
   |
-  | puns::self_relative!(impl[T: Pun, O: Offset] Near<[T], O>);
-  | ---------------------------------------------------------- in this macro invocation
+  | puns::self_relative!(impl[T: Flat, O: Offset] Near<[T], O>);
+  | ----------------------------------------------------------- in this macro invocation
   |
   = note: this note originates in the macro `puns::self_relative` (in Nightly builds, run with -Z macro-backtrace for more info)
 

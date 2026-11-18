@@ -11,14 +11,14 @@ use core::{
 };
 
 use puns::{
-  Pun, SelfRelative,
+  SelfRelative,
   layout::{Endian, Pointer},
   num::{i16be, i16le, i32be, i32le, i64be, i64le},
 };
 
 use crate::{
   Emit, Flat,
-  flat::{ALIGN, New, Seq, fits},
+  flat::{ALIGN, New, Seq, fits_behind},
 };
 
 /// A pointer to a `T` in the same [`Region`](crate::Region), stored as the distance from its
@@ -216,27 +216,6 @@ pub const fn offset<O: Offset>() {
   };
 }
 
-/// The `O` whose bytes start `bytes`, if there are enough and it is valid in a region: what
-/// `from_isize` makes of its integer, which is within `LIMIT` of 0 (see Valid offsets on
-/// [`Offset`]). Any other would not be read back as written: `to_isize` may truncate it (an `i64`
-/// on a 32-bit target), and only those `O`s round-trip.
-pub fn read<O: Offset>(bytes: &[u8]) -> Option<O> {
-  offset::<O>();
-  let bytes = bytes.get(..size_of::<O>())?;
-  // SAFETY: `size_of::<O>()` initialized bytes, any of which make an `O` (`Offset`'s contract).
-  let o = unsafe { bytes.as_ptr().cast::<O>().read_unaligned() };
-  let n = o.to_isize();
-  // `from_isize` is only called within `LIMIT`; nothing past it is a distance or a length.
-  if n.unsigned_abs() as u64 > O::LIMIT {
-    return None;
-  }
-  let again = O::from_isize(n);
-  // SAFETY: an `O` has no padding (`Offset`'s contract): its `size_of::<O>()` bytes are
-  // initialized, and `again` lives for the borrow.
-  let again = unsafe { slice::from_raw_parts(ptr::from_ref(&again).cast::<u8>(), size_of::<O>()) };
-  (again == bytes).then_some(o)
-}
-
 macro_rules! offsets {
   ($($t:ty),*) => {$(
     // SAFETY: an integer of the target, so in its byte order: any bit pattern, `as` round-trips
@@ -321,7 +300,7 @@ fixed! {
 /// target, an `O`; a `Near<[T], O>` aims at the length of the list, an `O`, whose elements
 /// follow it, and a `Near<str, O>` at the length of the text, whose UTF-8 follows it. Changing
 /// this way changes the name.
-const SCHEME: &str = "nearest: the distance from the pointer to its target; a list or a text \
+pub const SCHEME: &str = "nearest: the distance from the pointer to its target; a list or a text \
                           is its length, of the width of the offset, then its elements";
 
 /// The alignment of the address of the first element of a list of `T` whose lengths are `O`s:
@@ -350,30 +329,28 @@ const fn first<T, O>() -> usize {
 // - S5: not nullable.
 // - S6: `Target` is `T`, and `POINTER` is made with it.
 // - S7: `Near` follows a pointer by `Near::target` only, which relies on S1 to S3.
-unsafe impl<T: Pun, O: Offset> SelfRelative for Near<T, O> {
+unsafe impl<T: Flat, O: Offset> SelfRelative for Near<T, O> {
   type Target = T;
   const POINTER: Pointer = {
-    fits::<T>();
-    offset::<O>();
+    fits_behind::<T, O>();
     Pointer::one::<T>(SCHEME, size_of::<O>(), O::ENDIAN)
   };
 }
 
-puns::self_relative!(impl[T: Pun, O: Offset] Near<T, O>);
+puns::self_relative!(impl[T: Flat, O: Offset] Near<T, O>);
 
 // SAFETY: as for `Near<T, O>`, but S3: the pointer aims at the length of the list, an `O`, whose
 // `len` elements follow at `+ size_of::<O>()`, at a position aligned to the larger of the
 // alignment of `T` and the width of `O`, so at an address aligned to `first::<T, O>()`.
-unsafe impl<T: Pun, O: Offset> SelfRelative for Near<[T], O> {
+unsafe impl<T: Flat, O: Offset> SelfRelative for Near<[T], O> {
   type Target = T;
   const POINTER: Pointer = {
-    fits::<T>();
-    offset::<O>();
+    fits_behind::<T, O>();
     Pointer::sequence::<T>(SCHEME, size_of::<O>(), O::ENDIAN, first::<T, O>())
   };
 }
 
-puns::self_relative!(impl[T: Pun, O: Offset] Near<[T], O>);
+puns::self_relative!(impl[T: Flat, O: Offset] Near<[T], O>);
 
 // SAFETY: as for `Near<T, O>`, but S3: the pointer aims at the length of the text, an `O`, whose
 // bytes follow, UTF-8 (written from a `&str`, or checked when loaded). Its target type is `()`.

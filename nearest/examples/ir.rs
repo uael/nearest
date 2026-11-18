@@ -21,10 +21,8 @@
 //!
 //! When a file is loaded, what is checked is what bytes do not prove: that every pointer aims
 //! where a copy of the value would have put its target (hence in bounds, aligned, a tree, without
-//! a gap), tags of enums, UTF-8, lengths and the magic number. What cannot be invalid (a list of
-//! numbers) is not looked at, however long. The rules of a type (`valid(..)`, `assert(..)`) are
-//! not checked by the loaders yet: `puns` checks them when it reads a value as another type
-//! (`try_view_ref`).
+//! a gap), tags of enums, UTF-8, lengths, the magic number and the rules. What cannot be invalid
+//! (a list of numbers) is not looked at, however long.
 //!
 //! The first half of this file is type declarations only: no `unsafe`, no `impl`, no code that
 //! reads or writes bytes. The second half builds a function, saves it, loads it and runs it.
@@ -328,12 +326,10 @@ pub fn main() {
     Region::<Function>::from_bytes(&bad).err()
   };
   let place = |part: &u8| (&raw const *part).addr() - bytes.as_ptr().addr();
-  // The magic number.
+  // The magic number, the version, and the rule of the function.
   assert_eq!(invalid(0, b'Q'), Some(Error::Invalid(0)));
-  // The version and the rule of the function are not checked by the loaders yet: `puns` checks
-  // them when a value is read as another type.
-  assert_eq!(invalid(4, 2), None);
-  assert_eq!(invalid(6, 5), None);
+  assert_eq!(invalid(4, 2), Some(Error::Invalid(4)));
+  assert_eq!(invalid(6, 5), Some(Error::Invalid(0)));
   // A pointer that aims elsewhere: the name, one byte further.
   assert_eq!(invalid(10, bytes[10] + 1), Some(Error::Invalid(10)));
   // A tag that is not one: the end of the first block, an operation of the second.

@@ -37,7 +37,7 @@
 //! #[flat]
 //! struct Inner { next: Option<Near<Inner>> }
 //! impl Unpin for Inner {}
-//! #[flat(no_pun)] // holds an `Option<Near<..>>`, which `puns` does not describe yet
+//! #[flat]
 //! struct Outer { id: u32, inner: Inner }
 //! let mut r = Region::new(Outer::new(1, Inner::new(None)));
 //! let _ = r.edit().pin();
@@ -50,7 +50,7 @@
 //!
 //! #[flat]
 //! struct Inner { next: Option<Near<Inner>> }
-//! #[flat(no_pun)] // holds an `Option<Near<..>>`, which `puns` does not describe yet
+//! #[flat]
 //! struct Outer { id: u32, inner: Inner }
 //! let mut r = Region::new(Outer::new(1, Inner::new(None)));
 //! let _ = r.edit().pin();
@@ -64,7 +64,7 @@
 //! #[flat]
 //! struct Leaf { next: Option<Near<Leaf>> }
 //! impl Unpin for Leaf {}
-//! #[flat(no_pun)] // points to an `Option<Near<..>>`, which `puns` does not describe yet
+//! #[flat]
 //! struct Root { leaf: Near<Leaf> }
 //! let mut r = Region::new(Root::new(Leaf::new(None)));
 //! let RootPin { leaf } = r.edit().pin().project();
@@ -78,7 +78,7 @@
 //!
 //! #[flat]
 //! struct Leaf { next: Option<Near<Leaf>> }
-//! #[flat(no_pun)] // points to an `Option<Near<..>>`, which `puns` does not describe yet
+//! #[flat]
 //! struct Root { leaf: Near<Leaf> }
 //! let mut r = Region::new(Root::new(Leaf::new(None)));
 //! let RootPin { leaf } = r.edit().pin().project();
@@ -93,7 +93,7 @@
 //! #[flat]
 //! struct Leaf { next: Option<Near<Leaf>> }
 //! impl Unpin for Leaf {}
-//! #[flat(no_pun)] // points to an `Option<Near<..>>`, which `puns` does not describe yet
+//! #[flat]
 //! struct Root { leaves: Near<[Leaf]> }
 //! let mut r = Region::new(Root::new([Leaf::new(None)]));
 //! let _ = r.edit().leaves().iter_pin_mut().count();
@@ -106,7 +106,7 @@
 //!
 //! #[flat]
 //! struct Leaf { next: Option<Near<Leaf>> }
-//! #[flat(no_pun)] // points to an `Option<Near<..>>`, which `puns` does not describe yet
+//! #[flat]
 //! struct Root { leaves: Near<[Leaf]> }
 //! let mut r = Region::new(Root::new([Leaf::new(None)]));
 //! let _ = r.edit().leaves().iter_pin_mut().count();

@@ -1,8 +1,9 @@
 use core::{marker::PhantomData, mem::needs_drop, num::NonZero, ptr, slice};
 
+use puns::Pun;
+
 use crate::{
-  Error, Near, Offset, Storage,
-  bytes::{Check, list, target, text},
+  Near, Offset, Storage,
   edit::{ListEdit, OptionEdit, Raw, StrEdit},
   near::offset,
 };
@@ -381,26 +382,26 @@ unsafe fn read_len<O: Offset>(buf: *mut Buf, at: usize) -> usize {
 ///
 /// # Safety
 ///
-/// `Self` has no drop glue and no pointers other than [`Near`]. `store` writes every field of
-/// `self` at `at` as described on it; `PLAIN` is `true` only if `Self` has no padding and no
-/// pointers, and `ANY` only if it has no pointers and every bit pattern is a valid `Self`;
-/// `REACH` is at most the `REACH` of every field; `edit` returns the handle of a valid `Self`
-/// at `at`; `check` accepts exactly the compact images of valid values, in the order `store`
-/// writes them.
-pub unsafe trait Flat: Sized + 'static {
+/// `Self` has no drop glue and no pointers other than [`Near`]; its layout as a [`Pun`] type is
+/// the one of what `store` writes (`store` writes every field of `self` at `at` as described on
+/// it), whose pointers are those of this crate; `REACH` is at most the `REACH` of every field;
+/// `edit` returns the handle of a valid `Self` at `at`. What is checked of loaded bytes, and
+/// whether a value is copied as bytes (`PLAIN`) or not looked at (`ANY`), is read from the
+/// layout.
+pub unsafe trait Flat: Pun + Sized + 'static {
   /// The handle of a place holding a `Self`, during the edit `'e`: what
   /// [`Region::edit`](crate::Region::edit) and field methods return a `&mut` to. See
   /// [`Edit`](crate::Edit).
   type Edit<'e>: ?Sized + 'e;
 
-  /// No pointers and no padding: may be copied as bytes.
+  /// No pointers and no padding: may be copied as bytes. From the layout, not to be given.
   #[doc(hidden)]
-  const PLAIN: bool = false;
+  const PLAIN: bool = <Self as Pun>::LAYOUT.is_plain();
 
   /// No pointers, and every bit pattern is a valid value: there is nothing to check, so lists
-  /// of such elements are not walked.
+  /// of such elements are not walked. From the layout, not to be given.
   #[doc(hidden)]
-  const ANY: bool = false;
+  const ANY: bool = <Self as Pun>::LAYOUT.is_free();
 
   /// What the narrowest pointer held by value (not through a pointer) reaches: the largest
   /// region with a `Self` at its root (see [`Offset`]).
@@ -431,10 +432,6 @@ pub unsafe trait Flat: Sized + 'static {
   /// the place is only reached through the returned handle for `'a`.
   #[doc(hidden)]
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self::Edit<'e>;
-
-  /// Checks the `Self` at `at`, whose own bytes are in bounds, and queues its pointers.
-  #[doc(hidden)]
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
 }
 
 /// A deep copy of `src` at `at`.
@@ -537,13 +534,10 @@ const unsafe fn plain_edit<'a, T>(buf: *mut Buf, at: usize) -> &'a mut T {
 }
 
 macro_rules! plain {
-  ($($any:literal: $($t:ty => |$b:ident: $raw:ty| $ok:expr),*;)*) => {$($(
-    // SAFETY: primitive values have no pointers and no padding; `check` accepts the valid ones,
-    // which for the `ANY` types is every bit pattern.
+  ($($t:ty),*) => {$(
+    // SAFETY: primitive values have no pointers and no padding (their layouts say so).
     unsafe impl Flat for $t {
       type Edit<'e> = Self;
-      const PLAIN: bool = true;
-      const ANY: bool = $any;
       #[cfg(feature = "nightly")]
       const UNPIN: bool = true;
       unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<isize>) {
@@ -554,25 +548,13 @@ macro_rules! plain {
         // SAFETY: forwarded.
         unsafe { plain_edit(buf, at) }
       }
-      fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-        let $b = <$raw>::from_ne_bytes(ck.get(at)?);
-        if $ok { Ok(()) } else { Err(Error::Invalid(at)) }
-      }
     }
-  )*)*};
+  )*};
 }
 plain! {
-  true:
-    u8 => |_b: u8| true, u16 => |_b: u16| true, u32 => |_b: u32| true, u64 => |_b: u64| true,
-    i8 => |_b: u8| true, i16 => |_b: u16| true, i32 => |_b: u32| true, i64 => |_b: u64| true,
-    f32 => |_b: u32| true, f64 => |_b: u64| true;
-  false:
-    bool => |b: u8| b <= 1,
-    char => |b: u32| char::from_u32(b).is_some(),
-    NonZero<u8> => |b: u8| b != 0, NonZero<u16> => |b: u16| b != 0,
-    NonZero<u32> => |b: u32| b != 0, NonZero<u64> => |b: u64| b != 0,
-    NonZero<i8> => |b: u8| b != 0, NonZero<i16> => |b: u16| b != 0,
-    NonZero<i32> => |b: u32| b != 0, NonZero<i64> => |b: u64| b != 0;
+  u8, u16, u32, u64, i8, i16, i32, i64, f32, f64, bool, char,
+  NonZero<u8>, NonZero<u16>, NonZero<u32>, NonZero<u64>,
+  NonZero<i8>, NonZero<i16>, NonZero<i32>, NonZero<i64>
 }
 
 /// `Flat` for the numbers of [`puns::num`], which are byte arrays: of every byte order, and of
@@ -584,47 +566,15 @@ mod num {
     u48be, u48bec, u48le, u48lec, u64be, u64bec, u64le, u64lec, u128be, u128bec, u128le, u128lec,
   };
 
-  use super::{Buf, Check, Error, Flat, Sink, plain_edit};
+  use super::{Buf, Flat, Sink, plain_edit};
 
-  macro_rules! any {
-    ($($t:ident[$size:literal])+) => {$(
-      // SAFETY: a byte array (`puns::num`): no pointers, no padding, every bit pattern valid.
-      unsafe impl Flat for $t {
-        type Edit<'e> = Self;
-        const PLAIN: bool = true;
-        const ANY: bool = true;
-        #[cfg(feature = "nightly")]
-        const UNPIN: bool = true;
-        unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<isize>) {
-          // SAFETY: the caller allocated `at` for `Self`.
-          unsafe { sink.write(at, *self) }
-        }
-        unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
-          // SAFETY: forwarded.
-          unsafe { plain_edit(buf, at) }
-        }
-        fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-          ck.get::<$size>(at).map(|_| ())
-        }
-      }
-    )+};
-  }
-
-  any! {
-    u16le[2] u16be[2] u24le[3] u24be[3] u32le[4] u32be[4] u48le[6] u48be[6] u64le[8] u64be[8]
-    u128le[16] u128be[16] i16le[2] i16be[2] i32le[4] i32be[4] i64le[8] i64be[8] i128le[16]
-    i128be[16] f32le[4] f32be[4] f64le[8] f64be[8]
-  }
-
-  macro_rules! checked {
-    ($([$($generics:tt)*] $t:ty: $size:literal;)+) => {$(
-      // SAFETY: bytes of which only some are a value (`puns::num`), without pointers or padding:
-      // `PLAIN`, not `ANY`. `check` accepts the bytes that are a value, as `puns` checks them
-      // (`try_pun`, from the layout of the type: what its constructors make). A `&mut Self` is
-      // given only for a valid `Self`, through which only a `Self` is written.
+  macro_rules! numbers {
+    ($([$($generics:tt)*] $t:ty;)+) => {$(
+      // SAFETY: a byte array (`puns::num`): no pointers, no padding; every bit pattern is a value,
+      // or only those that its constructors make, which its layout tells and loading checks. A
+      // `&mut Self` is given only for a valid `Self`, through which only a `Self` is written.
       unsafe impl<$($generics)*> Flat for $t {
         type Edit<'e> = Self;
-        const PLAIN: bool = true;
         #[cfg(feature = "nightly")]
         const UNPIN: bool = true;
         unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<isize>) {
@@ -635,31 +585,28 @@ mod num {
           // SAFETY: forwarded.
           unsafe { plain_edit(buf, at) }
         }
-        fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-          match puns::try_pun::<[u8; $size], Self>(ck.get::<$size>(at)?) {
-            Ok(_) => Ok(()),
-            Err(_) => Err(Error::Invalid(at)),
-          }
-        }
       }
     )+};
   }
 
-  checked! {
-    [const V: u8] u8c<V>: 1;
-    [const MIN: u8, const MAX: u8] u8in<MIN, MAX>: 1;
-    [const V: u16] u16lec<V>: 2;
-    [const V: u16] u16bec<V>: 2;
-    [const V: u32] u24lec<V>: 3;
-    [const V: u32] u24bec<V>: 3;
-    [const V: u32] u32lec<V>: 4;
-    [const V: u32] u32bec<V>: 4;
-    [const V: u64] u48lec<V>: 6;
-    [const V: u64] u48bec<V>: 6;
-    [const V: u64] u64lec<V>: 8;
-    [const V: u64] u64bec<V>: 8;
-    [const V: u128] u128lec<V>: 16;
-    [const V: u128] u128bec<V>: 16;
+  numbers! {
+    [] u16le; [] u16be; [] u24le; [] u24be; [] u32le; [] u32be; [] u48le; [] u48be; [] u64le;
+    [] u64be; [] u128le; [] u128be; [] i16le; [] i16be; [] i32le; [] i32be; [] i64le; [] i64be;
+    [] i128le; [] i128be; [] f32le; [] f32be; [] f64le; [] f64be;
+    [const V: u8] u8c<V>;
+    [const MIN: u8, const MAX: u8] u8in<MIN, MAX>;
+    [const V: u16] u16lec<V>;
+    [const V: u16] u16bec<V>;
+    [const V: u32] u24lec<V>;
+    [const V: u32] u24bec<V>;
+    [const V: u32] u32lec<V>;
+    [const V: u32] u32bec<V>;
+    [const V: u64] u48lec<V>;
+    [const V: u64] u48bec<V>;
+    [const V: u64] u64lec<V>;
+    [const V: u64] u64bec<V>;
+    [const V: u128] u128lec<V>;
+    [const V: u128] u128bec<V>;
   }
 }
 
@@ -667,11 +614,6 @@ mod num {
 // pointers.
 unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
   type Edit<'e> = Self;
-  const PLAIN: bool = {
-    fits::<Self>();
-    T::PLAIN
-  };
-  const ANY: bool = T::ANY;
   #[cfg(feature = "nightly")]
   const UNPIN: bool = T::UNPIN;
   unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<isize>) {
@@ -683,13 +625,6 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
     fits::<Self>();
     // SAFETY: forwarded.
     unsafe { plain_edit(buf, at) }
-  }
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    fits::<Self>();
-    if T::ANY {
-      return Ok(());
-    }
-    (0..N).try_for_each(|i| T::check(ck, at + i * size_of::<T>()))
   }
 }
 
@@ -733,9 +668,6 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<T, O> {
     // SAFETY: a `Near` at `at` points to a valid `T`, owned by it alone.
     unsafe { T::edit(buf, aim::<O>(buf, at)) }
   }
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    ck.push(at, 0, target::<T, O>)
-  }
 }
 
 // SAFETY: copies the list, or re-aims the offset by the distance moved.
@@ -760,9 +692,6 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<[T], O> {
     // SAFETY: forwarded.
     unsafe { ListEdit::new(Raw::new(buf, at)) }
   }
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    ck.push(at, 0, list::<T, O>)
-  }
 }
 
 // SAFETY: copies the text, or re-aims the offset by the distance moved.
@@ -785,9 +714,6 @@ unsafe impl<O: Offset> Flat for Near<str, O> {
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut StrEdit<'e, O> {
     // SAFETY: forwarded.
     unsafe { StrEdit::new(Raw::new(buf, at)) }
-  }
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    ck.push(at, 0, text::<O>)
   }
 }
 
@@ -813,9 +739,6 @@ unsafe impl<T: Flat, O: Offset> Flat for Option<Near<T, O>> {
     fits_behind::<T, O>();
     // SAFETY: forwarded.
     unsafe { OptionEdit::new(Raw::new(buf, at)) }
-  }
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    if ck.offset::<O>(at)? == 0 { Ok(()) } else { ck.push(at, 0, target::<T, O>) }
   }
 }
 
