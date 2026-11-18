@@ -2,9 +2,15 @@
 use alloc::vec::Vec;
 use core::{fmt, str};
 
+use puns::{
+  Invalid, Pointee, Pun, Visit,
+  layout::{Aim, Endian, Pointer},
+};
+
 use crate::{
-  Flat, Offset,
-  flat::{ALIGN, fits, fits_behind, limit},
+  Flat,
+  flat::{ALIGN, fits, limit},
+  near::SCHEME,
 };
 
 /// Why bytes could not be loaded: the error of every loader ([`view`], [`view_with`],
@@ -50,6 +56,13 @@ impl fmt::Display for Error {
 }
 
 impl core::error::Error for Error {}
+
+/// Where bytes stop being a value, as `puns` validates them.
+impl From<Invalid> for Error {
+  fn from(invalid: Invalid) -> Self {
+    Self::Invalid(invalid.at)
+  }
+}
 
 /// What checks a pointer: given the checker, the position of the pointer (or of the first
 /// element, for the rest of a list) and a count.
@@ -144,8 +157,11 @@ impl Stack<'_> {
   }
 }
 
-/// A walk over bytes that must be the compact image of a value: the root, then every target in
-/// the order a deep copy writes it.
+/// A walk over bytes that must be the compact image of a value.
+///
+/// The root, then every target in the order a deep copy writes it. `puns` validates each value
+/// from its layout ([`puns::validate_in`]) and hands over its pointers ([`Visit`]), which wait on
+/// `todo`; where their targets are, and their blocks, is this crate's.
 pub struct Check<'b> {
   bytes: &'b [u8],
   /// Where the next target must start (before alignment).
@@ -154,40 +170,105 @@ pub struct Check<'b> {
   todo: Stack<'b>,
 }
 
+impl Visit for Check<'_> {
+  type Error = Error;
+
+  /// A pointer of the value: what it aims at waits for the values before it.
+  #[inline]
+  fn pointer<P: ?Sized + Pun>(&mut self, at: usize) -> Result<(), Error> {
+    let step: Step = match const { pointer::<P>().aim() } {
+      Aim::One => target::<P>,
+      Aim::Sequence { .. } => list::<P>,
+      Aim::Text => text::<P>,
+    };
+    self.push(at, 0, step)
+  }
+}
+
+/// The description of the pointer type `P`, one of this crate: `puns` hands over only pointers,
+/// and a region holds no other (`Flat`). `Visit::pointer` is instantiated for every type of a
+/// value, and never called but for its pointers: for any other type this is a description that
+/// nothing uses.
+const fn pointer<P: ?Sized + Pun>() -> Pointer {
+  let Some(pointer) = P::LAYOUT.as_pointer() else {
+    return Pointer::text(SCHEME, 4, Endian::NATIVE);
+  };
+  assert!(
+    str_equals(pointer.scheme(), SCHEME),
+    "a pointer of another crate, which a region does not hold"
+  );
+  pointer
+}
+
+/// Whatever two strings are the same, in `const`.
+const fn str_equals(a: &str, b: &str) -> bool {
+  let (a, b) = (a.as_bytes(), b.as_bytes());
+  if a.len() != b.len() {
+    return false;
+  }
+  let mut i = 0;
+  while i < a.len() {
+    if a[i] != b[i] {
+      return false;
+    }
+    i += 1;
+  }
+  true
+}
+
 impl Check<'_> {
-  /// The `N` bytes at `at`.
-  pub(crate) fn get<const N: usize>(&self, at: usize) -> Result<[u8; N], Error> {
-    self.bytes.get(at..).and_then(<[u8]>::first_chunk).copied().ok_or(Error::Invalid(at))
-  }
-
-  /// The tag of an enum of `count` variants at `at`.
-  ///
-  /// # Errors
-  /// If it is out of bounds or not below `count`.
-  pub fn tag(&self, at: usize, count: usize) -> Result<u8, Error> {
-    let [tag] = self.get(at)?;
-    if usize::from(tag) < count { Ok(tag) } else { Err(Error::Invalid(at)) }
-  }
-
   /// Queues a pointer, or the rest of a list. If the scratch is full, the walk ends.
-  pub(crate) fn push(&mut self, at: usize, count: usize, step: Step) -> Result<(), Error> {
+  fn push(&mut self, at: usize, count: usize, step: Step) -> Result<(), Error> {
     if self.todo.push(Pending(at, count, step)) { Ok(()) } else { Err(Error::ScratchFull) }
   }
 
-  /// The `O` at `at`.
-  pub(crate) fn offset<O: Offset>(&self, at: usize) -> Result<isize, Error> {
-    self.bytes.get(at..).and_then(crate::near::read::<O>).map(O::to_isize).ok_or(Error::Invalid(at))
+  /// The integer of the offset (or the length) of `P` at `at`: two's complement of the width and
+  /// the byte order of the offset of `P`, which is what `to_isize` reads (the contract of
+  /// `Offset`). Valid only if it fits an `isize` (Valid offsets): it is then also within the
+  /// `LIMIT` of the offset, as soon as it aims in the bytes or counts bytes of them, which are
+  /// no more than the limit of the root, at most the `LIMIT` of every pointer (`fits_behind`).
+  #[inline]
+  fn offset<P: ?Sized + Pun>(&self, at: usize) -> Result<isize, Error> {
+    let pointer = const { pointer::<P>() };
+    let n = match pointer.width() {
+      2 => i64::from(i16::from_ne_bytes(self.get(at, pointer.endian())?)),
+      4 => i64::from(i32::from_ne_bytes(self.get(at, pointer.endian())?)),
+      _ => i64::from_ne_bytes(self.get(at, pointer.endian())?),
+    };
+    // Past the default `LIMIT` of an offset of that width, `iN::MAX & !7` (that of every offset
+    // of this crate), no integer is a distance or a length: refused where it is, as `from_isize`
+    // never makes it. (An offset of the user's with a smaller `LIMIT` is refused at the block
+    // that it cannot reach.)
+    let limit = (1u64 << (8 * pointer.width() - 1)) - 8;
+    if n.unsigned_abs() > limit {
+      return Err(Error::Invalid(at));
+    }
+    isize::try_from(n).map_err(|_| Error::Invalid(at))
   }
 
-  /// The length, an `O`, at `at`; a negative one is as out of bounds as any too large.
-  fn len<O: Offset>(&self, at: usize) -> Result<usize, Error> {
-    Ok(usize::try_from(self.offset::<O>(at)?).unwrap_or(usize::MAX))
+  /// The `N` bytes at `at`, in the byte order of the target, read in the byte order `endian`.
+  #[inline]
+  fn get<const N: usize>(&self, at: usize, endian: Endian) -> Result<[u8; N], Error> {
+    let mut bytes =
+      *self.bytes.get(at..).and_then(<[u8]>::first_chunk::<N>).ok_or(Error::Invalid(at))?;
+    if endian != Endian::NATIVE {
+      bytes.reverse();
+    }
+    Ok(bytes)
+  }
+
+  /// The length of `P`, an integer like its offset, at `at`; a negative one is as out of bounds
+  /// as any too large.
+  #[inline]
+  fn len<P: ?Sized + Pun>(&self, at: usize) -> Result<usize, Error> {
+    Ok(usize::try_from(self.offset::<P>(at)?).unwrap_or(usize::MAX))
   }
 
   /// The next block, of `size` bytes whose byte `inset` is aligned to `align`: the pointer of
-  /// `O` at `ptr` must aim `lead` bytes into it, which is where a deep copy would have put it.
+  /// `P` at `ptr` must aim `lead` bytes into it, which is where a deep copy would have put it.
   /// Returns its position.
-  fn claim<O: Offset>(
+  #[inline]
+  fn claim<P: ?Sized + Pun>(
     &mut self,
     ptr: usize,
     lead: usize,
@@ -195,7 +276,7 @@ impl Check<'_> {
     align: usize,
     size: usize,
   ) -> Result<usize, Error> {
-    let off = self.offset::<O>(ptr)?;
+    let off = self.offset::<P>(ptr)?;
     let at = (self.next.checked_add(inset).and_then(|n| n.checked_next_multiple_of(align)))
       .ok_or(Error::Invalid(ptr))?
       - inset;
@@ -214,29 +295,30 @@ impl Check<'_> {
   }
 }
 
-/// The target of the `Near<T, O>` at `ptr`.
-pub fn target<T: Flat, O: Offset>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
-  fits_behind::<T, O>();
-  let at = ck.claim::<O>(ptr, 0, 0, align_of::<T>(), size_of::<T>())?;
-  T::check(ck, at)
+/// The target of the pointer `P` at `ptr`, which aims at one value: at the next position aligned
+/// for it.
+fn target<P: ?Sized + Pun>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
+  let layout = const { <Pointee<P> as Pun>::LAYOUT };
+  let at = ck.claim::<P>(ptr, 0, 0, layout.align(), layout.size())?;
+  puns::validate_in::<Pointee<P>, _>(ck.bytes, at, ck)
 }
 
-/// The list block of the `Near<[T], O>` at `ptr`: `[len][len]`, `O`s, then the elements,
-/// aligned for `T` and for `O`.
-pub fn list<T: Flat, O: Offset>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
-  fits_behind::<T, O>();
-  let w = size_of::<O>();
-  let at = ck.claim::<O>(ptr, w, 2 * w, align_of::<T>().max(w), 2 * w)?;
-  let (cap, len) = (ck.len::<O>(at)?, ck.len::<O>(at + w)?);
-  ck.extend(at, len.checked_mul(size_of::<T>()).filter(|_| cap == len))?;
-  items::<T>(ck, at + 2 * w, len)
+/// The list block of the pointer `P` at `ptr`: `[cap][len]`, integers like the offset, then the
+/// elements, aligned for them and for the offset.
+fn list<P: ?Sized + Pun>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
+  let (w, layout) = const { (pointer::<P>().width(), <Pointee<P> as Pun>::LAYOUT) };
+  let align = if layout.align() > w { layout.align() } else { w };
+  let at = ck.claim::<P>(ptr, w, 2 * w, align, 2 * w)?;
+  let (cap, len) = (ck.len::<P>(at)?, ck.len::<P>(at + w)?);
+  ck.extend(at, len.checked_mul(layout.size()).filter(|_| cap == len))?;
+  items::<Pointee<P>>(ck, at + 2 * w, len)
 }
 
-/// The text of the `Near<str, O>` at `ptr`: `[len]`, an `O`, then UTF-8.
-pub fn text<O: Offset>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
-  let w = size_of::<O>();
-  let at = ck.claim::<O>(ptr, 0, 0, w, w)?;
-  let len = ck.len::<O>(at)?;
+/// The text of the pointer `P` at `ptr`: `[len]`, an integer like the offset, then UTF-8.
+fn text<P: ?Sized + Pun>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), Error> {
+  let w = const { pointer::<P>().width() };
+  let at = ck.claim::<P>(ptr, 0, 0, w, w)?;
+  let len = ck.len::<P>(at)?;
   ck.extend(at, Some(len))?;
   match ck.bytes.get(at + w..ck.next).map(str::from_utf8) {
     Some(Ok(_)) => Ok(()),
@@ -245,18 +327,22 @@ pub fn text<O: Offset>(ck: &mut Check<'_>, ptr: usize, _: usize) -> Result<(), E
 }
 
 /// The `count` elements from `first`, in order. When one has pointers, they are checked before
-/// the remaining elements, which wait on the stack behind them. Elements of which every bit
-/// pattern is valid are not walked.
-fn items<T: Flat>(ck: &mut Check<'_>, first: usize, count: usize) -> Result<(), Error> {
-  if T::ANY {
+/// the remaining elements, which wait on the stack behind them. Elements without pointers are
+/// validated all at once (by blocks), and not at all if every value is valid.
+fn items<T: Pun>(ck: &mut Check<'_>, first: usize, count: usize) -> Result<(), Error> {
+  if const { T::LAYOUT.is_free() } {
     return Ok(());
   }
+  if const { !T::LAYOUT.has_pointers() } {
+    return puns::validate_elems_in::<T, _>(ck.bytes, first, count, ck);
+  }
+  let size = const { T::LAYOUT.size() };
   for i in 0..count {
     let mark = ck.todo.len();
-    T::check(ck, first + i * size_of::<T>())?;
+    puns::validate_in::<T, _>(ck.bytes, first + i * size, ck)?;
     if ck.todo.len() > mark {
       if i + 1 < count {
-        ck.push(first + (i + 1) * size_of::<T>(), count - i - 1, items::<T>)?;
+        ck.push(first + (i + 1) * size, count - i - 1, items::<T>)?;
       }
       break;
     }
@@ -361,7 +447,7 @@ fn read<'b, T: Flat>(bytes: &'b [u8], todo: Stack<'_>) -> Result<&'b T, Error> {
 /// # Safety
 /// [`view::<T>(bytes)`](view) would return `Ok`, in this build: `bytes` is at an address that is
 /// a multiple of `align_of::<u64>()` (the alignment of a region), and is the compact image of a
-/// valid `T`, every offset and length an `O` that `from_isize` makes (see [`Offset`]). That is what
+/// valid `T`, every offset and length an `O` that `from_isize` makes (see [`Offset`](crate::Offset)). That is what
 /// [`Region::as_bytes`](crate::Region::as_bytes) returned for a region of `T` in a build with the
 /// same layout of `T` (this one, for example), and what a check of the caller's that accepts no
 /// more than [`view`] accepted.
@@ -376,7 +462,7 @@ pub const unsafe fn view_unchecked<T: Flat>(bytes: &[u8]) -> &T {
 
 /// The root, then everything it points to.
 fn walk<T: Flat>(ck: &mut Check<'_>) -> Result<(), Error> {
-  T::check(ck, 0)?;
+  puns::validate_in::<T, _>(ck.bytes, 0, ck)?;
   let mut mark = 0;
   loop {
     // What the last step queued is checked first-queued first.

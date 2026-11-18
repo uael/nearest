@@ -2,7 +2,7 @@
 name = "nearest"
 version = "0.7.2"
 edition.workspace = true
-rust-version = "1.95"
+rust-version = "1.100"
 license = "Apache-2.0 OR MIT"
 description = "Self-relative pointer library for region-based allocation"
 repository = "https://github.com/uael/nearest"
@@ -20,14 +20,14 @@ default = ["alloc"]
 # (`Region<T, Inline<N>>`), and loaded bytes are checked with memory from the caller
 # (`from_bytes_with`, `view_with`).
 alloc = []
-# Nightly Rust only: `#[flat]` marks every type `#[pin_v2]`, so that patterns on a pinned value
-# bind its fields pinned. Crates that use `#[flat]` need no `#![feature]` for it.
-nightly = ["nearest-derive/nightly"]
 # `Serialize` and `Deserialize` for `Region`: its bytes, checked when loaded.
 serde = ["alloc", "dep:serde"]
 
 [dependencies]
 nearest-derive = { version = "=0.7.2", path = "../nearest-derive" }
+# The layouts and the validity of values: `Pun` for every stored type, the numbers of a fixed
+# byte order (`puns::num`), and `view_ref`. Re-exported as `nearest::puns`.
+puns = "0.1.1"
 serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

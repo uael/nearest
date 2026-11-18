@@ -1,7 +1,7 @@
 //! An offset promises what `Offset` documents: implementing it is `unsafe`.
 use std::num::NonZero;
 
-use nearest::{Offset, flat};
+use nearest::{Offset, flat, puns::layout::Endian};
 
 #[flat]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -14,6 +14,7 @@ impl From<NonZero<i32>> for Le {
 
 impl Offset for Le {
   type NonZero = NonZero<i32>;
+  const ENDIAN: Endian = Endian::Little;
   fn from_isize(n: isize) -> Self { Le((n as i32).to_le()) }
   fn to_isize(self) -> isize { i32::from_le(self.0) as isize }
 }

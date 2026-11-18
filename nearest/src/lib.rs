@@ -100,21 +100,25 @@
 //! # Editing
 //!
 //! [`Region::edit`] returns the handle of the root, a `&mut` [`Edit<T>`]. Handles reach every
-//! place in the region:
+//! place in the region, and every handle has `set`, `replace` and `update`, also through the
+//! trait [`Handle`] for code generic over the stored type:
 //!
 //! | Place | Handle | Operations |
 //! |---|---|---|
-//! | plain data (`T: Copy`) | `&mut T` | ordinary Rust |
+//! | plain data (numbers, `bool`, arrays of them, ..) | [`PlainEdit<T>`], given as [`Plain`] | `*` is the value: `*e.count() += 1` |
 //! | `#[flat]` struct | generated | a method per field, `set`, `replace`, `update` |
 //! | `#[flat]` enum `X` | generated | `as_mut()` (returns `XMut`), `set`, `replace`, `update` |
 //! | `Near<T>` | the handle of the `T` | |
 //! | `Near<[T]>` | [`ListEdit<T>`] | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
-//! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `take`, `set`, `update` |
+//! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `take`, `set`, `replace`, `update` |
 //! | `Near<str>` | [`StrEdit`] | `set`, `replace`, `update` |
 //!
-//! Handles dereference to the value they designate, and mutably so for plain data. A handle
-//! borrows its parent handle, so one handle is usable at a time, and no reference into the
-//! buffer outlives a change that may grow it.
+//! Handles dereference to the value they designate, and mutably so for data without pointers
+//! (`T: Copy`). The getters (field methods, `at`, `push`, `as_mut`, ..) give a `&mut` to the handle
+//! of the place, but a [`Plain`] by value for plain data, so that one star reaches the value; a
+//! `#[flat]` type that is `Copy` takes two (`**e.term() = Term::Ret(0)`), since its handle is the
+//! one with its field methods. A handle borrows its parent handle, so one handle is usable at a
+//! time, and no reference into the buffer outlives a change that may grow it.
 //!
 //! A handle has two lifetimes, `&'a mut Edit<'e, T>`: `'a` borrows the parent handle, `'e` is the
 //! edit, the borrow of the region taken by `Region::edit`. Both can be left out in the usual
@@ -162,11 +166,6 @@
 //! assert!(matches!(&*r, Expr::Add(a, _) if matches!(**a, Expr::Lit(11))));
 //! ```
 //!
-//! On nightly Rust, with the `nightly` feature, every `#[flat]` type is also marked `#[pin_v2]`
-//! and is projected by patterns, as `project` does, in a crate that enables `pin_ergonomics`:
-//! `match e { Expr::Add(a, b) => .. }`. Without the feature, `#[flat]` rejects a `#[pin_v2]`
-//! written on the type.
-//!
 //! # Pointer widths
 //!
 //! A `Near<T>` keeps its distance in an `i32`, so a region holds at most 2 GiB. The second
@@ -177,9 +176,16 @@
 //! wide (checked at compile time), so every distance fits. Building or editing past the bound
 //! panics, as growing past a storage does, and bytes longer than it do not load.
 //!
-//! `Offset` is an `unsafe` trait that a type of yours can implement, for example to keep
-//! distances and lengths little-endian on every target, so that the bytes of a region are the
-//! same everywhere (see [`Offset`]).
+//! `i16`, `i32` (the default) and `i64` are in the byte order of the machine, as are the numbers
+//! of Rust (`u32`, `f64`, ...): the bytes of a region of them are those of the machine that wrote
+//! them, and load as the same value only on a machine of the same byte order. **Bytes that cross
+//! machines** (a file, the network) use the signed integers of a fixed byte order of
+//! [`puns::num`] as offsets (`i16le`, `i32le`, `i64le`, `i16be`, `i32be`, `i64be`) and its other
+//! numbers as data (`u32le`, `f64be`, `u16bec<V>`, ...): with them the bytes of a region are the
+//! same on every machine. Where the order is the machine's they read as fast as the native ones
+//! (the same instructions on x86-64), elsewhere with a byte swap; they are aligned to 1, so a type
+//! that holds them may be laid out tighter. `Offset` is an `unsafe` trait that a type of yours can
+//! implement as well (see [`Offset`]).
 //!
 //! ```
 //! use nearest::{Near, Offset, Region, flat};
@@ -193,16 +199,72 @@
 //! assert_eq!((size_of::<Table<i16>>(), size_of::<Table<i64>>()), (4, 16));
 //! ```
 //!
-//! # The `nightly` feature
+//! # One value read as another
 //!
-//! The opt-in cargo feature `nightly` needs a nightly compiler for the whole build. With it
-//! `#[flat]` marks every type `#[pin_v2]`, and gives it no `Unpin` impl of its own. It uses
-//! `specialization` and `allow_internal_unstable` inside this crate and `nearest-derive`; crates
-//! that use `#[flat]` need no `#![feature]` for it, only code that writes a pattern on a pinned
-//! value needs `pin_ergonomics`. An `Unpin` impl written by hand for a type that holds a `Near`
-//! would give a `&mut` to it through `Pin::get_mut`: in a crate with `pin_ergonomics` the
-//! compiler rejects it, and in one without, the build fails where the type, or a type holding
-//! it by value, is pinned (a build that generates code: `cargo check` does not report it).
+//! Every `#[flat]` type is also a [`puns::Pun`] type: its layout and its valid values are known
+//! at compile time, and [`Near`] is declared to `puns` as a self-relative pointer
+//! ([`puns::SelfRelative`]). So a value of a region can be read as another type, with
+//! everything it points to, when every value of the first is a value of the second:
+//! [`puns::view_ref`] proves it at compile time and costs nothing at run time, and
+//! [`puns::try_view_ref`] checks what could not be proven of the value itself. Bytes saved by one
+//! version of a program are read by the next, without converting them:
+//!
+//! ```
+//! use nearest::{Near, Region, flat, puns};
+//!
+//! #[flat]
+//! enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
+//!
+//! /// The next version: one more variant, at the end.
+//! #[flat]
+//! enum NewExpr { Lit(i64), Neg(Near<NewExpr>), Add(Near<NewExpr>, Near<NewExpr>), Mul(Near<NewExpr>, Near<NewExpr>) }
+//!
+//! fn eval(e: &NewExpr) -> i64 {
+//!   match e {
+//!     NewExpr::Lit(n) => *n,
+//!     NewExpr::Neg(x) => -eval(x),
+//!     NewExpr::Add(a, b) => eval(a) + eval(b),
+//!     NewExpr::Mul(a, b) => eval(a) * eval(b),
+//!   }
+//! }
+//!
+//! let old = Region::new(Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2))));
+//! // Every `Expr`, and what it points to, is a `NewExpr`: nothing is checked, nothing is copied.
+//! let new: &NewExpr = puns::view_ref(&*old);
+//! assert_eq!(eval(new), -1);
+//! ```
+//!
+//! The other way does not compile: a `NewExpr` may be a `Mul`, behind a pointer, where nothing
+//! can be checked.
+//!
+//! ```compile_fail
+//! # use nearest::{Near, Region, flat, puns};
+//! # #[flat] enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
+//! # #[flat] enum NewExpr { Lit(i64), Neg(Near<NewExpr>), Add(Near<NewExpr>, Near<NewExpr>), Mul(Near<NewExpr>, Near<NewExpr>) }
+//! fn back(new: &NewExpr) -> &Expr {
+//!   puns::view_ref(new)
+//! }
+//! # let _: fn(&NewExpr) -> &Expr = back;
+//! ```
+//!
+//! What `#[pun(..)]` says of a type, `valid(..)` of a field and `assert(..)` of a struct, are
+//! requirements: the loaders check them, and `puns` where it does not prove them. A region does
+//! not check them when it builds or edits a value: like a field of a struct that safe code can
+//! write, a value of a region may not meet them, and nothing relies on it; such a value is saved
+//! by [`Region::as_bytes`] and refused when loaded.
+//!
+//! ```
+//! use nearest::{Error, Region, flat};
+//!
+//! #[flat]
+//! #[pun(assert(lo <= hi))]
+//! struct Span { lo: u32, hi: u32 }
+//!
+//! let backwards = Region::new(Span::new(2, 1)); // built: rules are not checked here
+//! let bytes = backwards.as_bytes().unwrap();
+//! assert_eq!(Region::<Span>::from_bytes(bytes).err(), Some(Error::Invalid(0)));
+//! assert!(Region::<Span>::from_bytes(Region::new(Span::new(1, 2)).as_bytes().unwrap()).is_ok());
+//! ```
 //!
 //! # Bytes
 //!
@@ -220,7 +282,7 @@
 //! trusted, or checked by the caller, [`Region::from_bytes_unchecked`] and [`view_unchecked`]
 //! skip the check and are `unsafe`. The bytes hold the layout of the target, its values in the byte order of their
 //! types, and distances and lengths as their [`Offset`] writes them (native-endian for `i16`,
-//! `i32` and `i64`).
+//! `i32` and `i64`; as their names say for the offsets of [`puns::num`]).
 //!
 //! # The `serde` feature
 //!
@@ -302,18 +364,17 @@
 //! - No pointer is made from an integer. Miri runs the tests with Tree Borrows and strict
 //!   provenance.
 //!
+//! What [`puns`] makes of a value that holds a `Near` keeps all of this: it reads such a value
+//! as plain data, makes one only by [`puns::view_ref`] and [`puns::try_view_ref`] from a value
+//! that holds, at the same place, a pointer whose target it proves to be one, and never gives a
+//! `&mut` to one.
+//!
 //! Stored types must be no more aligned than a `u64` (the words of a region's memory: 8 bytes on
 //! x86-64, 4 on `i686`), and have a non-zero size and no drop glue (checked at compile time). A region holds at most what the pointers of its root reach (2 GiB with the
 //! default `i32`; see [Pointer widths](#pointer-widths)), or what its storage gives; growing past
 //! that panics.
 #![no_std]
 #![deny(missing_docs)]
-// The `nightly` feature: `unpin` asks whether a type implements `Unpin` (see `mod unpin`).
-#![cfg_attr(feature = "nightly", feature(specialization))]
-#![cfg_attr(
-  feature = "nightly",
-  expect(incomplete_features, reason = "`specialization`, only to ask whether a type is `Unpin`")
-)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -324,19 +385,21 @@ mod flat;
 mod near;
 mod region;
 mod storage;
-#[cfg(feature = "nightly")]
-mod unpin;
 
 #[cfg(feature = "alloc")]
 pub use bytes::view;
 pub use bytes::{Error, Pending, view_unchecked, view_with};
-pub use edit::{ListEdit, Old, OptionEdit, StrEdit};
+pub use edit::{Handle, ListEdit, Old, OptionEdit, Plain, PlainEdit, StrEdit};
 pub use flat::{Emit, Flat};
 pub use near::{Near, Offset};
 /// Makes a struct or enum storable in a region.
 ///
 /// It implements [`Flat`] and adds `#[repr(C)]` to structs (unless they are already `C` or
-/// `transparent`) and `#[repr(u8)]` to enums. It generates:
+/// `transparent`) and `#[repr(u8)]` to enums. It derives [`puns::Pun`], so that `#[pun(..)]`
+/// options (`valid(..)` on a field, `assert(..)` on a struct, `bound(..)`) can be written on the
+/// type (see [One value read as another](crate#one-value-read-as-another)); a type must not
+/// derive it again, and the types of the fields of a `pub` type must be as visible as it is. It
+/// generates:
 ///
 /// - constructors whose parameters take anything that can be written as the field's type
 ///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
@@ -345,6 +408,9 @@ pub use near::{Near, Offset};
 ///   for a field written `Near<X>` takes a builder of `X` and allocates the target (a list or
 ///   string builder if `X` is a slice or `str`); one for a field of plain data marked
 ///   `#[flat(into)]` takes `impl Into<FieldType>`;
+/// - for structs with fields, `XInit`, next to `X`: the same builders as the fields of a struct,
+///   named and in any order (`XInit { name: "f", blocks: () }`), which writes what `X::new`
+///   writes, with the same machine code;
 /// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign), `replace` (assign and return the
 ///   old value as an [`Old`]), `update` (build the new value from the old one) and `pin` (a
 ///   pinned view), and for structs one method per field
@@ -361,8 +427,8 @@ pub use near::{Near, Offset};
 ///
 /// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
 /// `repr`s other than `u8`, explicit discriminants, empty enums, enums of more than 256
-/// variants, variants whose constructors would have the same name (`rename` one) and, without
-/// the `nightly` feature, `#[pin_v2]` are rejected. `#[flat(..)]` on a variant or a field is
+/// variants, variants whose constructors would have the same name (`rename` one) and `#[pin_v2]`
+/// are rejected. `#[flat(..)]` on a variant or a field is
 /// read and removed. A variant with fields takes `rename = "name"`, a new name for its
 /// constructor, which no other constructor and not `project` may have; a field takes `into`,
 /// unless it is written as a pointer (`Near<..>`, `Option<Near<..>>`).
@@ -412,6 +478,10 @@ pub use near::{Near, Offset};
 /// assert!(matches!(&*r, Value::Str(s) if &**s == "hi"));
 /// ```
 pub use nearest_derive::flat;
+/// The crate whose layouts `nearest` declares its pointers with: re-exported, so that the
+/// numbers of a fixed byte order ([`puns::num`]) and [`puns::view_ref`] are those of the
+/// version that `nearest` uses.
+pub use puns;
 pub use region::Region;
 #[cfg(feature = "alloc")]
 pub use storage::Heap;
@@ -450,13 +520,11 @@ pub type Edit<'e, T> = <T as Flat>::Edit<'e>;
 /// Plumbing for the code [`#[flat]`](flat) generates. Not public API.
 #[doc(hidden)]
 pub mod __private {
-  #[cfg(feature = "nightly")]
-  pub use crate::unpin::unpin;
   use crate::{Emit, Flat, Near, Offset};
   pub use crate::{
-    bytes::Check,
     edit::Raw,
     flat::{Buf, Sink, fits, make},
+    near::Packed,
   };
 
   /// Names the handle of a variant with several fields, for `XMut`.

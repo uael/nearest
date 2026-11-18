@@ -16,8 +16,23 @@ note: erroneous constant encountered
   | |   };
   | |___^
 
-note: the above error was encountered while instantiating `fn nearest::flat::fits_behind::<Inner, i64>`
- --> src/flat.rs
+note: erroneous constant encountered
+ --> $CARGO/puns-$VERSION/src/relative.rs
   |
-  |     fits_behind::<T, O>();
-  |     ^^^^^^^^^^^^^^^^^^^^^
+  |       >(<$ty as $crate::SelfRelative>::POINTER);
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+ ::: src/near.rs
+  |
+  | puns::self_relative!(impl[T: Flat, O: Offset] Near<T, O>);
+  | --------------------------------------------------------- in this macro invocation
+  |
+  = note: this note originates in the macro `puns::self_relative` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+note: erroneous constant encountered
+ --> tests/compile-fail/near_narrower_behind_wider.rs:8:1
+  |
+8 | #[flat]
+  | ^^^^^^^
+  |
+  = note: this note originates in the derive macro `::nearest::puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)

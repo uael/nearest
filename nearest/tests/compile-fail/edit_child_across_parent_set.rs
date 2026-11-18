@@ -10,7 +10,7 @@ fn main() {
   let mut r = mk();
   let e = r.edit();
   let ExprMut::Neg(x) = e.as_mut() else { return };
-  let ExprMut::Lit(n) = x.as_mut() else { return };
+  let ExprMut::Lit(mut n) = x.as_mut() else { return };
   e.set(Expr::Lit(2));
   *n = 3;
 }

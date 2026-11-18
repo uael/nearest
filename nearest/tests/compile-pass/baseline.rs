@@ -22,7 +22,7 @@ fn main() {
   let mut r = Region::new(Expr::neg(Expr::Lit(1)));
   let e = r.edit();
   if let ExprMut::Neg(x) = e.as_mut() {
-    if let ExprMut::Lit(n) = x.as_mut() {
+    if let ExprMut::Lit(mut n) = x.as_mut() {
       *n = 3;
     }
     x.set(Expr::Lit(2));

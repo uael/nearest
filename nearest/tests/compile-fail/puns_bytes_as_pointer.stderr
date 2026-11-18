@@ -1,0 +1,41 @@
+error[E0080]: evaluation panicked:
+              cannot pun: the target holds a self-relative pointer, and what a pointer aims at is not a property of its bytes.
+              Use `view_ref` to read a value that holds pointers as another type (it proves what they aim at).
+
+    --> $CARGO/puns-$VERSION/src/lib.rs
+     |
+     |   const TRY_REF: () = Self::require(Self::check(Need::TRY_REF));
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `nearest::puns::Plan::<[u8], Node>::TRY_REF` failed inside this call
+     |
+note: inside `puns::Plan::<[u8], Node>::require`
+ --> $CARGO/puns-$VERSION/src/lib.rs
+  |
+  |       message.panic();
+  |       ^^^^^^^^^^^^^^^
+note: inside `puns::Message::panic`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: the failure occurred here
+  |
+ ::: $CARGO/puns-$VERSION/src/lib.rs
+  |
+  |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+  |     ---------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> $CARGO/puns-$VERSION/src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY_REF };
+  |           ^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+ --> $CARGO/puns-$VERSION/src/lib.rs
+  |
+  |   const { Plan::<S, D>::TRY_REF };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn try_pun_ref::<[u8], Node>`
+ --> $CARGO/puns-$VERSION/src/lib.rs
+  |
+  |   try_pun_ref::<[u8], D>(bytes)
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

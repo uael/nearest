@@ -1,9 +1,9 @@
 error[E0499]: cannot borrow `*b` as mutable more than once at a time
   --> tests/compile-fail/sibling_handles.rs:15:3
    |
-14 |   let id = b.id();
-   |            - first mutable borrow occurs here
+14 |   let mut id = b.id();
+   |                - first mutable borrow occurs here
 15 |   b.insts().push(Inst::new(2, ()));
    |   ^ second mutable borrow occurs here
 16 |   *id = 1;
-   |   ------- first borrow later used here
+   |    -- first borrow later used here

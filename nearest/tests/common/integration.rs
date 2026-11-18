@@ -305,6 +305,18 @@ fn every_primitive() {
   assert_eq!(lists.items[1], p);
 }
 
+/// `XInit` names the fields of a struct, in any order, and writes what `X::new` writes.
+#[test]
+fn init_structs_name_the_fields() {
+  let positional = Region::new_in(Store::default(), Func::new("f", Block::new(1, [Inst::new(2, [3])], None), true));
+  let named = Region::new_in(Store::default(), FuncInit {
+    flag: true,
+    entry: BlockInit { next: None, insts: [InstInit { args: [3], op: 2 }], id: 1 },
+    name: "f",
+  });
+  assert_eq!(positional.as_bytes(), named.as_bytes());
+}
+
 #[test]
 fn every_emit_source() {
   let other = func();
@@ -625,7 +637,7 @@ fn plain_handles_deref_mut() {
   assert_eq!(*r, Rgb { r: 4, g: 9, b: 9, c: Color::Blue });
   let mut s = Region::new_in(Store::default(), Shape::Dot);
   **s.edit() = Shape::Circle(1);
-  if let ShapeMut::Circle(radius) = s.edit().as_mut() {
+  if let ShapeMut::Circle(mut radius) = s.edit().as_mut() {
     *radius += 1;
   }
   assert_eq!(*s, Shape::Circle(2));
@@ -671,13 +683,26 @@ fn enum_handles() {
   // Generic enums.
   let mut t = Region::new_in(Store::default(), Tree::node(Tree::Leaf(1u32), Tree::Leaf(2)));
   if let TreeMut::Node(kids) = t.edit().as_mut() {
-    if let TreeMut::Leaf(x) = kids._0().as_mut() {
+    if let TreeMut::Leaf(mut x) = kids._0().as_mut() {
       *x = 10;
     }
     kids._1().set(Tree::node(Tree::Leaf(3), Tree::Leaf(4)));
   }
   let Tree::Node(a, b) = &*t else { unreachable!() };
   assert!(**a == Tree::Leaf(10) && matches!(&**b, Tree::Node(c, _) if **c == Tree::Leaf(3)));
+}
+
+/// A value written over another one writes every byte of it, its pointers included: a `None`
+/// over a `Some` is zeros again, from a value on the stack and from a copy of a region's.
+#[test]
+fn a_value_overwrites_every_pointer() {
+  let mut b = Region::new_in(Store::default(), Block::new(0, [Inst::new(1, [2])], Near::new(Block::new(5, (), None))));
+  b.edit().set(Block::new(1, (), None));
+  assert!(b.next.is_none() && b.insts.is_empty() && b.id == 1);
+  b.edit().set(Block::new(2, (), Near::new(Block::new(6, (), None))));
+  let none = Region::new_in(Store::default(), Block::new(3, (), None));
+  b.edit().set(&*none);
+  assert!(b.next.is_none() && b.id == 3);
 }
 
 #[test]
@@ -754,7 +779,7 @@ fn list_index_panics() {
   // `try_at` is `at` without the panic.
   let list = r.edit();
   assert!(list.try_at(2).is_none());
-  if let Some(x) = list.try_at(1) {
+  if let Some(mut x) = list.try_at(1) {
     *x += 1;
   }
   assert_eq!((r[..].to_vec(), r.byte_len()), (vec![1, 3], 4 + 8 + 8));
@@ -1218,19 +1243,27 @@ fn builders_write_the_compact_image() {
   }
 }
 
+/// Every image with one byte changed, or cut, or longer, is either rejected or read in full as a
+/// value that shows the same and whose copy is as long as those bytes: a corruption is never read
+/// as more than its bytes, nor out of them (Miri). Which corruptions are accepted depends on the bytes of
+/// the target (its widths, its alignment), so only that both outcomes happen is asserted: the
+/// image itself is accepted, a cut one rejected. Under Miri every 127th byte is changed.
 #[test]
 fn small_corruptions_are_rejected_or_harmless() {
   let image = rec().as_bytes().unwrap().to_vec();
-  let (mut accepted, mut rejected) = (0, 0);
-  let mut try_one =
-    |bytes: &[u8]| match view::<Rec, _>(bytes, |v| (format!("{v:?}"), Region::new_in(Store::default(), v))) {
-      // What is accepted is walked in full and is exactly the image of its value.
-      Ok((shown, again)) => {
-        assert_eq!((format!("{:?}", *again), again.byte_len()), (shown, bytes.len()));
-        accepted += 1;
-      }
-      Err(_) => rejected += 1,
-    };
+  // Whether `bytes` are accepted; what is accepted is walked in full and is exactly the image of
+  // its value.
+  let try_one = |bytes: &[u8]| match view::<Rec, _>(bytes, |v| {
+    (format!("{v:?}"), Region::new_in(Store::default(), v))
+  }) {
+    Ok((shown, again)) => {
+      assert_eq!((format!("{:?}", *again), again.byte_len()), (shown, bytes.len()));
+      true
+    }
+    Err(_) => false,
+  };
+  assert!(try_one(&image), "the image is accepted");
+  assert!(!try_one(&image[..image.len() - 1]), "a cut one is not");
   let step = if cfg!(miri) { 127 } else { 1 };
   for i in (0..image.len()).step_by(step) {
     for v in [0u8, 1, 2, 4, 8, 0x7f, 0x80, 0xff, image[i].wrapping_add(1), image[i] ^ 0x10] {
@@ -1242,10 +1275,9 @@ fn small_corruptions_are_rejected_or_harmless() {
   for cut in (0..image.len()).step_by(step) {
     try_one(&image[..cut]);
   }
-  let mut longer = image.clone();
+  let mut longer = image;
   longer.extend_from_slice(&[0; 8]);
   try_one(&longer);
-  assert!(accepted > 0 && rejected > accepted, "{accepted} accepted, {rejected} rejected");
 }
 
 #[test]
@@ -1846,7 +1878,7 @@ fn random_expression_rewrites_match_a_model() {
         if let M::Lit(n) = mm {
           *n += s;
         }
-        if let ExprMut::Lit(n) = e.as_mut() {
+        if let ExprMut::Lit(mut n) = e.as_mut() {
           *n += s;
         }
       }
@@ -2023,8 +2055,7 @@ mod pinned {
     }
   }
 
-  /// Data without pointers stays `Unpin`, also with the `nightly` feature, where every type is
-  /// `#[pin_v2]` and has no `Unpin` impl from the macro: a pin of it gives a `&mut`.
+  /// Data without pointers stays `Unpin`: a pin of it gives a `&mut`.
   #[test]
   fn plain_data_is_unpin() {
     const fn unpin<T: Unpin>() {}

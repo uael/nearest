@@ -364,6 +364,7 @@ version = "0.7.2"
 dependencies = [
  "criterion",
  "nearest-derive",
+ "puns",
  "serde",
  "serde_json",
  "serde_test",
@@ -441,6 +442,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "puns"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a361163238fdb0ff7cbdd8a307f47196f1bba034d1e230e3d937312cfec03f18"
+dependencies = [
+ "puns-derive",
+]
+
+[[package]]
+name = "puns-derive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad2fd7bdcd456754c7ad0ac910ac56376ba34435687152d2e5a7e30b6288210a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

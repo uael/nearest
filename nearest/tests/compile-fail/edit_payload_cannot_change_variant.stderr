@@ -12,5 +12,5 @@ error[E0599]: the method `set` exists for struct `nearest::__private::Raw<'_, __
 note: the trait `Flat` must be implemented
   --> src/flat.rs
    |
-   | pub unsafe trait Flat: Sized + 'static {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | pub unsafe trait Flat: Pun + Sized + 'static {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

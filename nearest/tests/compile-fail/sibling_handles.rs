@@ -11,7 +11,7 @@ fn mk() -> Region<Block> { Region::new(Block::new(0, [Inst::new(1, [1, 2])], Non
 fn main() {
   let mut r = mk();
   let b = r.edit();
-  let id = b.id();
+  let mut id = b.id();
   b.insts().push(Inst::new(2, ()));
   *id = 1;
 }

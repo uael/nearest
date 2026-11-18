@@ -90,10 +90,11 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `view`, `view_with` | functions: the value whose image is a slice aligned as a `u64`, checked and read in place; `unsafe` `view_unchecked` |
 | `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap (`Heap::with_capacity`), `N` bytes inside the region |
 | `Near<T, O = i32>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
-| `Offset` | the integer a `Near` keeps its distance in: `i16`, `i32`, `i64`, or a type of yours (an `unsafe` trait) |
+| `Offset` | the integer a `Near` keeps its distance in: `i16`, `i32`, `i64`, `i32le`.. of `puns::num`, or a type of yours (an `unsafe` trait) |
+| `puns` | the crate [`puns`](https://docs.rs/puns), re-exported: `view_ref` reads a value of a region as another type; `num` has numbers of a fixed byte order |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
 | `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
-| `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `update` |
+| `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `replace`, `update` |
 | `StrEdit<'e>` | the handle of a `Near<str>`: `set`, `replace`, `update` |
 | `Old<'e, T>` | a value that left its place: write it anywhere to move it there |
 | `Error` | the error of every loader: `Invalid(offset)`, `ScratchFull`, `StorageFull` |
@@ -104,9 +105,11 @@ Anything that can be written as a `T` is accepted wherever a `T` is built: a val
 (`&T`, from any region), a move (`Old`), a list literal (`[a, b]`, `(a, b)`, `()`), a slice, an
 iterator, a string, or a generated constructor. A constructor parameter for a field written
 `Near<X>` takes a builder of `X` and allocates the target; `Near::new(x)` builds a pointer
-where one is expected (optional pointers, lists of pointers).
+where one is expected (optional pointers, lists of pointers). For a struct, `XInit` takes the same
+builders by name, in any order: `FuncInit { name: "f", blocks: () }` is `Func::new("f", ())`.
 
-Handles reach every place in a region. Plain data (`T: Copy`) is a real `&mut T` or `&mut [T]`.
+Handles reach every place in a region. A field of plain data reads and writes with one star,
+`*e.count() += 1`, and a list of it is a real `&mut [T]`.
 A handle borrows its parent handle, so one handle is usable at a time, and no reference into
 the buffer outlives a change that may grow it. Every handle has `set` (assign); `replace`
 (assign and return the old value), `ListEdit::remove` and `OptionEdit::take` return the value
@@ -144,10 +147,8 @@ bump(r.edit().pin(), 10);
 ```
 
 Nothing is pushed, built or moved through a pin; the handle is borrowed meanwhile and edits
-again afterwards. On nightly Rust, with the `nightly` feature, `#[flat]` marks every type
-`#[pin_v2]`, and in a crate that enables `pin_ergonomics` a pattern does what `project` does:
-`match e { Expr::Add(a, b) => .. }`. The feature is the way to that mark: without it, `#[flat]`
-rejects a `#[pin_v2]` written on the type.
+again afterwards. A `#[flat]` type is `Unpin` exactly when its fields are (an impl that the macro
+writes, so a hand-written one conflicts), and cannot be `#[pin_v2]`.
 
 ## Pointer widths
 
@@ -168,6 +169,46 @@ The pointers of the root bound the region, and a pointer may only lead to types 
 are at least as wide (checked at compile time), so every distance fits. Building or editing past
 the bound panics, and bytes longer than it do not load.
 
+`i16`, `i32` (the default) and `i64`, like the numbers of Rust, are in the byte order of the
+machine: a region of them loads as the same value only on a machine of the same byte order.
+**Bytes that cross machines** (a file, the network) use the offsets of `puns::num` (`i16le`,
+`i32le`, `i64le` and their big-endian counterparts) and its numbers (`u32le`, `f64be`,
+`u16bec<MAGIC>`, ...), which make the bytes of a region the same on every machine. Where the
+order is the machine's they cost nothing (the same instructions on x86-64); elsewhere, a byte
+swap:
+
+```rust
+use nearest::puns::num::{i32le, u16le};
+
+#[flat]
+struct Table { name: Near<str, i32le>, rows: Near<[u16le], i32le> }
+```
+
+## One value read as another
+
+Every `#[flat]` type is a [`puns`](https://docs.rs/puns) type too, and `Near` is declared to it as
+a self-relative pointer. So a value of a region can be read as another type, with everything it
+points to, when every value of the first is one of the second: `puns::view_ref` proves it at
+compile time, and costs nothing at run time. The bytes saved by a program are read by its next
+version without converting them:
+
+```rust
+#[flat]
+enum Expr { Lit(i64), Neg(Near<Expr>) }
+
+#[flat]
+enum NewExpr { Lit(i64), Neg(Near<NewExpr>), Abs(Near<NewExpr>) }   // one more variant
+
+let old = Region::new(Expr::neg(Expr::Lit(2)));
+let new: &NewExpr = nearest::puns::view_ref(&*old);                // the same bytes
+```
+
+The other way does not compile. `puns::try_view_ref` checks what cannot be proven of the value
+itself, and `#[pun(valid(..))]` and `#[pun(assert(..))]` can be written on a `#[flat]` type:
+requirements that the loaders check, and `puns` where it does not prove them (regions do not
+check them when they build or edit a value: one that breaks a rule is saved, and refused when
+loaded).
+
 ## Bytes
 
 `as_bytes` returns the compact image of a region, the bytes a deep copy writes, borrowed: a
@@ -175,7 +216,8 @@ region is compact until it is edited, and a copy, `Region::new(&*r)`, always is.
 checks bytes and copies them into a new region; `nearest::view` checks a slice aligned as
 a region is (as a `u64`: 8 bytes on x86-64, 4 on `i686`), such as a memory-mapped file, and reads
 it in place. Checking accepts exactly the compact images of valid
-values, in one pass, in safe code, without recursion or panics. Every loader returns
+values, in one pass, in safe code, without recursion or panics: each value as its layout says
+(`puns`), its rules included. Every loader returns
 `Result<_, Error>`: `Error::Invalid(offset)` says where the bytes went wrong, and
 `Error::StorageFull` that a valid image is larger than the storage of `from_bytes`. Checking
 keeps the pointers still to visit in memory that grows with the nesting of the data;
@@ -186,8 +228,8 @@ trust, or check yourself, `from_bytes_unchecked` and `view_unchecked` skip the c
 `unsafe`. An offset or a length is valid only as its
 `Offset` writes it: an `i64` that does not fit `isize` on a 32-bit target is invalid. The bytes
 hold the layout of the target, its values in the byte order of their types, and distances and
-lengths as their `Offset` writes them: native-endian for `i16`, `i32` and `i64`, or a byte order
-of your choice with an `Offset` of yours (an `unsafe` trait).
+lengths as their `Offset` writes them: native-endian for `i16`, `i32` and `i64`, or as their
+names say for the offsets of `puns::num`.
 
 ## Storage
 
@@ -227,7 +269,8 @@ the pointers of its root reach (2 GiB by default), or what its storage gives. Th
 
 ## Getting started
 
-Stable Rust (1.95 or later), `#![no_std]`, no dependencies besides the macro.
+Stable Rust (1.100 or later), `#![no_std]`, no dependencies besides the macro and
+[`puns`](https://docs.rs/puns).
 
 ```sh
 cargo add nearest
@@ -239,19 +282,13 @@ crate needs no allocator: regions live in other storage, and `Heap` (so `Region<
 `view_with`, which check loaded bytes with memory from the caller: a slice of `Pending`, of
 which `bytes.len() / 4` entries are always enough (`/ 2` with 2-byte pointers).
 
-The opt-in feature `nightly` needs a nightly compiler for the whole build: `#[flat]` then
-marks every type `#[pin_v2]`. It uses `specialization` and `allow_internal_unstable` inside
-`nearest` and `nearest-derive`; crates that use `#[flat]` need no `#![feature]` for it, only
-code that writes a pattern on a pinned value needs `pin_ergonomics`. Under it, an `Unpin`
-impl written by hand for a type that holds a `Near` fails the build where the type is pinned
-(a build that generates code: `cargo check` does not report it).
-
 The opt-in feature `serde` (with `alloc`) makes a `Region` `Serialize` and `Deserialize` as its
 bytes, checked when loaded, like `as_bytes` and `from_bytes`.
 
 Examples: [`expr.rs`](nearest/examples/expr.rs) simplifies an expression tree by rewriting it
-in place; [`ir.rs`](nearest/examples/ir.rs) runs constant folding and dead-code elimination on
-a small IR.
+in place; [`passes.rs`](nearest/examples/passes.rs) runs constant folding and dead-code
+elimination on a small IR; [`ir.rs`](nearest/examples/ir.rs) is a compiler IR that is its own
+file format, the same bytes on every machine, saved, loaded and run in place.
 
 ## License
 
