@@ -584,3 +584,45 @@ fn offsets_that_from_isize_does_not_make_are_invalid() {
   far[..4].copy_from_slice(&((1 << 20) + 4i32).to_ne_bytes()); // past `LIMIT`
   assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(&far).err(), Some(Error::Invalid(0)));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Offsets of the same width and byte order read each other's regions
+
+/// A region of `Tree<A>` read as `Tree<B>` with `puns::view_ref`: the same targets, since both
+/// offsets are the same two's complement integer of the same bytes (the contract of `Offset`).
+fn read_as<A: Offset, B: Offset>() {
+  let r = tree::<A>();
+  let view: &Tree<B> = nearest::puns::view_ref(&*r);
+  assert_eq!(ids(view), ids(&r));
+  assert_eq!((&*view.name, &*view.kids[1].kids[0].name), ("root", "c"));
+  // A deep copy of the view is the same image.
+  assert_eq!(Region::new(view).as_bytes(), Region::new(&*r).as_bytes());
+}
+
+#[test]
+fn offsets_of_the_same_width_and_byte_order_read_each_other() {
+  use nearest::puns::num::{i16be, i16le, i32be, i32le, i64be, i64le};
+  read_as::<Le16, i16le>();
+  read_as::<i16le, Le16>();
+  read_as::<Le32, i32le>();
+  read_as::<i32le, Le32>();
+  read_as::<Le64, i64le>();
+  read_as::<Be16, i16be>();
+  read_as::<Be32, i32be>();
+  read_as::<i32be, Be32>();
+  read_as::<Be64, i64be>();
+  read_as::<i64be, Be64>();
+  // The integers of the target are of its byte order.
+  #[cfg(target_endian = "little")]
+  {
+    read_as::<i16, i16le>();
+    read_as::<i32, Le32>();
+    read_as::<i64le, i64>();
+  }
+  #[cfg(target_endian = "big")]
+  {
+    read_as::<i16, i16be>();
+    read_as::<i32, Be32>();
+    read_as::<i64be, i64>();
+  }
+}

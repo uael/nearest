@@ -235,6 +235,14 @@ impl Check<'_> {
       4 => i64::from(i32::from_ne_bytes(self.get(at, pointer.endian())?)),
       _ => i64::from_ne_bytes(self.get(at, pointer.endian())?),
     };
+    // Past the default `LIMIT` of an offset of that width, `iN::MAX & !7` (that of every offset
+    // of this crate), no integer is a distance or a length: refused where it is, as `from_isize`
+    // never makes it. (An offset of the user's with a smaller `LIMIT` is refused at the block
+    // that it cannot reach.)
+    let limit = (1u64 << (8 * pointer.width() - 1)) - 8;
+    if n.unsigned_abs() > limit {
+      return Err(Error::Invalid(at));
+    }
     isize::try_from(n).map_err(|_| Error::Invalid(at))
   }
 

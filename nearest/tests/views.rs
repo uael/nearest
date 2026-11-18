@@ -298,3 +298,200 @@ fn pointers_are_read_as_bytes() {
   assert_eq!(puns::tail_ref::<Table, i32le>(&r).get(), 11);
   assert_eq!(puns::try_pun_ref::<Table, (bool, [u8; 8])>(&r).map(|pair| pair.0), Ok(true));
 }
+
+// -------------------------------------------------------------------------------------------------
+// Optional pointers
+
+/// A pointer that may be null.
+#[flat]
+struct Maybe {
+  level: u8,
+  owner: Option<Near<u32, i32le>>,
+  more: Near<[Maybe], i32le>,
+}
+
+/// One that may not.
+#[flat]
+struct Named {
+  level: u8,
+  owner: Near<u32, i32le>,
+  more: Near<[Maybe], i32le>,
+}
+
+#[test]
+fn optional_pointers() {
+  let owned = Region::new(Maybe::new(1, Near::new(7), [Maybe::new(9, None, ())]));
+  // A pointer that may not be null is one that may: proven.
+  let named = puns::try_view_ref::<Maybe, Named>(&owned).unwrap();
+  assert_eq!((named.level, *named.owner, named.more[0].level), (1, 7, 9));
+  let back: &Maybe = puns::view_ref(named);
+  assert_eq!(back.owner.as_deref(), Some(&7));
+  // One that is null is not one that may not be.
+  let anonymous = Region::new(Maybe::new(2, None, ()));
+  assert_eq!(puns::try_view_ref::<Maybe, Named>(&anonymous).err(), Some(puns::Error::Validity));
+}
+
+// -------------------------------------------------------------------------------------------------
+// The alignment of the elements of a list
+
+/// Elements of alignment 1, of the size of an aligned integer.
+#[flat]
+struct Bytes<O: nearest::Offset> {
+  quads: Near<[[u8; 4]], O>,
+  numbers: Near<[i32le], O>,
+  octets: Near<[[u8; 8]], O>,
+  pairs: Near<[[u8; 2]], O>,
+}
+
+/// The same, read as the aligned integers.
+#[flat]
+struct Words<O: nearest::Offset> {
+  quads: Near<[u32], O>,
+  numbers: Near<[u32], O>,
+  octets: Near<[u64], O>,
+  pairs: Near<[u16], O>,
+}
+
+/// The sums of the elements, read as the aligned integers.
+fn sums<O: nearest::Offset>(bytes: &Bytes<O>) -> [u64; 4] {
+  // Proven: the elements of a list are at an address aligned to the larger of their own
+  // alignment and the width of the offset, as far as the buffer is aligned (`first` in
+  // `near.rs`), which every way of making or moving a list keeps. A misaligned `u32` or `u64`
+  // would be undefined behavior, which Miri reports.
+  let words: &Words<O> = puns::view_ref(bytes);
+  [
+    words.quads.iter().map(|&q| u64::from(q)).sum(),
+    words.numbers.iter().map(|&n| u64::from(n)).sum(),
+    words.octets.iter().sum(),
+    words.pairs.iter().map(|&p| u64::from(p)).sum(),
+  ]
+}
+
+fn quad(i: u8) -> [u8; 4] {
+  u32::from(i).to_ne_bytes()
+}
+
+/// Built, then edited every way that makes or moves a list block (pushes past the capacity,
+/// insertions, removals, `retain`, `swap`, a list moved from one place to another), compacted,
+/// cloned, loaded at an odd address, in a storage of its own and inline: read as the aligned
+/// integers each time.
+fn lists_stay_aligned<O: nearest::Offset, S: nearest::Storage + Default>() {
+  let mut r = nearest::Region::<Bytes<O>, S>::new_in(
+    S::default(),
+    Bytes::new([quad(1)], [i32le::new(2)], [[1u8; 8]], [[3u8, 0]]),
+  );
+  let expected = |r: &Bytes<O>| {
+    [
+      r.quads.iter().map(|q| u64::from(u32::from_ne_bytes(*q))).sum::<u64>(),
+      r.numbers.iter().map(|n| u64::from(n.get().cast_unsigned())).sum(),
+      r.octets.iter().map(|o| u64::from_ne_bytes(*o)).sum(),
+      r.pairs.iter().map(|p| u64::from(u16::from_ne_bytes(*p))).sum(),
+    ]
+  };
+  assert_eq!(sums(&r), expected(&r));
+  let e = r.edit();
+  for i in 2..12 {
+    e.quads().push(quad(i)); // grows: new blocks
+    e.numbers().push(i32le::new(i32::from(i)));
+    e.octets().insert(0, [i; 8]);
+    e.pairs().push([i, 0]);
+  }
+  e.quads().retain(|q| q[0] % 3 != 0);
+  e.quads().swap(0, 2);
+  let _ = e.numbers().remove(1);
+  // A list moved to another place: `quads` takes the block of `pairs`'s bytes... of a new list.
+  let old = e.quads().replace([quad(7), quad(8)]);
+  e.quads().set(old);
+  assert_eq!(sums(&r), expected(&r));
+  let compact = nearest::Region::<Bytes<O>, S>::new_in(S::default(), &*r);
+  assert_eq!(sums(&compact), expected(&r));
+  let clone = compact.clone();
+  assert_eq!(sums(&clone), expected(&r));
+  let image = compact.as_bytes().unwrap();
+  let mut odd = vec![0u8; image.len() + 1];
+  odd[1..].copy_from_slice(image);
+  let loaded = nearest::Region::<Bytes<O>, S>::from_bytes(&odd[1..]).unwrap();
+  assert_eq!(sums(&loaded), expected(&r));
+  assert_eq!(sums(nearest::view::<Bytes<O>>(loaded.as_bytes().unwrap()).unwrap()), expected(&r));
+}
+
+/// Four bytes, and an `i32le`, behind 4-byte offsets: elements aligned to 4.
+#[flat]
+struct Quads<O: nearest::Offset> {
+  quads: Near<[[u8; 4]], O>,
+  numbers: Near<[i32le], O>,
+}
+
+#[flat]
+struct QuadWords<O: nearest::Offset> {
+  quads: Near<[u32], O>,
+  numbers: Near<[u32], O>,
+}
+
+fn quads_stay_aligned<O: nearest::Offset>() {
+  let mut r = Region::new(Quads::<O>::new([quad(1)], [i32le::new(2)]));
+  for i in 2..12 {
+    r.edit().quads().push(quad(i));
+    r.edit().numbers().insert(0, i32le::new(i32::from(i)));
+  }
+  let _ = r.edit().quads().remove(3);
+  for r in [&r, &Region::new(&*r)] {
+    let words: &QuadWords<O> = puns::view_ref(&**r);
+    assert_eq!(
+      words.quads.iter().sum::<u32>(),
+      r.quads.iter().map(|q| u32::from_ne_bytes(*q)).sum()
+    );
+    assert_eq!(
+      words.numbers.iter().sum::<u32>(),
+      r.numbers.iter().map(|n| n.get().cast_unsigned()).sum()
+    );
+  }
+}
+
+#[test]
+fn the_elements_of_a_list_are_aligned_as_declared() {
+  // With 8-byte offsets the elements are declared aligned to the buffer, `ALIGN`, enough for
+  // a `u64` on every target (on `i686`, positions are multiples of 8 and addresses of 4). With
+  // narrower ones the view does not compile (an `i16` list of `[u8; 4]` is declared aligned to 2).
+  quads_stay_aligned::<i32>();
+  quads_stay_aligned::<i32le>();
+  lists_stay_aligned::<i64, nearest::Heap>();
+  lists_stay_aligned::<i64, nearest::Inline<4096>>();
+  lists_stay_aligned::<nearest::puns::num::i64be, nearest::Inline<4096>>();
+}
+
+// -------------------------------------------------------------------------------------------------
+// Rules
+
+#[flat]
+#[derive(Debug, PartialEq, Eq)]
+#[pun(assert(lo <= hi))]
+struct Span {
+  lo: u16le,
+  #[pun(valid(..1000))]
+  hi: u16le,
+}
+
+#[flat]
+#[derive(Debug, PartialEq, Eq)]
+struct Spans {
+  spans: Near<[Span], i32le>,
+}
+
+/// A value that breaks a rule of its type can be built and saved, not loaded.
+#[test]
+fn a_value_that_breaks_a_rule_is_saved_not_loaded() {
+  let span = |lo, hi| Span::new(u16le::new(lo), u16le::new(hi));
+  let good = Region::new(Spans::new([span(1, 2), span(3, 3)]));
+  assert_eq!(Region::<Spans>::from_bytes(good.as_bytes().unwrap()).as_deref(), Ok(&*good));
+  // Built and edited without a check: the rules are requirements, not guarantees.
+  let mut bad = Region::new(Spans::new([span(1, 2), span(5, 3)]));
+  let image = bad.as_bytes().unwrap().to_vec();
+  let at = (&raw const bad.spans[1]).addr() - bad.as_bytes().unwrap().as_ptr().addr();
+  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(at)));
+  *bad.edit().spans().at(1).hi() = u16le::new(1000);
+  *bad.edit().spans().at(1).lo() = u16le::new(0);
+  let image = Region::new(&*bad).as_bytes().unwrap().to_vec();
+  // `valid(..1000)` of `hi`: where it is.
+  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(at + 2)));
+}

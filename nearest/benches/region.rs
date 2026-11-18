@@ -29,6 +29,31 @@ enum Expr {
   Add(Near<Expr>, Near<Expr>),
 }
 
+/// A table: numbers, and names behind a flag.
+#[flat]
+struct Table {
+  numbers: Near<[u32]>,
+  rows: Near<[Row]>,
+}
+
+#[flat]
+struct Row {
+  public: bool,
+  name: Near<str>,
+}
+
+/// A balanced tree of `2^depth` leaves.
+fn tree(depth: u32) -> Region<Expr> {
+  fn build(depth: u32) -> Region<Expr> {
+    if depth == 0 {
+      return Region::new(Expr::Lit(1));
+    }
+    let (a, b) = (build(depth - 1), build(depth - 1));
+    Region::new(Expr::add(&*a, &*b))
+  }
+  build(depth)
+}
+
 /// `blocks` blocks of `insts` instructions with 3 arguments each.
 fn func(blocks: u32, insts: u32) -> Region<Func> {
   Region::new(Func::new(
@@ -193,6 +218,22 @@ fn bytes(c: &mut Criterion) {
   let aligned = f.as_bytes().unwrap();
   g.bench_function("view 100 blocks x 100 insts", |b| {
     b.iter(|| nearest::view::<Func>(black_box(aligned)).unwrap().blocks.len());
+  });
+  // Enums and pointers, nothing else: what the check of a value costs.
+  let t = tree(16);
+  let aligned = t.as_bytes().unwrap();
+  g.bench_function("view tree of 2^16 leaves", |b| {
+    b.iter(|| matches!(nearest::view::<Expr>(black_box(aligned)).unwrap(), Expr::Add(..)));
+  });
+  // Numbers, which are not looked at, and rows that are.
+  let names: Vec<String> = (0..10_000).map(|i| format!("row {i}")).collect();
+  let table = Region::new(Table::new(
+    Near::from_iter(0..1_000_000u32),
+    Near::from_iter(names.iter().enumerate().map(|(i, n)| Row::new(i % 2 == 0, n.as_str()))),
+  ));
+  let aligned = table.as_bytes().unwrap();
+  g.bench_function("view table of 1M numbers, 10k rows", |b| {
+    b.iter(|| nearest::view::<Table>(black_box(aligned)).unwrap().rows.len());
   });
   g.finish();
 }
