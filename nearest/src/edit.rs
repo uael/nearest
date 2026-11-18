@@ -9,7 +9,8 @@ use core::{
 use crate::{
   Edit, Emit, Flat, Near, Offset,
   flat::{
-    Buf, List, Sink, aim, detach, fits, fits_behind, move_elems, put_moved, relocate, write_copy,
+    Buf, List, Sink, aim, detach, fits, fits_behind, move_elems, relocate, stash, unstash,
+    write_copy,
   },
 };
 
@@ -366,9 +367,9 @@ impl<'e, T: Flat, O: Offset> ListEdit<'e, T, O> {
     // one into the room it leaves, then it moves to `index`, and only then is the length
     // written. Moves cannot panic.
     unsafe {
-      let v = (*buf).base().add(staged).cast::<T>().read();
+      let v = stash::<T>(buf, staged);
       move_elems::<T>(buf, at, list.elem::<T>(index + 1), len - index);
-      put_moved(buf, &v, staged, at);
+      unstash(buf, &v, staged, at);
       Self::set_len(buf, &list, len + 1);
       T::edit(buf, at)
     }
@@ -428,9 +429,9 @@ impl<'e, T: Flat, O: Offset> ListEdit<'e, T, O> {
       let (pa, pb) = (list.elem::<T>(a), list.elem::<T>(b));
       // SAFETY: both elements are valid; `a` is read first, then each takes the other's place.
       unsafe {
-        let v = (*buf).base().add(pa).cast::<T>().read();
+        let v = stash::<T>(buf, pa);
         relocate::<T>(buf, pb, pa);
-        put_moved(buf, &v, pa, pb);
+        unstash(buf, &v, pa, pb);
       }
     }
   }

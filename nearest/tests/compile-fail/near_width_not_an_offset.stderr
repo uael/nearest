@@ -136,51 +136,6 @@ note: required by a bound in `nearest::Flat::REACH`
   |   const REACH: u64 = u64::MAX;
   |
 
-error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know its layout and its valid values
- --> tests/compile-fail/near_width_not_an_offset.rs:4:1
-  |
-4 | #[flat]
-  | ^^^^^^^ not a `Pun` type
-  |
-  = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
-  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with `SelfRelative` and `self_relative!`
-help: the trait `Pun` is conditionally implemented for `Option<T>`
- --> $CARGO/puns-$VERSION/src/std_enums.rs
-  |
-  | unsafe impl<T: Pun> Pun for Option<T> {
-  | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
-  |                |
-  |                unsatisfied requirement introduced here: `Near<Byte, u8>: Pun`
-note: required by a bound in `nearest::Flat::store`
- --> src/flat.rs
-  |
-  | pub unsafe trait Flat: Pun + Sized + 'static {
-  |                        ^^^ required by this bound in `Flat::store`
-...
-  |   unsafe fn store(&self, sink: &mut Sink, at: usize, shift: Option<isize>);
-  = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0277]: the trait bound `u8: Offset` is not satisfied
- --> tests/compile-fail/near_width_not_an_offset.rs:4:1
-  |
-4 | #[flat]
-  | ^^^^^^^ the trait `Offset` is not implemented for `u8`
-  |
-help: the following other types implement trait `Offset`
- --> src/near.rs
-  |
-  |     unsafe impl Offset for $t {
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
-  |     |
-  |     `i16`
-  |     `i32`
-  |     `i64`
-...
-  | offsets!(i16, i32, i64);
-  | ----------------------- in this macro invocation
-  = note: required for `Option<Near<Byte, u8>>` to implement `Flat`
-  = note: this error originates in the attribute macro `flat` which comes from the expansion of the macro `offsets` (in Nightly builds, run with -Z macro-backtrace for more info)
-
 error[E0277]: the trait bound `u8: Offset` is not satisfied
  --> tests/compile-fail/near_width_not_an_offset.rs:4:1
   |
@@ -204,6 +159,27 @@ note: required by a bound in `Near`
   |
   | pub struct Near<T: ?Sized, O: Offset = i32> {
   |                               ^^^^^^ required by this bound in `Near`
+  = note: this error originates in the attribute macro `flat` which comes from the expansion of the macro `offsets` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `u8: Offset` is not satisfied
+ --> tests/compile-fail/near_width_not_an_offset.rs:4:1
+  |
+4 | #[flat]
+  | ^^^^^^^ the trait `Offset` is not implemented for `u8`
+  |
+help: the following other types implement trait `Offset`
+ --> src/near.rs
+  |
+  |     unsafe impl Offset for $t {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |     |
+  |     `i16`
+  |     `i32`
+  |     `i64`
+...
+  | offsets!(i16, i32, i64);
+  | ----------------------- in this macro invocation
+  = note: required for `Option<Near<Byte, u8>>` to implement `Flat`
   = note: this error originates in the attribute macro `flat` which comes from the expansion of the macro `offsets` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `u8: Offset` is not satisfied

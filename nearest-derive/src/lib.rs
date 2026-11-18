@@ -108,8 +108,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let mut handle_g = generics.clone();
   handle_g.params.insert(0, GenericParam::Lifetime(parse_quote!(#e)));
   let (h_impl, h_ty, h_where) = handle_g.split_for_impl();
-  let [sink, at, shift, buf] =
-    ["sink", "at", "shift", "buf"].map(|s| Ident::new(s, Span::mixed_site()));
+  let [sink, at, buf] = ["sink", "at", "buf"].map(|s| Ident::new(s, Span::mixed_site()));
   let np = quote!(::nearest::__private);
   let pin = quote!(::core::pin::Pin);
   let handle = format_ident!("__NearestEdit");
@@ -173,7 +172,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       }
     }
   };
-  let store = |field: TokenStream, off: &TokenStream| quote!(::nearest::Flat::store(#field, #sink, #at + #off, #shift););
   // A method of a handle whose `.0` is the `Raw` of the value, returning a field's handle.
   let field_method = |f: &Field, i: usize, fvis: TokenStream, off: &TokenStream| {
     let mname = match &f.ident {
@@ -200,7 +198,10 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let mut view = None;
   // The declaration of `XPin` and the body of `project`, and every field type of the type.
   let (mut pinned, mut field_tys) = (None, vec![]);
-  let body = match &input.data {
+  // What `edit` holds besides building the handle: for an enum, a closure per variant with
+  // fields that builds it, never called, which tells the dead-code lint that the variant is
+  // built (by its constructor, which it cannot see through `make`).
+  let built = match &input.data {
     Data::Union(u) => {
       return Err(Error::new(u.union_token.span, "`#[flat]` does not support unions"));
     }
@@ -211,13 +212,12 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         members.iter().map(|m| quote!(::core::mem::offset_of!(Self, #m))).collect();
       if !s.fields.is_empty() {
         let doc = format!("Builds a `{name}` from its fields, in declaration order.");
-        ctors.push(ctor(format_ident!("new"), doc, &s.fields, &into[0], quote!(), offs.clone()));
+        ctors.push(ctor(format_ident!("new"), doc, &s.fields, &into[0], quote!(), offs));
       }
       for (i, (f, m)) in s.fields.iter().zip(&members).enumerate() {
         let off = quote!(::core::mem::offset_of!(#self_ty, #m));
         methods.push(field_method(f, i, f.vis.to_token_stream(), &off));
       }
-      let stores = members.iter().zip(&offs).map(|(m, off)| store(quote!(&self.#m), off));
       if !s.fields.is_empty() {
         let binds: Vec<_> =
           (0..tys.len()).map(|k| format_ident!("f{k}", span = Span::mixed_site())).collect();
@@ -241,7 +241,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         ));
       }
       field_tys.extend(tys.iter().map(|ty| unself(ty.clone(), &self_ty)));
-      quote!(#(#stores)*)
+      quote!()
     }
     Data::Enum(data) => {
       if let Some(v) = data.variants.iter().nth(256) {
@@ -251,7 +251,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         return Err(Error::new_spanned(name, "`#[flat]` enums need at least one variant"));
       }
       let mut_name = format_ident!("{name}Mut");
-      let (mut arms, mut built, mut views, mut view_arms) = (vec![], vec![], vec![], vec![]);
+      let (mut built, mut views, mut view_arms) = (vec![], vec![], vec![]);
       let mut ctor_names = vec![];
       let (mut pin_variants, mut pin_arms) = (vec![], vec![]);
       for (i, v) in data.variants.iter().enumerate() {
@@ -269,7 +269,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           Fields::Unnamed(_) => quote!((#(#binds),*)),
           Fields::Unit => quote!(),
         };
-        let tag_store = store(quote!(&#tag), &quote!(0));
         let vdoc = format!("`{name}::{vname}`.");
         let view_arm = quote!(#name::#vname { .. } => #mut_name::#vname);
         let ftys = v.fields.iter().map(|f| unself(f.ty.to_token_stream(), &self_ty));
@@ -292,7 +291,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           if let Some(r) = &renames[i] {
             return Err(Error::new_spanned(r, "a unit variant has no constructor to rename"));
           }
-          arms.push(quote!(Self::#vname => { #tag_store }));
           views.push(quote!(#[doc = #vdoc] #vname));
           view_arms.push(view_arm);
           continue;
@@ -331,8 +329,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         }
         ctor_names.push(cname.clone());
         ctors.push(ctor(cname, doc, &v.fields, &into[i], tag_emit, offs.clone()));
-        let stores = binds.iter().zip(&offs).map(|(b, off)| store(quote!(#b), off));
-        arms.push(quote!(Self::#vname #pat => { #tag_store #(#stores)* }));
         // Tells the dead-code lint that the variant is built, by the constructor.
         built.push(quote!(let _ = |#(#binds),*| Self::#vname #pat;));
         if let ([ty], [off]) = (&tys[..], &offs[..]) {
@@ -397,7 +393,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           quote!(match self.get_unchecked_mut() { #(#pin_arms,)* }),
         ));
       }
-      quote!(#(#built)* match self { #(#arms)* })
+      quote!(#(#built)*)
     }
   };
 
@@ -502,20 +498,12 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         type Edit<#e> = #handle #h_ty;
         #reach
         #unpin_const
-        unsafe fn store(
-          &self,
-          #sink: &mut #np::Sink,
-          #at: usize,
-          #shift: ::core::option::Option<isize>,
-        ) {
-          #np::fits::<Self>();
-          unsafe { #body }
-        }
         unsafe fn edit<#lt, #e: #lt>(
           #buf: *mut #np::Buf,
           #at: usize,
         ) -> &#lt mut Self::Edit<#e> {
           #np::fits::<Self>();
+          #built
           let raw = unsafe { #np::Raw::<#e, Self>::new(#buf, #at) };
           unsafe { &mut *(::core::ptr::from_mut(raw) as *mut #handle #h_ty) }
         }

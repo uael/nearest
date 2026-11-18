@@ -64,7 +64,7 @@ the target. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, `
 Hidden: `nearest::__private::{Raw, Buf, Sink, fits, make, Variant, Pointer}` (and `unpin`
 with `nightly`), the plumbing of the macro; `__private::Packed<T>`, the `NonZero` of the offsets
 of `puns::num`, an associated type that must be public; the hidden items of `Flat` (`PLAIN`, `ANY`, `REACH`,
-`store`, `edit`; `UNPIN` with `nightly`; `PLAIN` and `ANY` are read from the layout, `Pun::LAYOUT.is_plain()`
+`edit`; `UNPIN` with `nightly`; `PLAIN` and `ANY` are read from the layout, `Pun::LAYOUT.is_plain()`
 and `is_free()`, not given) and `Emit` (`emit`, `plain`).
 Nothing else is public; do not add public items.
 
@@ -324,10 +324,10 @@ Only what cannot be known before:
 - **I5 — append only.** Nothing in the buffer is freed, and bytes no longer reachable from the
   root are never written again; positions stay valid when the buffer grows. So an `Old` stays
   intact, with all it points to, for the whole edit.
-- **I6 — copies come from elsewhere, moves do not allocate.** A deep copy (`store` with `None`)
-  never reads the buffer it writes: a `&T` into a region cannot coexist with a handle of it, and
-  an `Old` of the same region is moved, not copied. A move (`Some(d)`) only writes the
-  destination.
+- **I6 — copies come from elsewhere, moves do not allocate.** A deep copy (`write_copy`) never
+  reads the buffer it writes: a `&T` into a region cannot coexist with a handle of it, and an
+  `Old` of the same region is moved, not copied. A move (`move_elems`) only writes the
+  destination, and allocates nothing.
 - **I7 — panics leave a valid value.** A place is unchanged or holds the complete new value:
   list lengths are written after the element, `retain` keeps unvisited elements, `set`,
   `replace` and `update` restore the old value.
@@ -440,8 +440,8 @@ derives `Pun` itself conflicts, and the field types of a `pub` type must be as v
 did: a loader already made any value whose fields are valid from bytes.
 
 For a type `X`, `#[flat]` emits, inside `const _: () = { .. }`, the `Flat` impl (`Edit<'e>`,
-`REACH` (the least of the fields', left at the default without fields), `store`, `edit`, each
-calling `fits`), the constructors, the handle
+`REACH` (the least of the fields', left at the default without fields), `edit`, calling
+`fits`), the constructors, the handle
 `__NearestEdit<'e, ..>` (`set`, `replace`, `update`, `pin`, a method per struct field, `as_mut`
 for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), the mirror structs, and `X::project`;
 next to `X`, with its visibility, `XPin<'a>` and, for an enum with fields, `XMut<'a, 'e>` (an
@@ -755,8 +755,9 @@ Files of `src/`:
 - `flat.rs`: `ALIGN`, `WORD`, `GRAIN` (see Target assumptions), `limit`, `aligned`, `fits`,
   `fits_behind`, `Buf` (`attach`, `alloc`, `grow`, `room`, `load`), `Sink` (`link`,
   `write_len`), `aim`, `Flat` and `Emit` with their impls (`mod num`: the numbers of
-  `puns::num`), moves (`relocate`,
-  `detach`, `move_elems`), the list block `List<O>`, `make`.
+  `puns::num`), the deep copy (`write_copy`, `copy_values`, `Deep`), moves (`relocate`,
+  `detach`, `move_elems`, `stash`, `unstash`, `Shift`), the integers of offsets and lengths
+  (`read_int`, `write_int`), the list block `List<O>`, `make`.
 - `edit.rs`: `Raw` (the core of every handle: `set`, `replace`, `update`, `swap_in`, `pin`),
   `Old`, `ListEdit`, `OptionEdit`, `StrEdit`.
 - `bytes.rs`: `Error`, `Pending`, `Stack`, the checker `Check` (the `puns::Visit` that queues
@@ -775,9 +776,22 @@ Mechanics:
 
 - `Sink`: a `*mut Buf` (`alloc`, `write`, `link`, `loose` clears the compact mark), never a
   `&mut Buf`.
-- `Flat::store(&self, sink, at, shift: Option<isize>)`: `None` deep-copies targets; `Some(d)` keeps
-  targets, re-aims offsets for a move of `d` bytes and never dereferences a `Near` (moves call it on
-  stack copies). `PLAIN` types (no pointers, no padding) are copied as bytes.
+- Copies and moves are written once, over the layout of the type, not generated per type. A deep
+  copy (`copy_values`) writes each value with `puns::copy_in` (the bytes that a valid value holds
+  initialized, but its pointers: the padding of a value on the stack, uninitialized, never reaches
+  the buffer, so `as_bytes` reads initialized bytes), then a `Deep` visitor of `puns::pointers_in`
+  re-makes each pointer: it allocates the target as the pointer's description says (one value, a
+  list block `[cap][len]` as `List::new` makes it, text), copies it the same way, and writes the
+  offset; depth first and in the order of the fields, which is the compact image. A move
+  (`move_elems`, and `relocate`, `detach` for one value) copies the bytes at once (`ptr::copy`:
+  the buffer's bytes are initialized) and re-aims the pointers where they are now (`Shift`, a
+  visitor of `pointers_elems_in`); `insert` and `swap` keep a value's bytes aside (`stash`) and
+  put them back re-aimed (`unstash`). Offsets and lengths are read and written as integers of the
+  width and the byte order of the pointer's description (`read_int`, `write_int`), which is what
+  the contract of `Offset` says their bytes are. `PLAIN` types (no pointers, no padding) are
+  copied as bytes. The tag of an enum is read twice, by `copy_in` then `pointers_in`: about 2
+  instructions per enum value more than the code that 0.7 generated per type (see What is not
+  here).
 - Self-relative pointers are resolved from `&self`: valid under Tree Borrows, not Stacked
   Borrows. No pointer is made from an integer. Miri runs with `-Zmiri-tree-borrows
   -Zmiri-strict-provenance`.
@@ -830,6 +844,12 @@ Mechanics:
   the compiler. A new case would be a breaking release anyway.
 - Copies recurse once per level of nesting (`Region::new(&*region)`, so saving an edited
   region), like `Clone` for a `Box`. Checking bytes does not.
+- No single walk to copy a value and its pointers: `copy_in` then `pointers_in` read the tag of
+  an enum twice, about 2 instructions per enum value (a tree of 2^12 leaves compacts in 401,330
+  instructions, against 393,080 for the code generated per type in 0.7; a table of structs in
+  fewer than before). Handing the pointers during the copy needs them kept aside until it ends,
+  since allocating their targets can move the buffer under it; a prototype that kept them on a
+  stack of its own was twice as slow.
 - No check of the rules at construction: an edit can break one right after (a `&mut u8`), so it
   would not make a rule a guarantee; nothing relies on one (see Rules).
 - No `isize` or `usize` width: the bytes would change with the target, for no reach that a

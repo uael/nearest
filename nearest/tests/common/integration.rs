@@ -680,6 +680,19 @@ fn enum_handles() {
   assert!(**a == Tree::Leaf(10) && matches!(&**b, Tree::Node(c, _) if **c == Tree::Leaf(3)));
 }
 
+/// A value written over another one writes every byte of it, its pointers included: a `None`
+/// over a `Some` is zeros again, from a value on the stack and from a copy of a region's.
+#[test]
+fn a_value_overwrites_every_pointer() {
+  let mut b = Region::new_in(Store::default(), Block::new(0, [Inst::new(1, [2])], Near::new(Block::new(5, (), None))));
+  b.edit().set(Block::new(1, (), None));
+  assert!(b.next.is_none() && b.insts.is_empty() && b.id == 1);
+  b.edit().set(Block::new(2, (), Near::new(Block::new(6, (), None))));
+  let none = Region::new_in(Store::default(), Block::new(3, (), None));
+  b.edit().set(&*none);
+  assert!(b.next.is_none() && b.id == 3);
+}
+
 #[test]
 fn list_handles() {
   let mut b = Region::new_in(Store::default(), Block::new(0, (), None));
