@@ -172,10 +172,16 @@
 //! wide (checked at compile time), so every distance fits. Building or editing past the bound
 //! panics, as growing past a storage does, and bytes longer than it do not load.
 //!
-//! The signed integers of a fixed byte order of [`puns::num`] (`i16le`, `i32le`, `i64le`, `i16be`,
-//! `i32be`, `i64be`) are offsets too, and its other numbers (`u32le`, `f64be`, `u16bec<V>`, ...)
-//! can be stored: with them the bytes of a region are the same on every machine. `Offset` is an
-//! `unsafe` trait that a type of yours can implement as well (see [`Offset`]).
+//! `i16`, `i32` (the default) and `i64` are in the byte order of the machine, as are the numbers
+//! of Rust (`u32`, `f64`, ...): the bytes of a region of them are those of the machine that wrote
+//! them, and load as the same value only on a machine of the same byte order. **Bytes that cross
+//! machines** (a file, the network) use the signed integers of a fixed byte order of
+//! [`puns::num`] as offsets (`i16le`, `i32le`, `i64le`, `i16be`, `i32be`, `i64be`) and its other
+//! numbers as data (`u32le`, `f64be`, `u16bec<V>`, ...): with them the bytes of a region are the
+//! same on every machine. Where the order is the machine's they read as fast as the native ones
+//! (the same instructions on x86-64), elsewhere with a byte swap; they are aligned to 1, so a type
+//! that holds them may be laid out tighter. `Offset` is an `unsafe` trait that a type of yours can
+//! implement as well (see [`Offset`]).
 //!
 //! ```
 //! use nearest::{Near, Offset, Region, flat};

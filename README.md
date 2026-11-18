@@ -167,9 +167,13 @@ The pointers of the root bound the region, and a pointer may only lead to types 
 are at least as wide (checked at compile time), so every distance fits. Building or editing past
 the bound panics, and bytes longer than it do not load.
 
-The offsets of `puns::num` (`i16le`, `i32le`, `i64le` and their big-endian counterparts) and its
-numbers (`u32le`, `f64be`, `u16bec<MAGIC>`, ...) make the bytes of a region the same on every
-machine:
+`i16`, `i32` (the default) and `i64`, like the numbers of Rust, are in the byte order of the
+machine: a region of them loads as the same value only on a machine of the same byte order.
+**Bytes that cross machines** (a file, the network) use the offsets of `puns::num` (`i16le`,
+`i32le`, `i64le` and their big-endian counterparts) and its numbers (`u32le`, `f64be`,
+`u16bec<MAGIC>`, ...), which make the bytes of a region the same on every machine. Where the
+order is the machine's they cost nothing (the same instructions on x86-64); elsewhere, a byte
+swap:
 
 ```rust
 use nearest::puns::num::{i32le, u16le};

@@ -163,6 +163,16 @@ both read the same integer from the same bytes: hence the first item. The contra
 bytes as another offset would. `contract` (`tests/width.rs`) checks the items on values for
 every offset of the tests, on every Miri target.
 
+**Native and fixed byte orders.** The default offset is `i32`, native-endian, like `i16`, `i64`
+and the numbers of Rust: a region of them is the bytes of the machine that wrote it, and loads as
+the same value only on a machine of the same byte order. Bytes that cross machines (files, the
+network) use the offsets and the numbers of `puns::num`, of a fixed byte order; the crate docs and
+the README say so where widths are explained. They read with the same instructions where the
+order is the machine's (`eval` of a tree: 25 instructions with `i32` and with `i32le` on x86-64)
+and with a byte swap elsewhere; they are aligned to 1, so the layout of a type that holds them
+may be tighter (`Expr::Add`'s pointers at 1 and 5, not 4 and 8). The default stays native: a
+fixed order is a choice of the type, made where its bytes leave the machine.
+
 **Valid offsets.** A region holds only the `O`s that `from_isize` makes: `o` is valid when
 `from_isize(o.to_isize())` has the very bytes of `o` (and `|o.to_isize()| <= LIMIT`). By the
 contract, that is the two's complement integer of the width and the byte order of the offset,
