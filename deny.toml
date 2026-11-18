@@ -16,3 +16,5 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# `puns`, until its 0.1.0 is published.
+allow-git = ["https://github.com/uael/puns"]

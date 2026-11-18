@@ -30,7 +30,9 @@ serde = ["alloc", "dep:serde"]
 nearest-derive = { version = "=0.7.2", path = "../nearest-derive" }
 # The layouts and the validity of values: `Pun` for every stored type, the numbers of a fixed
 # byte order (`puns::num`), and `view_ref`. Re-exported as `nearest::puns`.
-puns = { version = "0.1.0", path = "/home/user/mutant/puns" }
+# From its repository until 0.1.0 is published: crates.io takes no git dependency, so the release
+# of `nearest` 0.8 waits for it.
+puns = { version = "0.1.0", git = "https://github.com/uael/puns", rev = "a624feabb27bb522f2ac25b28a5a8dc8256c7f28" }
 serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
