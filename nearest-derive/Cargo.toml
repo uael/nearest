@@ -2,7 +2,7 @@
 name = "nearest-derive"
 version = "0.8.0"
 edition.workspace = true
-rust-version = "1.100"
+rust-version = "1.99"
 license = "Apache-2.0 OR MIT"
 description = "The #[flat] attribute for the nearest crate"
 repository = "https://github.com/uael/nearest"
