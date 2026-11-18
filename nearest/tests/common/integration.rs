@@ -1243,19 +1243,27 @@ fn builders_write_the_compact_image() {
   }
 }
 
+/// Every image with one byte changed, or cut, or longer, is either rejected or read in full as a
+/// value that shows the same and whose copy is as long as those bytes: a corruption is never read
+/// as more than its bytes, nor out of them (Miri). Which corruptions are accepted depends on the bytes of
+/// the target (its widths, its alignment), so only that both outcomes happen is asserted: the
+/// image itself is accepted, a cut one rejected. Under Miri every 127th byte is changed.
 #[test]
 fn small_corruptions_are_rejected_or_harmless() {
   let image = rec().as_bytes().unwrap().to_vec();
-  let (mut accepted, mut rejected) = (0, 0);
-  let mut try_one =
-    |bytes: &[u8]| match view::<Rec, _>(bytes, |v| (format!("{v:?}"), Region::new_in(Store::default(), v))) {
-      // What is accepted is walked in full and is exactly the image of its value.
-      Ok((shown, again)) => {
-        assert_eq!((format!("{:?}", *again), again.byte_len()), (shown, bytes.len()));
-        accepted += 1;
-      }
-      Err(_) => rejected += 1,
-    };
+  // Whether `bytes` are accepted; what is accepted is walked in full and is exactly the image of
+  // its value.
+  let try_one = |bytes: &[u8]| match view::<Rec, _>(bytes, |v| {
+    (format!("{v:?}"), Region::new_in(Store::default(), v))
+  }) {
+    Ok((shown, again)) => {
+      assert_eq!((format!("{:?}", *again), again.byte_len()), (shown, bytes.len()));
+      true
+    }
+    Err(_) => false,
+  };
+  assert!(try_one(&image), "the image is accepted");
+  assert!(!try_one(&image[..image.len() - 1]), "a cut one is not");
   let step = if cfg!(miri) { 127 } else { 1 };
   for i in (0..image.len()).step_by(step) {
     for v in [0u8, 1, 2, 4, 8, 0x7f, 0x80, 0xff, image[i].wrapping_add(1), image[i] ^ 0x10] {
@@ -1267,10 +1275,9 @@ fn small_corruptions_are_rejected_or_harmless() {
   for cut in (0..image.len()).step_by(step) {
     try_one(&image[..cut]);
   }
-  let mut longer = image.clone();
+  let mut longer = image;
   longer.extend_from_slice(&[0; 8]);
   try_one(&longer);
-  assert!(accepted > 0 && rejected > accepted, "{accepted} accepted, {rejected} rejected");
 }
 
 #[test]
