@@ -412,6 +412,10 @@ pub use near::{Near, Offset};
 /// assert!(matches!(&*r, Value::Str(s) if &**s == "hi"));
 /// ```
 pub use nearest_derive::flat;
+/// The crate whose layouts `nearest` declares its pointers with: re-exported, so that the
+/// numbers of a fixed byte order ([`puns::num`]) and [`puns::view_ref`] are those of the
+/// version that `nearest` uses.
+pub use puns;
 pub use region::Region;
 #[cfg(feature = "alloc")]
 pub use storage::Heap;
@@ -457,6 +461,7 @@ pub mod __private {
     bytes::Check,
     edit::Raw,
     flat::{Buf, Sink, fits, make},
+    near::Packed,
   };
 
   /// Names the handle of a variant with several fields, for `XMut`.

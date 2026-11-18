@@ -56,9 +56,9 @@ jobs:
       # A 16-bit target, whose `core` is built from source on the pinned nightly.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-10
+          toolchain: nightly-2026-11-17
           components: rust-src
-      - run: cargo +nightly-2026-02-10 build -p nearest --no-default-features -Zbuild-std=core --target msp430-none-elf
+      - run: cargo +nightly-2026-11-17 build -p nearest --no-default-features -Zbuild-std=core --target msp430-none-elf
 
   fmt:
     name: Format
@@ -68,9 +68,9 @@ jobs:
       # `rustfmt.toml` uses unstable options.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-10
+          toolchain: nightly-2026-11-17
           components: rustfmt
-      - run: cargo +nightly-2026-02-10 fmt --all -- --check
+      - run: cargo +nightly-2026-11-17 fmt --all -- --check
 
   doc:
     name: Documentation
@@ -105,12 +105,12 @@ jobs:
       # Every `cargo` of the job is the nightly one: without this, the first one that is not
       # asked for it (the one of the cache action) installs the toolchain of `rust-toolchain`,
       # which the job does not use.
-      RUSTUP_TOOLCHAIN: nightly-2026-02-10
+      RUSTUP_TOOLCHAIN: nightly-2026-11-17
       # Where Miri keeps the standard library that it builds for the target (cached, below).
       MIRI_SYSROOT: /home/runner/miri-sysroot
       # The sources that it builds it from, which the toolchain installs.
       MIRI_SOURCES: >-
-        /home/runner/.rustup/toolchains/nightly-2026-02-10-x86_64-unknown-linux-gnu/lib/rustlib/src
+        /home/runner/.rustup/toolchains/nightly-2026-11-17-x86_64-unknown-linux-gnu/lib/rustlib/src
     strategy:
       fail-fast: false
       matrix:
@@ -208,7 +208,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-10
+          toolchain: nightly-2026-11-17
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
         with:
@@ -221,7 +221,7 @@ jobs:
           path: |
             ${{ env.MIRI_SYSROOT }}
             ${{ env.MIRI_SOURCES }}
-          key: miri-std-nightly-2026-02-10-${{ matrix.target || 'host' }}
+          key: miri-std-nightly-2026-11-17-${{ matrix.target || 'host' }}
       - run: cargo miri setup ${{ matrix.target && format('--target {0}', matrix.target) }}
       - run: >-
           cargo miri test -p nearest
@@ -241,14 +241,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-10
+          toolchain: nightly-2026-11-17
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo +nightly-2026-02-10 clippy --workspace --features nearest/nightly --tests --examples --benches -- -D warnings
+      - run: cargo +nightly-2026-11-17 clippy --workspace --features nearest/nightly --tests --examples --benches -- -D warnings
       # The trybuild test stays on stable: its expected messages are those of the pinned stable.
-      - run: cargo +nightly-2026-02-10 test -p nearest --features nightly --lib --test integration --test pin_v2
-      - run: cargo +nightly-2026-02-10 test -p nearest --features nightly --doc
-      - run: cargo +nightly-2026-02-10 test -p nearest --no-default-features --features nightly --lib --test no_alloc
+      - run: cargo +nightly-2026-11-17 test -p nearest --features nightly --lib --test integration --test pin_v2
+      - run: cargo +nightly-2026-11-17 test -p nearest --features nightly --doc
+      - run: cargo +nightly-2026-11-17 test -p nearest --no-default-features --features nightly --lib --test no_alloc
 
   deny:
     name: Cargo Deny

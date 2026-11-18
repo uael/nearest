@@ -7,7 +7,9 @@ use std::{
   panic::{AssertUnwindSafe, catch_unwind},
 };
 
-use nearest::{Edit, Error, Heap, Inline, Near, Offset, Pending, Region, flat};
+use nearest::{
+  Edit, Error, Heap, Inline, Near, Offset, Pending, Region, flat, puns::layout::Endian,
+};
 
 #[flat]
 #[derive(Debug, PartialEq)]
@@ -46,7 +48,7 @@ fn ids<O: Offset>(t: &Tree<O>) -> Vec<u64> {
   for k in &t.kids {
     out.extend(ids(k));
   }
-  out.extend(t.next.as_deref().map(ids).unwrap_or_default());
+  out.extend(t.next.as_deref().map_or_default(ids));
   out
 }
 
@@ -233,7 +235,7 @@ widths!(sizes, build_and_read, edit, helpers, layout, bytes);
 
 /// An integer of a given byte order, whatever the target's, and the same without zero.
 macro_rules! offsets {
-  ($($name:ident $non_zero:ident: $int:ty, $to:ident, $from:ident;)*) => {$(
+  ($($name:ident $non_zero:ident: $int:ty, $to:ident, $from:ident, $endian:expr;)*) => {$(
     #[flat]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     #[repr(transparent)]
@@ -256,6 +258,7 @@ macro_rules! offsets {
     #[expect(clippy::cast_possible_truncation, reason = "values within a region fit both")]
     unsafe impl Offset for $name {
       type NonZero = $non_zero;
+      const ENDIAN: Endian = $endian;
       fn from_isize(n: isize) -> Self {
         Self((n as $int).$to())
       }
@@ -266,12 +269,12 @@ macro_rules! offsets {
   )*};
 }
 offsets! {
-  Le16 NonZeroLe16: i16, to_le, from_le;
-  Le32 NonZeroLe32: i32, to_le, from_le;
-  Le64 NonZeroLe64: i64, to_le, from_le;
-  Be16 NonZeroBe16: i16, to_be, from_be;
-  Be32 NonZeroBe32: i32, to_be, from_be;
-  Be64 NonZeroBe64: i64, to_be, from_be;
+  Le16 NonZeroLe16: i16, to_le, from_le, Endian::Little;
+  Le32 NonZeroLe32: i32, to_le, from_le, Endian::Little;
+  Le64 NonZeroLe64: i64, to_le, from_le, Endian::Little;
+  Be16 NonZeroBe16: i16, to_be, from_be, Endian::Big;
+  Be32 NonZeroBe32: i32, to_be, from_be, Endian::Big;
+  Be64 NonZeroBe64: i64, to_be, from_be, Endian::Big;
 }
 
 /// The bytes of a region are the same on every target with offsets of a fixed byte order: a
@@ -463,10 +466,10 @@ fn view_in_words<T: nearest::Flat>(bytes: &[u8]) -> Result<(), Error> {
   nearest::view::<T>(at).map(|_| ())
 }
 
-/// An `i32` whose `to_isize` gives 4 for every integer past its `LIMIT`: within the contract of
-/// `Offset`, which asks for a round trip within `LIMIT` only. Only the `Lenient`s that
-/// `from_isize` makes are valid in a region, so the loaders refuse the others, for an `Offset` of
-/// the user's as for `i64`.
+/// An `i32` of the target whose `LIMIT` is 1 MiB: an integer past it is no distance or length of
+/// a region, although `to_isize` reads it as it is. Only the `Lenient`s that `from_isize` makes
+/// within `LIMIT` are valid in a region, so the loaders refuse the others, for an `Offset` of the
+/// user's as for `i64`.
 #[flat]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -482,15 +485,17 @@ impl From<NonZeroLenient> for Lenient {
   }
 }
 
-// SAFETY: an `i32` of the target, every bit pattern; `as` round-trips within `LIMIT`; only 0 is
-// 0 (past `LIMIT`, 4); `NonZeroLenient` is the same bytes without zero.
+// SAFETY: an `i32` of the target, in its byte order, every bit pattern, read with `as`; `as`
+// round-trips within `LIMIT`; `NonZeroLenient` is the same bytes without zero.
 unsafe impl Offset for Lenient {
   type NonZero = NonZeroLenient;
+  const LIMIT: u64 = 1 << 20;
+  const ENDIAN: Endian = Endian::NATIVE;
   fn from_isize(n: isize) -> Self {
     Self(i32::try_from(n).unwrap())
   }
   fn to_isize(self) -> isize {
-    if u64::from(self.0.unsigned_abs()) > Self::LIMIT { 4 } else { self.0 as isize }
+    self.0 as isize
   }
 }
 
@@ -501,6 +506,6 @@ fn offsets_that_from_isize_does_not_make_are_invalid() {
   assert_eq!(bytes, [&4i32.to_ne_bytes()[..], &[7]].concat());
   assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(bytes).map(|r| **r), Ok(7));
   let mut far = bytes.to_vec();
-  far[..4].copy_from_slice(&i32::MAX.to_ne_bytes()); // read as 4
+  far[..4].copy_from_slice(&((1 << 20) + 4i32).to_ne_bytes()); // past `LIMIT`
   assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(&far).err(), Some(Error::Invalid(0)));
 }

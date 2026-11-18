@@ -20,8 +20,23 @@ note: erroneous constant encountered
   | |   };
   | |___^
 
-note: the above error was encountered while instantiating `fn nearest::near::offset::<Three>`
- --> src/flat.rs
+note: erroneous constant encountered
+ --> $PUNS/src/relative.rs
   |
-  |     offset::<O>();
-  |     ^^^^^^^^^^^^^
+  |       >(<$ty as $crate::SelfRelative>::POINTER);
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+ ::: src/near.rs
+  |
+  | puns::self_relative!(impl[O: Offset] Near<str, O>);
+  | -------------------------------------------------- in this macro invocation
+  |
+  = note: this note originates in the macro `puns::self_relative` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+note: erroneous constant encountered
+  --> tests/compile-fail/offset_of_three_bytes.rs:27:1
+   |
+27 | #[flat]
+   | ^^^^^^^
+   |
+   = note: this note originates in the derive macro `::nearest::puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)

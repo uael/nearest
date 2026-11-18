@@ -11,7 +11,8 @@ use nearest::{Edit, Emit, Flat, Near, flat};
 /// (`inline.rs`) or a storage written here (`user_storage.rs`).
 type Region<T> = nearest::Region<T, Store>;
 
-#[flat]
+// Not a `Pun` type until `Option<Near<..>>` is one: it points to a `Block`.
+#[flat(no_pun)]
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct Func {
   name: Near<str>,

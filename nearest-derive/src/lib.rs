@@ -31,8 +31,9 @@ pub fn flat(
 fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream> {
   // `#[flat(..)]` is read here and left out of the output: on the type it says nothing, on a
   // variant it may rename the constructor, on a field it may make its parameter `impl Into`.
-  syn::meta::parser(read_args(&mut Args::default(), Place::Type)).parse2(attr)?;
-  take_args(&mut input.attrs, Place::Type)?;
+  let mut args = Args::default();
+  syn::meta::parser(read_args(&mut args, Place::Type)).parse2(attr)?;
+  let no_pun = args.no_pun.is_some() || take_args(&mut input.attrs, Place::Type)?.no_pun.is_some();
   let intos = |fields: &mut Fields| -> syn::Result<Vec<bool>> {
     (fields.iter_mut())
       .map(|f| match take_args(&mut f.attrs, Place::Field)?.into {
@@ -435,6 +436,20 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     let repr = if is_enum { parse_quote!(#[repr(u8)]) } else { parse_quote!(#[repr(C)]) };
     input.attrs.insert(0, repr);
   }
+  // The type is a `Pun` type: its layout and its valid values, for `puns` (the crate that
+  // `nearest` re-exports), so that `#[pun(..)]` can be written on it. First, so that the
+  // `#[pun(..)]` attributes of the user come after the derive that reads them. Until `puns` makes
+  // `Option` of a pointer and the signed `NonZero` integers `Pun` types, a type with a field
+  // written `Option<Near<..>>` or `NonZero<iN>` is not one, nor one with `#[flat(no_pun)]`.
+  let blocked = match &input.data {
+    Data::Struct(s) => s.fields.iter().any(|f| is_blocked(&f.ty)),
+    Data::Enum(e) => e.variants.iter().flat_map(|v| &v.fields).any(|f| is_blocked(&f.ty)),
+    Data::Union(_) => false,
+  };
+  if !blocked && !no_pun {
+    input.attrs.insert(0, parse_quote!(#[pun(crate = ::nearest::puns)]));
+    input.attrs.insert(0, parse_quote!(#[derive(::nearest::puns::Pun)]));
+  }
   // A pinned value must keep its pointers, so the type is `Unpin` exactly when its fields are.
   // An impl with a bound on all the fields says so, and makes any impl written by hand a
   // conflict. A type marked `#[pin_v2]` cannot have it: with `pin_ergonomics` on, the compiler
@@ -594,12 +609,20 @@ enum Place {
 struct Args {
   rename: Option<Ident>,
   into: Option<Span>,
+  no_pun: Option<Span>,
 }
 
 /// Reads one argument of `#[flat(..)]` at `place` into `args`, rejecting what does not belong
 /// there.
 fn read_args(args: &mut Args, place: Place) -> impl FnMut(ParseNestedMeta) -> syn::Result<()> {
   move |meta| {
+    if meta.path.is_ident("no_pun") {
+      if place != Place::Type {
+        return Err(meta.error("`no_pun` is for the type: write it there"));
+      }
+      args.no_pun = Some(meta.path.span());
+      return Ok(());
+    }
     if meta.path.is_ident("into") {
       if place != Place::Field {
         return Err(meta.error("`into` is for the parameter of a field: write it there"));
@@ -615,7 +638,7 @@ fn read_args(args: &mut Args, place: Place) -> impl FnMut(ParseNestedMeta) -> sy
     }
     if !meta.path.is_ident("rename") {
       return Err(meta.error(match place {
-        Place::Type => "`#[flat]` takes no arguments",
+        Place::Type => "`#[flat]` takes no arguments but `no_pun`",
         Place::Variant => "unknown argument: a variant takes `#[flat(rename = \"name\")]`",
         Place::Field => "unknown argument: a field takes `#[flat(into)]`",
       }));
@@ -654,6 +677,15 @@ fn near_target(ty: &Type) -> Option<&Type> {
 /// `Option<Near<..>>`.
 fn is_pointer(ty: &Type) -> bool {
   near_target(ty).or_else(|| type_arg(ty, "Option", 1).and_then(near_target)).is_some()
+}
+
+/// Whether `ty` is written `Option<Near<..>>` or `NonZero<iN>`, which `puns` has no layout of yet.
+fn is_blocked(ty: &Type) -> bool {
+  let signed = |ty: &Type| {
+    ["i8", "i16", "i32", "i64"].iter().any(|i| matches!(ty, Type::Path(p) if p.path.is_ident(i)))
+  };
+  type_arg(ty, "Option", 1).and_then(near_target).is_some()
+    || type_arg(ty, "NonZero", 1).is_some_and(signed)
 }
 
 /// `X` if `ty` is written `name<X, ..>`: any path ending in `name` with at least one and at most

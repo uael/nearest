@@ -575,6 +575,94 @@ plain! {
     NonZero<i32> => |b: u32| b != 0, NonZero<i64> => |b: u64| b != 0;
 }
 
+/// `Flat` for the numbers of [`puns::num`], which are byte arrays: of every byte order, and of
+/// given values.
+mod num {
+  use puns::num::{
+    f32be, f32le, f64be, f64le, i16be, i16le, i32be, i32le, i64be, i64le, i128be, i128le, u8c,
+    u8in, u16be, u16bec, u16le, u16lec, u24be, u24bec, u24le, u24lec, u32be, u32bec, u32le, u32lec,
+    u48be, u48bec, u48le, u48lec, u64be, u64bec, u64le, u64lec, u128be, u128bec, u128le, u128lec,
+  };
+
+  use super::{Buf, Check, Error, Flat, Sink, plain_edit};
+
+  macro_rules! any {
+    ($($t:ident[$size:literal])+) => {$(
+      // SAFETY: a byte array (`puns::num`): no pointers, no padding, every bit pattern valid.
+      unsafe impl Flat for $t {
+        type Edit<'e> = Self;
+        const PLAIN: bool = true;
+        const ANY: bool = true;
+        #[cfg(feature = "nightly")]
+        const UNPIN: bool = true;
+        unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<isize>) {
+          // SAFETY: the caller allocated `at` for `Self`.
+          unsafe { sink.write(at, *self) }
+        }
+        unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
+          // SAFETY: forwarded.
+          unsafe { plain_edit(buf, at) }
+        }
+        fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+          ck.get::<$size>(at).map(|_| ())
+        }
+      }
+    )+};
+  }
+
+  any! {
+    u16le[2] u16be[2] u24le[3] u24be[3] u32le[4] u32be[4] u48le[6] u48be[6] u64le[8] u64be[8]
+    u128le[16] u128be[16] i16le[2] i16be[2] i32le[4] i32be[4] i64le[8] i64be[8] i128le[16]
+    i128be[16] f32le[4] f32be[4] f64le[8] f64be[8]
+  }
+
+  macro_rules! checked {
+    ($([$($generics:tt)*] $t:ty: $size:literal;)+) => {$(
+      // SAFETY: bytes of which only some are a value (`puns::num`), without pointers or padding:
+      // `PLAIN`, not `ANY`. `check` accepts the bytes that are a value, as `puns` checks them
+      // (`try_pun`, from the layout of the type: what its constructors make). A `&mut Self` is
+      // given only for a valid `Self`, through which only a `Self` is written.
+      unsafe impl<$($generics)*> Flat for $t {
+        type Edit<'e> = Self;
+        const PLAIN: bool = true;
+        #[cfg(feature = "nightly")]
+        const UNPIN: bool = true;
+        unsafe fn store(&self, sink: &mut Sink, at: usize, _: Option<isize>) {
+          // SAFETY: the caller allocated `at` for `Self`.
+          unsafe { sink.write(at, *self) }
+        }
+        unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
+          // SAFETY: forwarded.
+          unsafe { plain_edit(buf, at) }
+        }
+        fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+          match puns::try_pun::<[u8; $size], Self>(ck.get::<$size>(at)?) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(Error::Invalid(at)),
+          }
+        }
+      }
+    )+};
+  }
+
+  checked! {
+    [const V: u8] u8c<V>: 1;
+    [const MIN: u8, const MAX: u8] u8in<MIN, MAX>: 1;
+    [const V: u16] u16lec<V>: 2;
+    [const V: u16] u16bec<V>: 2;
+    [const V: u32] u24lec<V>: 3;
+    [const V: u32] u24bec<V>: 3;
+    [const V: u32] u32lec<V>: 4;
+    [const V: u32] u32bec<V>: 4;
+    [const V: u64] u48lec<V>: 6;
+    [const V: u64] u48bec<V>: 6;
+    [const V: u64] u64lec<V>: 8;
+    [const V: u64] u64bec<V>: 8;
+    [const V: u128] u128lec<V>: 16;
+    [const V: u128] u128bec<V>: 16;
+  }
+}
+
 // SAFETY: an array is its elements, without padding between them; `Copy` elements have no
 // pointers.
 unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
