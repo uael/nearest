@@ -5,8 +5,8 @@
 //! ```
 //!
 //! and look for their names in the `codegen.s` that it writes under `target/release` (`find target
-//! -name codegen.s`). A view of a value as another
-//! type is the address it is given; the check of a region is what `#[flat]` writes for the type.
+//! -name codegen.s`). A view of a value as another type is the address it is given; the check of
+//! a region is what `#[flat]` writes for the type.
 #![expect(
   clippy::no_mangle_with_rust_abi,
   reason = "the code of the Rust ABI is what is measured; `no_mangle` only names it in the assembly"
