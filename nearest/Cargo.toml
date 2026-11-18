@@ -20,9 +20,6 @@ default = ["alloc"]
 # (`Region<T, Inline<N>>`), and loaded bytes are checked with memory from the caller
 # (`from_bytes_with`, `view_with`).
 alloc = []
-# Nightly Rust only: `#[flat]` marks every type `#[pin_v2]`, so that patterns on a pinned value
-# bind its fields pinned. Crates that use `#[flat]` need no `#![feature]` for it.
-nightly = ["nearest-derive/nightly"]
 # `Serialize` and `Deserialize` for `Region`: its bytes, checked when loaded.
 serde = ["alloc", "dep:serde"]
 

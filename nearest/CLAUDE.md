@@ -61,10 +61,9 @@ the target. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, `
 `core::error::Error`, `Clone`, `Copy`, `PartialEq`, `Eq`. `Pending`: `Default`, `Clone`, `Copy`,
 `Debug`.
 
-Hidden: `nearest::__private::{Raw, Buf, Sink, fits, make, Variant, Pointer}` (and `unpin`
-with `nightly`), the plumbing of the macro; `__private::Packed<T>`, the `NonZero` of the offsets
+Hidden: `nearest::__private::{Raw, Buf, Sink, fits, make, Variant, Pointer}`, the plumbing of the macro; `__private::Packed<T>`, the `NonZero` of the offsets
 of `puns::num`, an associated type that must be public; the hidden items of `Flat` (`PLAIN`, `ANY`, `REACH`,
-`edit`; `UNPIN` with `nightly`; `PLAIN` and `ANY` are read from the layout, `Pun::LAYOUT.is_plain()`
+`edit`; `PLAIN` and `ANY` are read from the layout, `Pun::LAYOUT.is_plain()`
 and `is_free()`, not given) and `Emit` (`emit`, `plain`).
 Nothing else is public; do not add public items.
 
@@ -75,11 +74,6 @@ Features:
   the heap. Without it nothing allocates: a region names its storage, and `as_bytes`,
   `from_bytes_with`, `view_with` and the unchecked loaders remain. The feature is additive: code
   that builds without it names every storage, so it builds with it.
-- `nightly` (forwarded to `nearest-derive`; a nightly compiler for the whole build) makes
-  `#[flat]` mark every type `#[pin_v2]` (see The pinned view). It adds no public item. It uses
-  `specialization` (`nearest`) and `allow_internal_unstable` (`nearest-derive`) inside the two
-  crates; users need no `#![feature]`, except `pin_ergonomics` to write patterns on pinned
-  values. Without it nothing changes.
 - `serde` (implies `alloc`; the optional `serde` dependency, without its `std`) makes a `Region`
   `Serialize` and `Deserialize` as its bytes (see Bytes). It adds no public item.
 
@@ -469,7 +463,7 @@ item of the user's with one of those names is a duplicate definition).
   `Near<X, O>` is a pointer; with a type parameter as `X` the constructor writes
   `<FieldType>::new(x)`. Rejected: lifetime parameters, unions,
   `repr(packed)`, enum `repr`s other than `u8`, explicit discriminants, empty enums, more than 256
-  variants, and `#[pin_v2]` without `nightly`.
+  variants, and `#[pin_v2]`.
 
 ## Moving values
 
@@ -553,29 +547,16 @@ values without pointers, several places are borrowed together through `Pin`:
   its variants, each field `Pin<&'a mut Field>`. `Near::as_pin_mut` pins a target,
   `Near::<[T]>::iter_pin_mut` (also on `ListEdit`) the elements; `core` has
   `Option::as_pin_mut`.
-- `Near` holds a `PhantomPinned`. A stored type is `Unpin` exactly when its fields are: without
-  `nightly` the macro emits `impl Unpin for X where __NearestFields<'a, ..>: Unpin` (all field
-  types), so a hand-written impl conflicts. A `Pin<&mut T>` thus gives `&mut T` only for data
+- `Near` holds a `PhantomPinned`. A stored type is `Unpin` exactly when its fields are: the
+  macro emits `impl Unpin for X where __NearestFields<'a, ..>: Unpin` (all field types), so a
+  hand-written impl conflicts. A `Pin<&mut T>` thus gives `&mut T` only for data
   without pointers (I2). A `Region` is `Unpin` as its storage is (it owns its buffer).
-- Without `nightly`, `#[flat]` rejects a `#[pin_v2]` it sees, since the type gets that impl; a
-  `#[pin_v2]` added by another macro after `#[flat]` meets the impl, so soundness does not
-  depend on the macro seeing it.
-- With `nightly`, `#[flat]` adds `#[pin_v2]` (through `#[allow_internal_unstable(pin_ergonomics)]`
-  on the macro; one written by hand is kept, not repeated), so in a crate with `pin_ergonomics`
-  patterns project: `match e.pin() { Expr::Add(a, b) => .. }`. A `#[pin_v2]` type cannot have
-  the bounded impl: with `pin_ergonomics` the compiler rejects every `Unpin` impl of it (the
-  macro's too), so the macro writes none and the compiler keeps the rule there. Without
-  `pin_ergonomics` the compiler accepts a hand-written impl, so the library checks:
-  `nearest/src/unpin.rs` (built only with the feature; `specialization`) defines
-  `__private::unpin` and `pinned`. The hidden `Flat::UNPIN` ("every field is `Unpin`": `true`
-  for plain types, `false` for pointers without looking at the target, so recursive types do
-  not cycle; `__private::unpin::<Self>(true & F1::UNPIN & ..)` for generated types, `&` so every
-  field is evaluated) fails the build if a type is `Unpin` while a field is not. `Raw::pin`,
-  `Near::as_pin_mut` and `iter_pin_mut` evaluate it (`unpin::pinned::<T>()`), so a hand-written
-  impl on a type holding a `Near` fails where it, or a type holding it by value, is pinned. Like
-  `fits`, it fails a build that generates code, not `cargo check`. An impl on data without
-  pointers is accepted, and harmless. `tests/pin_v2.rs` is built only with the feature; its
-  `compile_fail` doc tests are on `unpin.rs`, including the compiler's rule.
+- `#[flat]` rejects a `#[pin_v2]` it sees, since the type gets that impl, which a `#[pin_v2]`
+  type cannot have; a `#[pin_v2]` added by another macro after `#[flat]` meets the impl, and the
+  compiler rejects the two, so soundness does not depend on the macro seeing it. Patterns that
+  project a pinned value (`pin_ergonomics`, nightly) wait for that feature to be stable: until
+  then `project` does what they would. 0.7 had a feature `nightly` for them, which took
+  `specialization` to check by hand what the compiler does for a `#[pin_v2]` type; 0.8 has none.
 - `Pin::set` assigns a value held by value, which has no pointer (I1): the place then holds a
   complete value, and what it pointed to is garbage, as after `set`.
 
@@ -770,7 +751,6 @@ Files of `src/`:
 - `region.rs`: `Region<T, S>`: `attach`, `base`, `copy_of`, constructors, `edit`, `as_bytes`,
   `from_bytes*`, trait impls, `serde` impls.
 - `storage.rs`: `Storage` and its contract, `Heap`, `Inline<N>`.
-- `unpin.rs`: `nightly` only, `unpin` and `pinned` (see The pinned view).
 
 Mechanics:
 
@@ -806,7 +786,7 @@ Mechanics:
   and checks the rules at load; `no_alloc` also
   without `alloc`; `serde` with that feature; `compile_fail` (trybuild) holds the compile-time
   guarantees (`puns_*.rs`: what `puns` refuses of the pointers of a region). Miri runs `--lib`
-  and the tests above (not `serde`, `compile_fail`, `pin_v2` but with `nightly`) on x86-64, and
+  and the tests above (not `serde`, `compile_fail`) on x86-64, and
   on `i686` and `s390x` what the target can change (the `miri` job of `ci.yml`): the tests assume nothing of the target (sizes and alignments are
   written from `size_of`, `align_of` and `to_ne_bytes`).
 

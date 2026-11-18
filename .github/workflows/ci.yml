@@ -136,11 +136,10 @@ jobs:
             more: >-
               --test width -- --exact the_size_limit_panics_and_leaves_a_valid_region
               capacity_past_the_size_limit_is_not_used bytes_past_the_size_limit_are_invalid
-          # Without `alloc`, and the `nightly` feature, which adds `tests/pin_v2.rs`.
+          # Without `alloc`.
           - where: x86-64
-            name: features
+            name: no alloc
             tests: --no-default-features --test no_alloc
-            more: --features nightly --test pin_v2
           - where: x86-64
             name: views, corpus, ir
             tests: --test views --test corpus
@@ -283,25 +282,6 @@ jobs:
         run: >-
           cargo miri test -p nearest
           ${{ matrix.target && format('--target {0}', matrix.target) }} ${{ matrix.more }}
-
-  nightly:
-    name: Nightly feature
-    runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -D warnings
-      RUSTDOCFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-11-17
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo +nightly-2026-11-17 clippy --workspace --features nearest/nightly --tests --examples --benches -- -D warnings
-      # The trybuild test stays on stable: its expected messages are those of the pinned stable.
-      - run: cargo +nightly-2026-11-17 test -p nearest --features nightly --lib --test integration --test pin_v2
-      - run: cargo +nightly-2026-11-17 test -p nearest --features nightly --doc
-      - run: cargo +nightly-2026-11-17 test -p nearest --no-default-features --features nightly --lib --test no_alloc
 
   deny:
     name: Cargo Deny

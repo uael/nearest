@@ -14,10 +14,6 @@ categories = ["data-structures"]
 [lib]
 proc-macro = true
 
-[features]
-# Enabled by `nearest/nightly`: `#[flat]` marks every type `#[pin_v2]`.
-nightly = []
-
 [dependencies]
 syn = { version = "2", features = ["full"] }
 quote = "1"

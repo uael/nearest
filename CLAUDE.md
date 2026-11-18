@@ -20,11 +20,6 @@ cargo bench --bench region           # Benchmarks (criterion)
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p nearest --lib --test integration --test inline --test user_storage --test no_alloc --test width  # Miri
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p nearest --lib --test integration --test inline --test user_storage --test no_alloc --test width --target i686-unknown-linux-gnu  # Miri, 32 bits (a `u64` aligned to 4); also `--target s390x-unknown-linux-gnu` (big-endian)
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p nearest --no-default-features --test no_alloc  # Miri, no `alloc`
-MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p nearest --features nightly --test pin_v2  # Miri, `nightly` feature
-RUSTFLAGS="-D warnings" cargo +nightly-2026-11-17 test -p nearest --features nightly --lib --test integration --test pin_v2  # The `nightly` feature
-RUSTFLAGS="-D warnings" cargo +nightly-2026-11-17 test -p nearest --features nightly --doc  # Its doc tests
-cargo +nightly-2026-11-17 clippy --workspace --features nearest/nightly --tests --examples --benches -- -D warnings  # Its clippy
-RUSTFLAGS="-D warnings" cargo +nightly-2026-11-17 test -p nearest --no-default-features --features nightly --lib --test no_alloc  # The `nightly` feature without `alloc`
 cargo test -p nearest --no-default-features --lib --test no_alloc  # Without `alloc`: no heap
 cargo clippy -p nearest --no-default-features --lib --test no_alloc -- -D warnings  # Its clippy (in `cargo xtask lint`)
 cargo build -p nearest --no-default-features --target thumbv7em-none-eabihf  # A target without std or allocator
@@ -41,8 +36,8 @@ The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`; `rus
 1.100, that of `puns`). Without `alloc`, CI also builds for `thumbv7em-none-eabihf`, a target
 without `std`, and for `msp430-none-elf`, a 16-bit one. A pinned nightly (`nightly-2026-11-17`,
 the one of `puns`) is used by `cargo xtask fmt` (`rustfmt.toml` uses unstable options), by Miri,
-to build `core` for the 16-bit target, and to build and test the `nightly` feature. Generate trybuild `.stderr`
-files with the pinned stable; the trybuild test runs on stable only.
+and to build `core` for the 16-bit target. Generate trybuild `.stderr` files with the pinned
+stable; the trybuild test runs on stable only.
 
 What `unsafe` code assumes of the target (the alignment of a primitive, the width of `usize` and
 `isize`, the byte order) is a `const` assertion where it is used, or a constant derived from the
@@ -77,7 +72,7 @@ any storage. Every pointer is a 4-byte offset relative to its own address, so `C
 what is left out and why): read it before changing the library, and keep it, the crate docs
 and `README.md` in step with the code.
 
-- **`nearest/`** — the library (`#![no_std]`; default feature `alloc`, opt-in `nightly`)
+- **`nearest/`** — the library (`#![no_std]`; default feature `alloc`, opt-in `serde`)
 - **`nearest-derive/`** — the `#[flat]` attribute, re-exported as `nearest::flat`
 - **`xtask/`** — dev automation (fmt, lint)
 

@@ -1,5 +1,0 @@
-error: `#[pin_v2]` on a `#[flat]` type needs the `nightly` feature of `nearest`, which adds it by itself
- --> tests/compile-fail/flat_pin_v2_without_feature.rs:6:1
-  |
-6 | #[pin_v2]
-  | ^^^^^^^^^

@@ -162,11 +162,6 @@
 //! assert!(matches!(&*r, Expr::Add(a, _) if matches!(**a, Expr::Lit(11))));
 //! ```
 //!
-//! On nightly Rust, with the `nightly` feature, every `#[flat]` type is also marked `#[pin_v2]`
-//! and is projected by patterns, as `project` does, in a crate that enables `pin_ergonomics`:
-//! `match e { Expr::Add(a, b) => .. }`. Without the feature, `#[flat]` rejects a `#[pin_v2]`
-//! written on the type.
-//!
 //! # Pointer widths
 //!
 //! A `Near<T>` keeps its distance in an `i32`, so a region holds at most 2 GiB. The second
@@ -260,17 +255,6 @@
 //! assert_eq!(Region::<Span>::from_bytes(bytes).err(), Some(Error::Invalid(0)));
 //! assert!(Region::<Span>::from_bytes(Region::new(Span::new(1, 2)).as_bytes().unwrap()).is_ok());
 //! ```
-//!
-//! # The `nightly` feature
-//!
-//! The opt-in cargo feature `nightly` needs a nightly compiler for the whole build. With it
-//! `#[flat]` marks every type `#[pin_v2]`, and gives it no `Unpin` impl of its own. It uses
-//! `specialization` and `allow_internal_unstable` inside this crate and `nearest-derive`; crates
-//! that use `#[flat]` need no `#![feature]` for it, only code that writes a pattern on a pinned
-//! value needs `pin_ergonomics`. An `Unpin` impl written by hand for a type that holds a `Near`
-//! would give a `&mut` to it through `Pin::get_mut`: in a crate with `pin_ergonomics` the
-//! compiler rejects it, and in one without, the build fails where the type, or a type holding
-//! it by value, is pinned (a build that generates code: `cargo check` does not report it).
 //!
 //! # Bytes
 //!
@@ -381,12 +365,6 @@
 //! that panics.
 #![no_std]
 #![deny(missing_docs)]
-// The `nightly` feature: `unpin` asks whether a type implements `Unpin` (see `mod unpin`).
-#![cfg_attr(feature = "nightly", feature(specialization))]
-#![cfg_attr(
-  feature = "nightly",
-  expect(incomplete_features, reason = "`specialization`, only to ask whether a type is `Unpin`")
-)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -397,8 +375,6 @@ mod flat;
 mod near;
 mod region;
 mod storage;
-#[cfg(feature = "nightly")]
-mod unpin;
 
 #[cfg(feature = "alloc")]
 pub use bytes::view;
@@ -438,8 +414,8 @@ pub use near::{Near, Offset};
 ///
 /// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
 /// `repr`s other than `u8`, explicit discriminants, empty enums, enums of more than 256
-/// variants, variants whose constructors would have the same name (`rename` one) and, without
-/// the `nightly` feature, `#[pin_v2]` are rejected. `#[flat(..)]` on a variant or a field is
+/// variants, variants whose constructors would have the same name (`rename` one) and `#[pin_v2]`
+/// are rejected. `#[flat(..)]` on a variant or a field is
 /// read and removed. A variant with fields takes `rename = "name"`, a new name for its
 /// constructor, which no other constructor and not `project` may have; a field takes `into`,
 /// unless it is written as a pointer (`Near<..>`, `Option<Near<..>>`).
@@ -531,8 +507,6 @@ pub type Edit<'e, T> = <T as Flat>::Edit<'e>;
 /// Plumbing for the code [`#[flat]`](flat) generates. Not public API.
 #[doc(hidden)]
 pub mod __private {
-  #[cfg(feature = "nightly")]
-  pub use crate::unpin::unpin;
   use crate::{Emit, Flat, Near, Offset};
   pub use crate::{
     edit::Raw,

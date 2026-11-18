@@ -412,13 +412,6 @@ pub unsafe trait Flat: Pun + Sized + 'static {
   #[doc(hidden)]
   const REACH: u64 = u64::MAX;
 
-  /// Every field is `Unpin` (`nightly` feature). Evaluating it checks, for `Self` and for every
-  /// type it holds by value, that `Unpin` is not implemented by hand for a type holding a
-  /// `Near`; see `__private::unpin`.
-  #[cfg(feature = "nightly")]
-  #[doc(hidden)]
-  const UNPIN: bool;
-
   /// The handle of the `Self` at `at`.
   ///
   /// # Safety
@@ -728,8 +721,6 @@ macro_rules! plain {
     // SAFETY: primitive values have no pointers and no padding (their layouts say so).
     unsafe impl Flat for $t {
       type Edit<'e> = Self;
-      #[cfg(feature = "nightly")]
-      const UNPIN: bool = true;
       unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
         // SAFETY: forwarded.
         unsafe { plain_edit(buf, at) }
@@ -761,8 +752,6 @@ mod num {
       // `&mut Self` is given only for a valid `Self`, through which only a `Self` is written.
       unsafe impl<$($generics)*> Flat for $t {
         type Edit<'e> = Self;
-        #[cfg(feature = "nightly")]
-        const UNPIN: bool = true;
         unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
           // SAFETY: forwarded.
           unsafe { plain_edit(buf, at) }
@@ -796,8 +785,6 @@ mod num {
 // pointers.
 unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
   type Edit<'e> = Self;
-  #[cfg(feature = "nightly")]
-  const UNPIN: bool = T::UNPIN;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
     fits::<Self>();
     // SAFETY: forwarded.
@@ -809,10 +796,6 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
 unsafe impl<T: Flat, O: Offset> Flat for Near<T, O> {
   type Edit<'e> = T::Edit<'e>;
   const REACH: u64 = O::LIMIT;
-  // A pointer is never `Unpin`; its target is checked when it is pinned, not here, so that
-  // recursive types do not cycle.
-  #[cfg(feature = "nightly")]
-  const UNPIN: bool = false;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut T::Edit<'e> {
     fits_behind::<T, O>();
     // SAFETY: a `Near` at `at` points to a valid `T`, owned by it alone.
@@ -824,10 +807,6 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<T, O> {
 unsafe impl<T: Flat, O: Offset> Flat for Near<[T], O> {
   type Edit<'e> = ListEdit<'e, T, O>;
   const REACH: u64 = O::LIMIT;
-  // A pointer is never `Unpin`; its target is checked when it is pinned, not here, so that
-  // recursive types do not cycle.
-  #[cfg(feature = "nightly")]
-  const UNPIN: bool = false;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut ListEdit<'e, T, O> {
     fits_behind::<T, O>();
     // SAFETY: forwarded.
@@ -839,10 +818,6 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<[T], O> {
 unsafe impl<O: Offset> Flat for Near<str, O> {
   type Edit<'e> = StrEdit<'e, O>;
   const REACH: u64 = O::LIMIT;
-  // A pointer is never `Unpin`; its target is checked when it is pinned, not here, so that
-  // recursive types do not cycle.
-  #[cfg(feature = "nightly")]
-  const UNPIN: bool = false;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut StrEdit<'e, O> {
     // SAFETY: forwarded.
     unsafe { StrEdit::new(Raw::new(buf, at)) }
@@ -853,10 +828,6 @@ unsafe impl<O: Offset> Flat for Near<str, O> {
 unsafe impl<T: Flat, O: Offset> Flat for Option<Near<T, O>> {
   type Edit<'e> = OptionEdit<'e, T, O>;
   const REACH: u64 = O::LIMIT;
-  // A pointer is never `Unpin`; its target is checked when it is pinned, not here, so that
-  // recursive types do not cycle.
-  #[cfg(feature = "nightly")]
-  const UNPIN: bool = false;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut OptionEdit<'e, T, O> {
     fits_behind::<T, O>();
     // SAFETY: forwarded.

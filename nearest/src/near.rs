@@ -447,8 +447,6 @@ impl<T: Flat, O: Offset> Near<T, O> {
   /// ```
   #[must_use]
   pub fn as_pin_mut(self: Pin<&mut Self>) -> Pin<&mut T> {
-    #[cfg(feature = "nightly")]
-    crate::unpin::pinned::<T>();
     // SAFETY: the target is not moved while the pointer is pinned: a pinned view borrows the
     // handle it comes from, so nothing can grow the buffer; and a `Near` owns its target alone.
     unsafe { Pin::new_unchecked(&mut *Pin::get_unchecked_mut(self).target_mut().cast::<T>()) }
@@ -490,8 +488,6 @@ impl<T: Flat, O: Offset> Near<[T], O> {
   /// ```
   #[must_use = "the iterator does nothing unless it is used"]
   pub fn iter_pin_mut(self: Pin<&mut Self>) -> impl ExactSizeIterator<Item = Pin<&mut T>> {
-    #[cfg(feature = "nightly")]
-    crate::unpin::pinned::<T>();
     // SAFETY: as for `Near::as_pin_mut`; the elements are disjoint and stay where they are.
     unsafe {
       (Pin::get_unchecked_mut(self).list_mut::<T>().iter_mut())

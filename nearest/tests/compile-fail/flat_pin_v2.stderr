@@ -1,0 +1,5 @@
+error: a `#[flat]` type cannot be `#[pin_v2]`: it is `Unpin` exactly when its fields are, by an impl that such a type cannot have
+ --> tests/compile-fail/flat_pin_v2.rs:6:1
+  |
+6 | #[pin_v2]
+  | ^^^^^^^^^

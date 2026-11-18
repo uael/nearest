@@ -1,11 +1,5 @@
 //! The `#[flat]` attribute of the [`nearest`](https://docs.rs/nearest) crate, re-exported as
 //! `nearest::flat`. Use it from there.
-// The `nightly` feature: `#[flat]` writes `#[pin_v2]`, which crates using it need not enable.
-#![cfg_attr(feature = "nightly", feature(allow_internal_unstable))]
-#![cfg_attr(
-  feature = "nightly",
-  expect(internal_features, reason = "`allow_internal_unstable(pin_ergonomics)` on `flat`")
-)]
 
 use std::mem;
 
@@ -19,7 +13,6 @@ use syn::{
 
 /// Makes a struct or enum storable in a `nearest` region. See `nearest::flat`.
 #[proc_macro_attribute]
-#[cfg_attr(feature = "nightly", allow_internal_unstable(pin_ergonomics))]
 pub fn flat(
   attr: proc_macro::TokenStream,
   item: proc_macro::TokenStream,
@@ -58,18 +51,14 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     Data::Struct(s) => into.push(intos(&mut s.fields)?),
     Data::Union(_) => {}
   }
-  // Patterns project a pinned value only if its type is `#[pin_v2]`, and such a type cannot have
-  // the bounded `Unpin` impl written below. Only the `nightly` feature, whose guard replaces
-  // that impl, may go without it, so a `#[pin_v2]` seen without the feature is an error. One
-  // that another macro adds after this one runs meets the bounded impl instead, and with it a
-  // hand-written impl conflicts (or the compiler rejects both, with `pin_ergonomics`).
-  let pin_v2 = input.attrs.iter().find(|a| a.path().is_ident("pin_v2"));
-  if let (Some(a), false) = (pin_v2, cfg!(feature = "nightly")) {
-    let msg = "`#[pin_v2]` on a `#[flat]` type needs the `nightly` feature of `nearest`, which \
-               adds it by itself";
+  // A type marked `#[pin_v2]` cannot have the bounded `Unpin` impl written below, which a pinned
+  // value of a type that holds a pointer needs. One that another macro adds after this one runs
+  // meets the impl instead, and the compiler rejects the two.
+  if let Some(a) = input.attrs.iter().find(|a| a.path().is_ident("pin_v2")) {
+    let msg = "a `#[flat]` type cannot be `#[pin_v2]`: it is `Unpin` exactly when its fields are, \
+               by an impl that such a type cannot have";
     return Err(Error::new_spanned(a, msg));
   }
-  let pin_v2 = pin_v2.is_some();
   let is_enum = matches!(input.data, Data::Enum(_));
   // Whether the layout is already fixed: `u8` for an enum, `C` or `transparent` for a struct.
   let mut has_repr = false;
@@ -429,19 +418,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   input.attrs.insert(0, parse_quote!(#[derive(::nearest::puns::Pun)]));
   // A pinned value must keep its pointers, so the type is `Unpin` exactly when its fields are.
   // An impl with a bound on all the fields says so, and makes any impl written by hand a
-  // conflict. A type marked `#[pin_v2]` cannot have it: with `pin_ergonomics` on, the compiler
-  // rejects every `Unpin` impl of such a type, this one too, and a hand-written one with it.
-  // So with the `nightly` feature, where every type is `#[pin_v2]` (a hand-written one is kept,
-  // not repeated), the macro writes none, and `UNPIN` below rejects a hand-written impl when
-  // the type is first pinned, also in crates without `pin_ergonomics`. Without the feature it
-  // is always written.
-  if cfg!(feature = "nightly") && !pin_v2 {
-    input.attrs.push(parse_quote!(#[pin_v2]));
-  }
-  let unpin = if cfg!(feature = "nightly") {
-    quote!()
-  } else {
-    // With the bounds the user wrote, and no others.
+  // conflict. With the bounds the user wrote, and no others.
+  let unpin = {
     let mut fields_g = input.generics.clone();
     fields_g.params.insert(0, GenericParam::Lifetime(parse_quote!(#lt)));
     let mut unpin_g = fields_g.clone();
@@ -469,14 +447,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       };
     }
   });
-  // With the `nightly` feature: every field is `Unpin`, and, checked on evaluation, so is this
-  // type only if it should be. `&` and not `&&`, so that every field is checked.
-  let unpin_const = cfg!(feature = "nightly").then(|| {
-    quote! {
-      const UNPIN: bool =
-        #np::unpin::<Self>(true #(& <#field_tys as ::nearest::Flat>::UNPIN)*);
-    }
-  });
   let (pin_decl, project) = pinned.map_or((None, None), |(decl, body)| {
     let project = quote! {
       /// The fields of a pinned value, pinned, all at once.
@@ -497,7 +467,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       unsafe impl #impl_g ::nearest::Flat for #self_ty #where_c {
         type Edit<#e> = #handle #h_ty;
         #reach
-        #unpin_const
         unsafe fn edit<#lt, #e: #lt>(
           #buf: *mut #np::Buf,
           #at: usize,

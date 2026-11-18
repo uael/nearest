@@ -2036,8 +2036,7 @@ mod pinned {
     }
   }
 
-  /// Data without pointers stays `Unpin`, also with the `nightly` feature, where every type is
-  /// `#[pin_v2]` and has no `Unpin` impl from the macro: a pin of it gives a `&mut`.
+  /// Data without pointers stays `Unpin`: a pin of it gives a `&mut`.
   #[test]
   fn plain_data_is_unpin() {
     const fn unpin<T: Unpin>() {}

@@ -145,10 +145,8 @@ bump(r.edit().pin(), 10);
 ```
 
 Nothing is pushed, built or moved through a pin; the handle is borrowed meanwhile and edits
-again afterwards. On nightly Rust, with the `nightly` feature, `#[flat]` marks every type
-`#[pin_v2]`, and in a crate that enables `pin_ergonomics` a pattern does what `project` does:
-`match e { Expr::Add(a, b) => .. }`. The feature is the way to that mark: without it, `#[flat]`
-rejects a `#[pin_v2]` written on the type.
+again afterwards. A `#[flat]` type is `Unpin` exactly when its fields are (an impl that the macro
+writes, so a hand-written one conflicts), and cannot be `#[pin_v2]`.
 
 ## Pointer widths
 
@@ -277,13 +275,6 @@ crate needs no allocator: regions live in other storage, and `Heap` (so `Region<
 `from_bytes` and `view` are not available. `as_bytes` is, and so are `from_bytes_with` and
 `view_with`, which check loaded bytes with memory from the caller: a slice of `Pending`, of
 which `bytes.len() / 4` entries are always enough (`/ 2` with 2-byte pointers).
-
-The opt-in feature `nightly` needs a nightly compiler for the whole build: `#[flat]` then
-marks every type `#[pin_v2]`. It uses `specialization` and `allow_internal_unstable` inside
-`nearest` and `nearest-derive`; crates that use `#[flat]` need no `#![feature]` for it, only
-code that writes a pattern on a pinned value needs `pin_ergonomics`. Under it, an `Unpin`
-impl written by hand for a type that holds a `Near` fails the build where the type is pinned
-(a build that generates code: `cargo check` does not report it).
 
 The opt-in feature `serde` (with `alloc`) makes a `Region` `Serialize` and `Deserialize` as its
 bytes, checked when loaded, like `as_bytes` and `from_bytes`.
