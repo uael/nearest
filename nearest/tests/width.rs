@@ -72,6 +72,65 @@ fn sizes<O: Offset>() {
   assert_eq!(size_of::<Tree<O>>(), (8 + 3 * w).next_multiple_of(align));
 }
 
+/// The integer that `bytes` are in two's complement, in the byte order `endian`.
+fn decode(bytes: &[u8], endian: Endian) -> i64 {
+  let last = if endian == Endian::Little { bytes.len() - 1 } else { 0 };
+  let mut wide = [if bytes[last] & 0x80 == 0 { 0 } else { 0xff }; 8];
+  for (i, byte) in bytes.iter().enumerate() {
+    wide[if endian == Endian::Little { i } else { bytes.len() - 1 - i }] = *byte;
+  }
+  i64::from_le_bytes(wide)
+}
+
+/// The bytes of an `O`.
+const fn bytes_of<O: Offset>(o: &O) -> &[u8] {
+  // SAFETY: an `O` is `size_of::<O>()` initialized bytes, without padding (`Offset`).
+  unsafe { std::slice::from_raw_parts(std::ptr::from_ref(o).cast::<u8>(), size_of::<O>()) }
+}
+
+/// The contract of `Offset`, on values: the bytes are the integer in two's complement in the byte
+/// order `ENDIAN` says, which `to_isize` reads; a round trip within `LIMIT`; zero is the zero
+/// bytes and nothing else is; the `NonZero` is the same bytes, and `None` of it is zero. This is
+/// what `puns` relies on when it reads a pointer of one offset as a pointer of another.
+fn contract<O: Offset>() {
+  let w = size_of::<O>();
+  let limit = i64::try_from(O::LIMIT).unwrap();
+  let (least, most) = (i64::MIN >> (64 - 8 * w), i64::MAX >> (64 - 8 * w));
+  let mut samples = vec![0, 1, -1, 2, 127, 128, 255, 256, -255, -256, 0x1234, -0x1234, limit];
+  samples.extend([-limit, limit - 1, 8 - limit]);
+  samples.extend((0..63).map(|bit| (1i64 << bit) & limit));
+  for n in samples {
+    let Ok(wanted) = isize::try_from(n) else { continue };
+    let o = O::from_isize(wanted);
+    assert_eq!(o.to_isize(), wanted, "{n} does not round trip");
+    let bytes = bytes_of(&o);
+    assert_eq!(decode(bytes, O::ENDIAN), n, "{n} is {bytes:?}");
+    assert_eq!(bytes.iter().all(|byte| *byte == 0), n == 0);
+    assert_eq!(non_zero::<O>(bytes).is_some(), n != 0);
+    if let Some(stored) = non_zero::<O>(bytes) {
+      assert_eq!(bytes_of(&stored.into()), bytes);
+    }
+  }
+  // Every integer of the width, as `to_isize` reads it: also those a region never holds.
+  for n in [least, most, least + 1, most - 1] {
+    let mut bytes = n.to_le_bytes()[..w].to_vec();
+    if O::ENDIAN == Endian::Big {
+      bytes.reverse();
+    }
+    // SAFETY: `size_of::<O>()` bytes, any of which are an `O`.
+    let o = unsafe { bytes.as_ptr().cast::<O>().read_unaligned() };
+    assert_eq!(o.to_isize(), n as isize, "{bytes:?}");
+  }
+}
+
+/// The `Option<O::NonZero>` whose bytes are `bytes`.
+fn non_zero<O: Offset>(bytes: &[u8]) -> Option<O::NonZero> {
+  assert_eq!((bytes.len(), size_of::<Option<O::NonZero>>()), (size_of::<O>(), size_of::<O>()));
+  // SAFETY: an `Option` of the `NonZero` of an offset has the size of the offset, and every bit
+  // pattern of that size is one (`None` is zero): the contract of `Offset`.
+  unsafe { bytes.as_ptr().cast::<Option<O::NonZero>>().read_unaligned() }
+}
+
 fn build_and_read<O: Offset>() {
   let r = tree::<O>();
   assert_eq!(ids(&r), [1, 2, 3, 4, 5]);
@@ -226,9 +285,16 @@ macro_rules! widths {
     mod be16 { $(#[test] fn $test() { super::$test::<super::Be16>() })* }
     mod be32 { $(#[test] fn $test() { super::$test::<super::Be32>() })* }
     mod be64 { $(#[test] fn $test() { super::$test::<super::Be64>() })* }
+    // The offsets of a fixed byte order of `puns::num`, which `nearest` implements.
+    mod i16le { $(#[test] fn $test() { super::$test::<nearest::puns::num::i16le>() })* }
+    mod i32le { $(#[test] fn $test() { super::$test::<nearest::puns::num::i32le>() })* }
+    mod i64le { $(#[test] fn $test() { super::$test::<nearest::puns::num::i64le>() })* }
+    mod i16be { $(#[test] fn $test() { super::$test::<nearest::puns::num::i16be>() })* }
+    mod i32be { $(#[test] fn $test() { super::$test::<nearest::puns::num::i32be>() })* }
+    mod i64be { $(#[test] fn $test() { super::$test::<nearest::puns::num::i64be>() })* }
   };
 }
-widths!(sizes, build_and_read, edit, helpers, layout, bytes);
+widths!(sizes, contract, build_and_read, edit, helpers, layout, bytes);
 
 // ---------------------------------------------------------------------------------------------
 // Offsets of the user's: the byte order of a region's own integers
