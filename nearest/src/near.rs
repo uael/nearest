@@ -121,16 +121,26 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// assert!(bytes.windows(6).any(|w| w == [2, 0, 0, 0, b'a', b'b']));
 /// ```
 ///
+/// # Valid offsets
+///
+/// A region holds only the `O`s that `from_isize` makes: an `O` is valid in a region when
+/// `from_isize(o.to_isize())` has the very bytes of `o`. The loaders refuse any other, for every
+/// `Offset`: one whose integer does not fit `isize` (an `i64` of 2^32 + 8 on a 32-bit target, an
+/// `i32` of 2^16 on a 16-bit one), which `to_isize` would truncate, or one that is not how
+/// `from_isize` writes its integer. So `to_isize` is only trusted where it round-trips, and may do
+/// as it likes elsewhere (`as` truncates), but should not panic: the loaders call it on the bytes
+/// they check, and would panic instead of returning an error.
+///
 /// # Safety
 ///
 /// A region reads and writes the distances and lengths of an `O` only through `from_isize` and
 /// `to_isize`, and reads stored ones as values of `Self` and [`NonZero`](Offset::NonZero) made of
-/// bytes it checked or wrote. It trusts that:
+/// bytes it checked (see Valid offsets) or wrote. It trusts that:
 ///
 /// - **Every bit pattern** of `size_of::<Self>()` bytes is a valid `Self`, and `Self` has no
 ///   padding.
-/// - **Round trip.** `from_isize(n).to_isize() == n` for every `n` from `-(LIMIT as isize)` to
-///   `LIMIT as isize`.
+/// - **Round trip.** `from_isize(n).to_isize() == n` for every `n: isize` from `-LIMIT` to
+///   `LIMIT` (on a target whose `isize` is narrower than `LIMIT`, every `n` up to `isize::MAX`).
 /// - **Zero.** `from_isize(0)` is all zero bytes, and it is the only `Self` whose `to_isize()` is
 ///   0.
 /// - **`NonZero`** is `Self` without zero: its valid values are the bit patterns of `Self` other
@@ -138,7 +148,7 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 ///   has the size of `Self` with `None` all zero bytes (as for a `#[repr(transparent)]` wrapper
 ///   of a [`core::num::NonZero`]), and `Into<Self>` keeps the bytes.
 /// - **Plain functions.** `from_isize` and `to_isize` depend only on their argument, never panic
-///   for the values above, and do nothing else.
+///   for the values above (`from_isize` is only called with them), and do nothing else.
 ///
 /// What can be checked when compiling is checked where a region uses `O`: `Self` is 2, 4 or 8
 /// bytes, `NonZero` and `Option<NonZero>` have its size, `NonZero` has its alignment, and
@@ -176,19 +186,34 @@ pub const fn offset<O: Offset>() {
   };
 }
 
-/// The `O` whose bytes start `bytes`, if there are enough.
+/// The `O` whose bytes start `bytes`, if there are enough and it is valid in a region: what
+/// `from_isize` makes of its integer, which is within `LIMIT` of 0 (see Valid offsets on
+/// [`Offset`]). Any other would not be read back as written: `to_isize` may truncate it (an `i64`
+/// on a 32-bit target), and only those `O`s round-trip.
 pub fn read<O: Offset>(bytes: &[u8]) -> Option<O> {
   offset::<O>();
   let bytes = bytes.get(..size_of::<O>())?;
   // SAFETY: `size_of::<O>()` initialized bytes, any of which make an `O` (`Offset`'s contract).
-  Some(unsafe { bytes.as_ptr().cast::<O>().read_unaligned() })
+  let o = unsafe { bytes.as_ptr().cast::<O>().read_unaligned() };
+  let n = o.to_isize();
+  // `from_isize` is only called within `LIMIT`; nothing past it is a distance or a length.
+  if n.unsigned_abs() as u64 > O::LIMIT {
+    return None;
+  }
+  let again = O::from_isize(n);
+  // SAFETY: an `O` has no padding (`Offset`'s contract): its `size_of::<O>()` bytes are
+  // initialized, and `again` lives for the borrow.
+  let again = unsafe { slice::from_raw_parts(ptr::from_ref(&again).cast::<u8>(), size_of::<O>()) };
+  (again == bytes).then_some(o)
 }
 
 macro_rules! offsets {
   ($($t:ty),*) => {$(
-    // SAFETY: an integer: any bit pattern, `as` round-trips within `MAX`, zero is the zero
-    // bytes, and `NonZero` is the integer without zero, `None` being zero.
-    // Each converts one way that may truncate: never a distance or a length of a region.
+    // SAFETY: an integer: any bit pattern, `as` round-trips within `MAX` and `isize`, zero is
+    // the zero bytes, and `NonZero` is the integer without zero, `None` being zero.
+    // Each converts one way that may truncate: `from_isize` never for a distance or a length of
+    // a region (at most `LIMIT`), `to_isize` for an integer wider than `isize`, which is not
+    // valid in a region (`read` refuses it).
     #[expect(clippy::cast_possible_truncation, reason = "values within a region fit both")]
     unsafe impl Offset for $t {
       type NonZero = NonZero<$t>;
