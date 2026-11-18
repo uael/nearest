@@ -85,39 +85,23 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # Miri, with tree borrows (a self-relative pointer is resolved from its own address) and strict
+  # provenance: one job for each run, side by side, each of at most a minute, build included.
+  # The time that Miri reports is not the one that passes: read the times of the jobs.
+  #
+  # On x86-64, every test that Miri runs. The tests of `tests/common/integration.rs` run in three
+  # storages (`integration`: the heap, `inline`, `user_storage`): the corruptions and the models,
+  # the heaviest, under Miri for the heap only (the check of bytes and the edits do not depend
+  # on the storage; all three run them natively). On the targets where what the code assumes of
+  # x86-64 does not hold, what the target can change: on `i686` (32 bits: a `u64` aligned to 4,
+  # an `isize` narrower than an `i64`) the library, the offsets and every storage; on `s390x`
+  # (big-endian) the offsets. A test added to `tests/common/integration.rs` runs in the jobs
+  # named after the storages.
   miri:
-    name: Miri
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-02-10
-          components: miri, rust-src
-      - uses: Swatinem/rust-cache@v2
-      # The default configuration, with every storage; without `alloc`; the `nightly` feature
-      # adds `tests/pin_v2.rs` (the `nightly` job runs the other tests natively with the feature).
-      - run: cargo +nightly-2026-02-10 miri test -p nearest --lib --test integration --test inline --test user_storage --test no_alloc --test width
-        env:
-          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
-      - run: cargo +nightly-2026-02-10 miri test -p nearest --no-default-features --test no_alloc
-        env:
-          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
-      - run: cargo +nightly-2026-02-10 miri test -p nearest --features nightly --test pin_v2
-        env:
-          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
-
-  # The tests of the `miri` job on targets where what the code assumes of x86-64 is false:
-  # `i686` (32 bits: a `u64` aligned to 4, an `isize` narrower than an `i64`) and `s390x`
-  # (big-endian). Each job takes at most a minute, build included, so the tests are split, and
-  # only what the target can change is run there: on `i686` every storage (the heap, `inline`,
-  # `user_storage`), with the corruptions for the heap only (the check does not depend on the
-  # storage, and that one test takes most of a minute alone); on `s390x` what reads and writes
-  # integers. A test added to `tests/common/integration.rs` lands in "the rest".
-  miri-targets:
     name: Miri (${{ matrix.where }}, ${{ matrix.name }})
     runs-on: ubuntu-latest
     env:
+      MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
       # Every `cargo` of the job is the nightly one: without this, the first one that is not
       # asked for it (the one of the cache action) installs the toolchain of `rust-toolchain`,
       # which the job does not use.
@@ -131,65 +115,95 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - where: x86-64
+            name: lib, no_alloc, limits
+            tests: --lib --test no_alloc
+            more: >-
+              --test width -- --exact the_size_limit_panics_and_leaves_a_valid_region
+              capacity_past_the_size_limit_is_not_used bytes_past_the_size_limit_are_invalid
+          # Without `alloc`, and the `nightly` feature, which adds `tests/pin_v2.rs`.
+          - where: x86-64
+            name: features
+            tests: --no-default-features --test no_alloc
+            more: --features nightly --test pin_v2
+          - where: x86-64
+            name: width
+            tests: >-
+              --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
+              --skip capacity_past_the_size_limit_is_not_used
+              --skip bytes_past_the_size_limit_are_invalid
+          - where: x86-64
+            name: heap
+            tests: >-
+              --test integration -- --exact --skip small_corruptions_are_rejected_or_harmless
+              --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
+              --skip noise_is_rejected_without_panicking
+              --skip random_expression_rewrites_match_a_model
+          - where: x86-64
+            name: heap, corruptions and models
+            tests: >-
+              --test integration -- --exact small_corruptions_are_rejected_or_harmless
+              moves_in_a_tree random_edits_match_a_model size_hint_may_lie
+              noise_is_rejected_without_panicking random_expression_rewrites_match_a_model
+          - where: x86-64
+            name: inline
+            tests: >-
+              --test inline -- --exact --skip small_corruptions_are_rejected_or_harmless
+              --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
+              --skip noise_is_rejected_without_panicking
+              --skip random_expression_rewrites_match_a_model
+          - where: x86-64
+            name: user storage
+            tests: >-
+              --test user_storage -- --exact --skip small_corruptions_are_rejected_or_harmless
+              --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
+              --skip noise_is_rejected_without_panicking
+              --skip random_expression_rewrites_match_a_model
           - where: 32 bits
             target: i686-unknown-linux-gnu
-            name: lib, no_alloc
+            name: lib, no_alloc, limits
             tests: --lib --test no_alloc
+            more: >-
+              --test width -- --exact the_size_limit_panics_and_leaves_a_valid_region
+              capacity_past_the_size_limit_is_not_used bytes_past_the_size_limit_are_invalid
           - where: 32 bits
             target: i686-unknown-linux-gnu
             name: width
-            tests: --test width
-          - where: 32 bits
-            target: i686-unknown-linux-gnu
-            name: heap, corruptions
-            tests: --test integration -- --exact small_corruptions_are_rejected_or_harmless
-          - where: 32 bits
-            target: i686-unknown-linux-gnu
-            name: heap, models
             tests: >-
-              --test integration -- --exact moves_in_a_tree random_edits_match_a_model
-              size_hint_may_lie noise_is_rejected_without_panicking
-              random_expression_rewrites_match_a_model
+              --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
+              --skip capacity_past_the_size_limit_is_not_used
+              --skip bytes_past_the_size_limit_are_invalid
           - where: 32 bits
             target: i686-unknown-linux-gnu
-            name: inline, models
+            name: heap
             tests: >-
-              --test inline -- --exact moves_in_a_tree random_edits_match_a_model
-              size_hint_may_lie noise_is_rejected_without_panicking
-              random_expression_rewrites_match_a_model
+              --test integration -- --exact --skip small_corruptions_are_rejected_or_harmless
+              --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
+              --skip noise_is_rejected_without_panicking
+              --skip random_expression_rewrites_match_a_model
           - where: 32 bits
             target: i686-unknown-linux-gnu
-            name: user storage, models
+            name: inline
             tests: >-
-              --test user_storage -- --exact moves_in_a_tree random_edits_match_a_model
-              size_hint_may_lie noise_is_rejected_without_panicking
-              random_expression_rewrites_match_a_model
+              --test inline -- --exact --skip small_corruptions_are_rejected_or_harmless
+              --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
+              --skip noise_is_rejected_without_panicking
+              --skip random_expression_rewrites_match_a_model
           - where: 32 bits
             target: i686-unknown-linux-gnu
-            name: every storage, the rest
+            name: user storage
             tests: >-
-              --test integration --test inline --test user_storage -- --exact
-              --skip small_corruptions_are_rejected_or_harmless --skip moves_in_a_tree
-              --skip random_edits_match_a_model --skip size_hint_may_lie
+              --test user_storage -- --exact --skip small_corruptions_are_rejected_or_harmless
+              --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
               --skip noise_is_rejected_without_panicking
               --skip random_expression_rewrites_match_a_model
           - where: big-endian
             target: s390x-unknown-linux-gnu
-            name: lib, no_alloc
-            tests: --lib --test no_alloc
-          - where: big-endian
-            target: s390x-unknown-linux-gnu
             name: width
-            tests: --test width
-          - where: big-endian
-            target: s390x-unknown-linux-gnu
-            name: every storage, the rest
             tests: >-
-              --test integration --test inline --test user_storage -- --exact
-              --skip small_corruptions_are_rejected_or_harmless --skip moves_in_a_tree
-              --skip random_edits_match_a_model --skip size_hint_may_lie
-              --skip noise_is_rejected_without_panicking
-              --skip random_expression_rewrites_match_a_model
+              --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
+              --skip capacity_past_the_size_limit_is_not_used
+              --skip bytes_past_the_size_limit_are_invalid
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -198,7 +212,7 @@ jobs:
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: miri-${{ matrix.target || 'host' }}
       # The standard library of Miri for the target, built by `cargo miri setup` when the cache
       # does not have it. With the sources it was built from: Miri builds it again when the
       # modification time of one of them is not what it was, and each run installs them anew.
@@ -207,11 +221,15 @@ jobs:
           path: |
             ${{ env.MIRI_SYSROOT }}
             ${{ env.MIRI_SOURCES }}
-          key: miri-std-nightly-2026-02-10-${{ matrix.target }}
-      - run: cargo miri setup --target ${{ matrix.target }}
-      - run: cargo miri test -p nearest --target ${{ matrix.target }} ${{ matrix.tests }}
-        env:
-          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
+          key: miri-std-nightly-2026-02-10-${{ matrix.target || 'host' }}
+      - run: cargo miri setup ${{ matrix.target && format('--target {0}', matrix.target) }}
+      - run: >-
+          cargo miri test -p nearest
+          ${{ matrix.target && format('--target {0}', matrix.target) }} ${{ matrix.tests }}
+      - if: matrix.more
+        run: >-
+          cargo miri test -p nearest
+          ${{ matrix.target && format('--target {0}', matrix.target) }} ${{ matrix.more }}
 
   nightly:
     name: Nightly feature

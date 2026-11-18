@@ -618,7 +618,7 @@ Mechanics:
   without `alloc`; `serde` with that feature; `compile_fail` (trybuild) holds the compile-time
   guarantees. Miri runs `--lib` and the five tests above (not `serde`, `compile_fail`,
   `pin_v2` but with `nightly`) on x86-64, and on `i686` and `s390x` what the target can change
-  (`miri-targets` in `ci.yml`): the tests assume nothing of the target (sizes and alignments are
+  (the `miri` job of `ci.yml`): the tests assume nothing of the target (sizes and alignments are
   written from `size_of`, `align_of` and `to_ne_bytes`).
 
 ## What is not here, and why
