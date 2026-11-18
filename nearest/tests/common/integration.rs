@@ -467,8 +467,9 @@ fn enums_generics_and_nesting() {
   assert_eq!(shapes.items[2], Shape::Rect { w: 1, h: 2 });
 }
 
+/// Aligned to 4: as much as a `u64` on `i686` (a region holds no type more aligned than that).
 #[flat]
-#[repr(align(8))]
+#[repr(align(4))]
 struct Padded {
   a: u8,
   b: u32,
@@ -481,7 +482,7 @@ fn layout() {
   let r = Region::new_in(Store::default(), Aligned::new([1u8], [2u64, 3], "abc", [4u16]));
   let r2 = Region::new_in(Store::default(), Aligned::new((), (), "", ()));
   for r in [&r, &r2, &r.clone()] {
-    assert_eq!(r.big.as_ptr().addr() % 8, 0);
+    assert_eq!(r.big.as_ptr().addr() % align_of::<u64>(), 0);
     assert_eq!(r.wide.as_ptr().addr() % 2, 0);
   }
   assert_eq!(r.big[..], [2, 3]);
@@ -496,18 +497,16 @@ fn layout() {
     std::mem::offset_of!(Padded, c),
     std::mem::offset_of!(Padded, d),
   ];
-  assert_eq!((offsets, size_of::<Padded>(), align_of::<Padded>()), ([0, 4, 8, 10], 16, 8));
-  assert_eq!(
-    Region::new_in(Store::default(), Padded::new(1, 2, 3, 4)).as_bytes().unwrap()[..12],
-    [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 4, 0]
-  );
+  assert_eq!((offsets, size_of::<Padded>(), align_of::<Padded>()), ([0, 4, 8, 10], 12, 4));
+  let padded = [&[1, 0, 0, 0][..], &2u32.to_ne_bytes(), &[3, 0], &4u16.to_ne_bytes()].concat();
+  assert_eq!(Region::new_in(Store::default(), Padded::new(1, 2, 3, 4)).as_bytes().unwrap(), padded);
   // `[cap][len][elements]` after the pointer; strings are `[len][bytes]`.
   let l = Region::<Near<[u32]>>::new_in(Store::default(), Near::from_iter([7u32, 8]));
   let words =
-    |b: &[u8]| b.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect::<Vec<_>>();
+    |b: &[u8]| b.chunks(4).map(|c| u32::from_ne_bytes(c.try_into().unwrap())).collect::<Vec<_>>();
   assert_eq!(words(l.as_bytes().unwrap()), [8, 2, 2, 7, 8]);
   let s = Region::new_in(Store::default(), Lst::<Near<str>>::new(["ab"]));
-  assert_eq!(s.as_bytes().unwrap()[..16], [8, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0]);
+  assert_eq!(words(&s.as_bytes().unwrap()[..16]), [8, 1, 1, 4]);
   // A pushed list has spare capacity; a copy is compact again.
   let mut l = l;
   l.edit().push(9);
@@ -1068,7 +1067,7 @@ fn compact_bytes<T: Flat>(r: &Region<T>) -> Vec<u8> {
   Region::new_in(Store::default(), &**r).as_bytes().unwrap().to_vec()
 }
 
-/// `nearest::view` of `bytes`, copied to an 8-aligned address.
+/// `nearest::view` of `bytes`, copied to words: an address aligned as a region is.
 fn view<T: Flat, R>(bytes: &[u8], f: impl FnOnce(&T) -> R) -> Result<R, nearest::Error> {
   let words = aligned(bytes);
   // SAFETY: `words` holds at least `bytes.len()` initialized bytes.
@@ -2179,4 +2178,62 @@ mod names {
   }
 
   const fn unpin<T: Unpin>() {}
+}
+
+// ---------------------------------------------------------------------------------------------
+// The alignment of a region: that of a `u64`, whatever the target
+
+/// As aligned as a stored type may be: as a `u64`, 8 bytes on x86-64, 4 on `i686`.
+#[flat]
+#[derive(Debug, PartialEq, Clone, Copy)]
+struct Word {
+  value: u64,
+}
+
+/// Words behind pointers of every width: positions aligned for them, at addresses of a buffer
+/// aligned as a `u64` only. With `i16`, the elements of a list are 4 bytes past a multiple of 8;
+/// with `i64`, at a multiple of 8, which is all the alignment a `u64` has on x86-64.
+#[flat]
+#[derive(Debug, PartialEq)]
+struct Words {
+  id: u8,
+  one: Near<Word>,
+  text: Near<str>,
+  short: Near<[Word], i16>,
+  wide: Near<[Word], i64>,
+}
+
+/// The bytes of a region are accepted by `view` on the target that made it, in every storage,
+/// and every reference into it is aligned (Miri runs this on `i686`, where a `u64` is aligned to
+/// 4). Several regions, so that the heap gives addresses of every kind.
+#[test]
+fn a_region_is_aligned_as_its_words() {
+  assert_eq!(align_of::<Word>(), align_of::<u64>());
+  let regions: Vec<_> = (0..8u8)
+    .map(|i| {
+      let w = |v: u64| Word { value: v + u64::from(i) };
+      Region::new_in(Store::default(), Words::new(i, w(1), "x", [w(2), w(3)], [w(4)]))
+    })
+    .collect();
+  for (i, r) in regions.iter().enumerate() {
+    let bytes = r.as_bytes().unwrap();
+    assert!(bytes.as_ptr().addr().is_multiple_of(align_of::<u64>()));
+    let v = nearest::view::<Words>(bytes).unwrap();
+    assert_eq!(v, &**r);
+    let i = i as u64;
+    let values = [v.one.value, v.short[0].value, v.short[1].value, v.wide[0].value];
+    assert_eq!(values, [1 + i, 2 + i, 3 + i, 4 + i]);
+    // SAFETY: `view` accepted them, at this address.
+    assert_eq!(unsafe { nearest::view_unchecked::<Words>(bytes) }, &**r);
+    // Read in place where they are, and loaded elsewhere.
+    assert_eq!(*Region::<Words>::from_bytes(bytes).unwrap(), **r);
+  }
+  // A single `Word`, the root, and lists of them edited in place.
+  let mut r = Region::new_in(Store::default(), Lst::new([Word { value: 1 }]));
+  for v in 2..10 {
+    r.edit().items().push(Word { value: v });
+  }
+  assert!(r.items.iter().map(|w| w.value).eq(1..10));
+  let copy = Region::new_in(Store::default(), &*r);
+  assert_eq!(nearest::view::<Lst<Word>>(copy.as_bytes().unwrap()).map(|l| l.items.len()), Ok(9));
 }

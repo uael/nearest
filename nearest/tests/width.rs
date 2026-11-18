@@ -12,7 +12,8 @@ use nearest::{Edit, Error, Heap, Inline, Near, Offset, Pending, Region, flat};
 #[flat]
 #[derive(Debug, PartialEq)]
 struct Tree<O: Offset> {
-  /// 8-aligned, so that lists of trees are 8-aligned behind 2-byte headers too.
+  /// Aligned as a `u64` (8 bytes on x86-64, 4 on `i686`), so that lists of trees are aligned so
+  /// behind 2-byte headers too.
   id: u64,
   name: Near<str, O>,
   kids: Near<[Tree<O>], O>,
@@ -64,7 +65,9 @@ fn sizes<O: Offset>() {
   assert_eq!(size_of::<Option<Near<u8, O>>>(), w);
   assert_eq!(size_of::<Near<[u8], O>>(), w);
   assert_eq!(size_of::<Near<str, O>>(), w);
-  assert_eq!(size_of::<Tree<O>>(), 8 + (3 * w).next_multiple_of(8));
+  // A `u64`, then three `O`s; the struct is aligned as the larger of the two.
+  let align = align_of::<u64>().max(align_of::<O>());
+  assert_eq!(size_of::<Tree<O>>(), (8 + 3 * w).next_multiple_of(align));
 }
 
 fn build_and_read<O: Offset>() {
@@ -72,7 +75,7 @@ fn build_and_read<O: Offset>() {
   assert_eq!(ids(&r), [1, 2, 3, 4, 5]);
   assert_eq!((&*r.name, &*r.kids[1].kids[0].name), ("root", "c"));
   assert_eq!(r.next.as_ref().map(|n| &*n.name), Some("next"));
-  assert!(r.kids.iter().all(|k| (&raw const *k).addr().is_multiple_of(8)));
+  assert!(r.kids.iter().all(|k| (&raw const *k).addr().is_multiple_of(align_of::<u64>())));
   assert_eq!(r.clone(), r);
   assert_eq!(Region::new(&*r), r);
   let e = Region::new(Expr::<O>::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2)));
@@ -166,7 +169,8 @@ fn layout<O: Offset>() {
   let w = size_of::<O>();
   let list = Region::<Near<[u64], O>>::new(Near::from_iter([7u64]));
   let bytes = list.as_bytes().unwrap();
-  let elems = (3 * w).next_multiple_of(8);
+  // Elements at a position aligned to `max(w, align_of::<u64>())`, after the header.
+  let elems = (3 * w).next_multiple_of(w.max(align_of::<u64>()));
   assert_eq!(bytes.len(), elems + 8);
   assert_eq!(pos::<O>(bytes, 0), elems - w); // to the length
   assert_eq!((pos::<O>(bytes, elems - 2 * w), pos::<O>(bytes, elems - w)), (1, 1));
@@ -405,4 +409,98 @@ fn a_region_past_2_gib() {
   let bytes = copy.as_bytes().unwrap();
   let big = nearest::view::<Big>(bytes).unwrap();
   assert_eq!((big.data.len(), big.data[n - 1], &*big.tail), (n, 8, "moved"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Offsets, lengths and capacities that do not fit `isize`
+
+/// `bytes`, with the `i64` at `at` set to `v`.
+fn with_i64(bytes: &[u8], at: usize, v: i64) -> Vec<u8> {
+  let mut out = bytes.to_vec();
+  out[at..at + 8].copy_from_slice(&v.to_ne_bytes());
+  out
+}
+
+/// An `i64` past what `isize` holds on a 32-bit target is not valid in a region: on such a
+/// target `to_isize` would truncate it to the distance or the length it was made from, and on a
+/// 64-bit one it is out of bounds. The loaders refuse it on every target.
+#[test]
+fn integers_wider_than_isize_are_invalid() {
+  const HIGH: i64 = 1 << 32;
+  let r = Region::<Near<u8, i64>>::new(Near::new(7));
+  let bytes = r.as_bytes().unwrap();
+  assert_eq!(bytes, [&8i64.to_ne_bytes()[..], &[7]].concat());
+  let far = with_i64(bytes, 0, HIGH + 8);
+  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&far).err(), Some(Error::Invalid(0)));
+  assert_eq!(view_in_words::<Near<u8, i64>>(&far), Err(Error::Invalid(0)));
+  assert_eq!(view_in_words::<Near<u8, i64>>(bytes), Ok(()));
+  // The length and the capacity of a list, and the length of a text.
+  let list = Region::<Near<[u8], i64>>::new(Near::from_iter([1u8, 2]));
+  let bytes = list.as_bytes().unwrap();
+  let len = usize::try_from(i64::from_ne_bytes(bytes[..8].try_into().unwrap())).unwrap();
+  assert_eq!(Region::<Near<[u8], i64>>::from_bytes(bytes).map(|r| r.len()), Ok(2));
+  for at in [len, len - 8] {
+    let bad = with_i64(bytes, at, HIGH + 2);
+    assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&bad), Err(Error::Invalid(_))), "{at}");
+  }
+  let both = with_i64(&with_i64(bytes, len, HIGH + 2), len - 8, HIGH + 2);
+  assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&both), Err(Error::Invalid(_))));
+  let text = Region::<Near<str, i64>>::new("hi");
+  let bytes = text.as_bytes().unwrap();
+  let bad = with_i64(bytes, 8, HIGH + 2);
+  assert_eq!(Region::<Near<str, i64>>::from_bytes(&bad).err(), Some(Error::Invalid(8)));
+  // Nor any `i64` that is not what `from_isize` makes: the most negative one.
+  let low = with_i64(r.as_bytes().unwrap(), 0, i64::MIN);
+  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&low).err(), Some(Error::Invalid(0)));
+}
+
+/// `nearest::view` of `bytes`, copied to words: an address aligned as a region is.
+fn view_in_words<T: nearest::Flat>(bytes: &[u8]) -> Result<(), Error> {
+  let mut words = vec![0u64; bytes.len().div_ceil(8)];
+  // SAFETY: the words hold at least `bytes.len()` bytes, all initialized.
+  let at = unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), bytes.len()) };
+  at.copy_from_slice(bytes);
+  nearest::view::<T>(at).map(|_| ())
+}
+
+/// An `i32` whose `to_isize` gives 4 for every integer past its `LIMIT`: within the contract of
+/// `Offset`, which asks for a round trip within `LIMIT` only. Only the `Lenient`s that
+/// `from_isize` makes are valid in a region, so the loaders refuse the others, for an `Offset` of
+/// the user's as for `i64`.
+#[flat]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+struct Lenient(i32);
+
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct NonZeroLenient(NonZero<i32>);
+
+impl From<NonZeroLenient> for Lenient {
+  fn from(n: NonZeroLenient) -> Self {
+    Self(n.0.get())
+  }
+}
+
+// SAFETY: an `i32` of the target, every bit pattern; `as` round-trips within `LIMIT`; only 0 is
+// 0 (past `LIMIT`, 4); `NonZeroLenient` is the same bytes without zero.
+unsafe impl Offset for Lenient {
+  type NonZero = NonZeroLenient;
+  fn from_isize(n: isize) -> Self {
+    Self(i32::try_from(n).unwrap())
+  }
+  fn to_isize(self) -> isize {
+    if u64::from(self.0.unsigned_abs()) > Self::LIMIT { 4 } else { self.0 as isize }
+  }
+}
+
+#[test]
+fn offsets_that_from_isize_does_not_make_are_invalid() {
+  let r = Region::<Near<u8, Lenient>>::new(Near::new(7));
+  let bytes = r.as_bytes().unwrap();
+  assert_eq!(bytes, [&4i32.to_ne_bytes()[..], &[7]].concat());
+  assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(bytes).map(|r| **r), Ok(7));
+  let mut far = bytes.to_vec();
+  far[..4].copy_from_slice(&i32::MAX.to_ne_bytes()); // read as 4
+  assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(&far).err(), Some(Error::Invalid(0)));
 }

@@ -70,7 +70,7 @@ fn checking_takes_scratch_memory_from_the_caller() {
   assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch[..64]), Ok(&*shallow));
   let deep = sum(500);
   let bytes = deep.as_bytes().unwrap();
-  assert!(bytes.len() > 16_000);
+  assert!(bytes.len() > SIZE / 2);
   assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch), Ok(&*deep));
   assert_eq!(*Big::from_bytes_with(bytes, &mut scratch).unwrap(), *deep);
   // Too little: the check could not finish.
