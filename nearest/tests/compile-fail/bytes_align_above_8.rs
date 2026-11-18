@@ -1,4 +1,4 @@
-//! Loading and viewing bytes reject the same types as building: a region is 8-aligned.
+//! Loading and viewing bytes reject the same types as building: a region is aligned as a `u64`.
 use nearest::flat;
 
 #[flat]

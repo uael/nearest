@@ -1,19 +1,24 @@
-error[E0080]: evaluation panicked: a region holds only types aligned to at most 8 bytes
+error[E0080]: evaluation panicked: a region holds only types aligned to at most `align_of::<u64>()`, the alignment of its words
  --> $RUST/core/src/panic.rs
   |
   = note: evaluation of `nearest::__private::fits::<A>::{constant#0}` failed here
   |
  ::: src/flat.rs
   |
-  |     assert!(align_of::<T>() <= 8, "a region holds only types aligned to at most 8 bytes");
-  |     ------------------------------------------------------------------------------------- in this macro invocation
+  | /     assert!(
+  | |       aligned::<T>(),
+  | |       "a region holds only types aligned to at most `align_of::<u64>()`, the alignment of its words"
+  | |     );
+  | |_____- in this macro invocation
 
 note: erroneous constant encountered
  --> src/flat.rs
   |
   | /   const {
-  | |     assert!(align_of::<T>() <= 8, "a region holds only types aligned to at most 8 bytes");
-  | |     assert!(size_of::<T>() != 0, "a region holds only types of non-zero size");
+  | |     assert!(
+  | |       aligned::<T>(),
+  | |       "a region holds only types aligned to at most `align_of::<u64>()`, the alignment of its words"
+... |
   | |     assert!(!needs_drop::<T>(), "a region holds only types without drop glue");
   | |   };
   | |___^

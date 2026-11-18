@@ -46,15 +46,23 @@ fn build_edit_move_and_load() {
   assert!(std::panic::catch_unwind(|| Region::new_in(Inline::<32>::default(), &*moved)).is_err());
 }
 
+/// Under Miri everything below is eight times smaller: the same paths, in seconds rather than
+/// minutes (the time that Miri reports is not the one that passes).
+const SCALE: usize = if cfg!(miri) { 8 } else { 1 };
+
 /// The storage of the deep sums, and so their largest image.
-const SIZE: usize = 1 << 14;
+const SIZE: usize = (1 << 14) / SCALE;
 type Big = Region<Expr, Inline<SIZE>>;
 
+/// The terms of a deep sum: its image nearly fills `SIZE`.
+const DEPTH: usize = 500 / SCALE;
+
 /// A left-deep sum of `depth` terms, compact: checking it keeps about `depth` pointers waiting.
-fn sum(depth: i64) -> Big {
-  let mut r = Region::new_in(Inline::<{ 1 << 16 }>::default(), Expr::Lit(0));
+fn sum(depth: usize) -> Big {
+  // Each term leaves the sum it wraps behind: four times the image is room enough.
+  let mut r = Region::new_in(Inline::<{ 4 * SIZE }>::default(), Expr::Lit(0));
   for i in 1..=depth {
-    r.edit().update(|old| Expr::add(old, Expr::Lit(i)));
+    r.edit().update(|old| Expr::add(old, Expr::Lit(i64::try_from(i).unwrap())));
   }
   Region::new_in(Inline::default(), &*r)
 }
@@ -65,17 +73,23 @@ fn sum(depth: i64) -> Big {
 fn checking_takes_scratch_memory_from_the_caller() {
   #[expect(clippy::large_stack_arrays, reason = "memory without a heap, as a caller would have")]
   let mut scratch = [Pending::default(); SIZE / 4];
-  let shallow = sum(50);
+  let shallow = sum(DEPTH / 10);
   let bytes = shallow.as_bytes().unwrap();
   assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch[..64]), Ok(&*shallow));
-  let deep = sum(500);
+  let deep = sum(DEPTH);
   let bytes = deep.as_bytes().unwrap();
-  assert!(bytes.len() > 16_000);
+  assert!(bytes.len() > SIZE / 2);
   assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch), Ok(&*deep));
   assert_eq!(*Big::from_bytes_with(bytes, &mut scratch).unwrap(), *deep);
   // Too little: the check could not finish.
-  assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch[..400]), Err(Error::ScratchFull));
-  assert_eq!(Big::from_bytes_with(bytes, &mut scratch[..400]).err(), Some(Error::ScratchFull));
+  assert_eq!(
+    nearest::view_with::<Expr>(bytes, &mut scratch[..DEPTH * 4 / 5]),
+    Err(Error::ScratchFull)
+  );
+  assert_eq!(
+    Big::from_bytes_with(bytes, &mut scratch[..DEPTH * 4 / 5]).err(),
+    Some(Error::ScratchFull)
+  );
   // Invalid bytes are invalid, given enough.
   let cut = &bytes[..bytes.len() - 16];
   assert!(matches!(nearest::view_with::<Expr>(cut, &mut scratch), Err(Error::Invalid(_))));

@@ -1,4 +1,4 @@
-//! A region is 8-aligned, so its types are aligned to at most 8.
+//! A region is aligned as a `u64` (at most 8 bytes), so its types are aligned to no more.
 use nearest::{Region, flat};
 
 #[flat]

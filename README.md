@@ -45,7 +45,7 @@ r = Region::new(&*r);
 // Save and load. A compact region is its own image; loading checks the bytes.
 let bytes = r.as_bytes().unwrap();
 let copy = Region::<Block>::from_bytes(bytes)?;
-// A memory-mapped file, or any 8-aligned slice, is read in place.
+// A memory-mapped file, or any slice aligned as a region is (as a `u64`), is read in place.
 let block: &Block = nearest::view(map)?;
 ```
 
@@ -87,7 +87,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 |---|---|
 | `#[flat]` | makes a struct or enum storable; generates constructors and the handle |
 | `Region<T, S = Heap>` | the buffer, in a storage: `new`, `new_in`, `edit`, `as_bytes`, `from_bytes`, `from_bytes_with`, `byte_len`; `unsafe` `from_bytes_unchecked` |
-| `view`, `view_with` | functions: the value whose image is an 8-aligned slice, checked and read in place; `unsafe` `view_unchecked` |
+| `view`, `view_with` | functions: the value whose image is a slice aligned as a `u64`, checked and read in place; `unsafe` `view_unchecked` |
 | `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap (`Heap::with_capacity`), `N` bytes inside the region |
 | `Near<T, O = i32>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
 | `Offset` | the integer a `Near` keeps its distance in: `i16`, `i32`, `i64`, or a type of yours (an `unsafe` trait) |
@@ -172,8 +172,9 @@ the bound panics, and bytes longer than it do not load.
 
 `as_bytes` returns the compact image of a region, the bytes a deep copy writes, borrowed: a
 region is compact until it is edited, and a copy, `Region::new(&*r)`, always is. `from_bytes`
-checks bytes and copies them into a new region; `nearest::view` checks an 8-aligned slice,
-such as a memory-mapped file, and reads it in place. Checking accepts exactly the compact images of valid
+checks bytes and copies them into a new region; `nearest::view` checks a slice aligned as
+a region is (as a `u64`: 8 bytes on x86-64, 4 on `i686`), such as a memory-mapped file, and reads
+it in place. Checking accepts exactly the compact images of valid
 values, in one pass, in safe code, without recursion or panics. Every loader returns
 `Result<_, Error>`: `Error::Invalid(offset)` says where the bytes went wrong, and
 `Error::StorageFull` that a valid image is larger than the storage of `from_bytes`. Checking
@@ -181,7 +182,9 @@ keeps the pointers still to visit in memory that grows with the nesting of the d
 `from_bytes_with` and `view_with` take it from the caller, as `&mut [Pending]`, and return
 `Error::ScratchFull` if it runs out: `bytes.len() / 4` entries are always enough (`/ 2` with
 2-byte pointers). For bytes you
-trust, `from_bytes_unchecked` and `view_unchecked` skip the check and are `unsafe`. The bytes
+trust, or check yourself, `from_bytes_unchecked` and `view_unchecked` skip the check and are
+`unsafe`. An offset or a length is valid only as its
+`Offset` writes it: an `i64` that does not fit `isize` on a 32-bit target is invalid. The bytes
 hold the layout of the target, its values in the byte order of their types, and distances and
 lengths as their `Offset` writes them: native-endian for `i16`, `i32` and `i64`, or a byte order
 of your choice with an `Offset` of yours (an `unsafe` trait).
@@ -216,9 +219,10 @@ let moved = r;                                       // the bytes move with it
 - No pointer is made from an integer. Miri runs the tests with Tree Borrows and strict
   provenance.
 
-Stored types must have alignment at most 8, non-zero size and no drop glue (checked at compile
-time). A region holds at most what the pointers of its root reach (2 GiB by default), or what
-its storage gives. The specification is
+Stored types must be no more aligned than a `u64` (the words of a region's memory: 8 bytes on
+x86-64, 4 on `i686`), and have non-zero size and no drop glue (checked at compile time). Miri runs
+the tests on x86-64, on `i686` (32 bits) and on `s390x` (big-endian). A region holds at most what
+the pointers of its root reach (2 GiB by default), or what its storage gives. The specification is
 [`nearest/CLAUDE.md`](nearest/CLAUDE.md).
 
 ## Getting started

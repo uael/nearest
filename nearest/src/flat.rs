@@ -7,12 +7,36 @@ use crate::{
   near::offset,
 };
 
-/// The largest region with a `T` at its root, a multiple of 8: what the pointers of the root
-/// reach, and at most `isize::MAX` bytes, like any allocation. Every pointer below the root is
-/// at least as wide (see [`fits_behind`]), so every distance inside the region fits its pointer.
+/// The alignment of a region: that of the words of its memory (a [`Storage`] gives
+/// `[MaybeUninit<u64>]`), so of byte 0 of its buffer and of the bytes that `as_bytes` returns. It
+/// is that of the target, not 8: 8 on x86-64, 4 on `i686`, 2 on `msp430`. A region holds no type
+/// more aligned ([`fits`]), and `view` wants an address so aligned. Every typed access of the
+/// buffer is at an address `ALIGN`-aligned plus a position aligned for the type, which is then
+/// aligned for it because the type is not more aligned than `ALIGN`.
+pub const ALIGN: usize = align_of::<u64>();
+
+/// The bytes of a word of memory.
+pub const WORD: usize = size_of::<u64>();
+
+/// The largest alignment of a position in a region: that of a stored type (at most [`ALIGN`]) or
+/// of the elements of a list (at most the width of its offset, at most 8). The limits of a region
+/// and of an `Offset` are multiples of it, so that a position aligned up from below a limit stays
+/// below it. It is about positions, never addresses: a position aligned to 8 is at an address
+/// aligned to `ALIGN` only.
+pub const GRAIN: usize = 8;
+
+const _: () = {
+  assert!(ALIGN.is_power_of_two() && ALIGN <= GRAIN, "a word is aligned to at most 8 bytes");
+  assert!(WORD == 8, "a word is 8 bytes");
+};
+
+/// The largest region with a `T` at its root, a multiple of [`GRAIN`]: what the pointers of the
+/// root reach, and at most `isize::MAX` bytes, like any allocation. Every pointer below the root
+/// is at least as wide (see [`fits_behind`]), so every distance inside the region fits its
+/// pointer.
 #[expect(clippy::cast_possible_truncation, reason = "at most `isize::MAX`")]
 pub const fn limit<T: Flat>() -> usize {
-  let most = isize::MAX as u64 & !7;
+  let most = isize::MAX as u64 & !(GRAIN as u64 - 1);
   (if T::REACH < most { T::REACH } else { most }) as usize
 }
 
@@ -26,10 +50,19 @@ pub const fn distance(from: usize, to: usize) -> isize {
   to.wrapping_sub(from) as isize
 }
 
+/// Whether a region can hold a `T` at an address aligned for it: `T` is not more aligned than the
+/// buffer, [`ALIGN`].
+pub const fn aligned<T>() -> bool {
+  align_of::<T>() <= ALIGN
+}
+
 /// Rejects, at compile time, types a region cannot hold.
 pub const fn fits<T>() {
   const {
-    assert!(align_of::<T>() <= 8, "a region holds only types aligned to at most 8 bytes");
+    assert!(
+      aligned::<T>(),
+      "a region holds only types aligned to at most `align_of::<u64>()`, the alignment of its words"
+    );
     assert!(size_of::<T>() != 0, "a region holds only types of non-zero size");
     assert!(!needs_drop::<T>(), "a region holds only types without drop glue");
   };
@@ -113,7 +146,7 @@ unsafe fn regrow<S: Storage>(buf: &mut Buf, words: usize) {
 
 impl Buf {
   /// An empty buffer, attached to no storage, for a region of at most `max` bytes, a multiple
-  /// of 8 that every distance fits.
+  /// of [`GRAIN`] that every distance fits.
   pub(crate) const fn new(max: usize) -> Self {
     Self {
       ptr: ptr::null_mut(),
@@ -139,7 +172,7 @@ impl Buf {
     // SAFETY: per the caller; this borrow of the storage ends with the statement.
     let memory = unsafe { (*store).memory_mut(words) };
     self.ptr = memory.as_mut_ptr().cast();
-    self.mem = memory.len().saturating_mul(8).min(self.max);
+    self.mem = memory.len().saturating_mul(WORD).min(self.max);
     self.store = store.cast();
     self.regrow = regrow::<S>;
   }
@@ -191,7 +224,8 @@ impl Buf {
   #[cold]
   unsafe fn grow(&mut self, end: usize) {
     assert!(end <= self.max, "region exceeds what its pointers reach");
-    let want = end.max(self.cap.saturating_mul(2)).clamp(64, self.max);
+    // Not `clamp`: a limit below 64 (an `Offset` of the user's) is not a reason to panic.
+    let want = end.max(self.cap.saturating_mul(2)).max(64).min(self.max);
     // SAFETY: forwarded.
     assert!(unsafe { self.room(end, want) }, "region exceeds its storage");
     let to = want.min(self.mem);
@@ -207,7 +241,7 @@ impl Buf {
   unsafe fn room(&mut self, end: usize, want: usize) -> bool {
     if end > self.mem && end <= self.max {
       // SAFETY: forwarded.
-      unsafe { (self.regrow)(self, want.div_ceil(8)) };
+      unsafe { (self.regrow)(self, want.div_ceil(WORD)) };
     }
     end <= self.mem
   }
@@ -328,9 +362,10 @@ unsafe fn read_len<O: Offset>(buf: *mut Buf, at: usize) -> usize {
 /// | `Option<Near<T, O>>` | [`OptionEdit<'e, T, O>`] |
 /// | `#[flat]` types | generated |
 ///
-/// Every stored type is `'static`, has alignment at most 8, non-zero size and no drop glue;
-/// the last three are checked at compile time, and so is that no pointer leads to a type holding
-/// a narrower one (see [`Offset`]).
+/// Every stored type is `'static`, is not more aligned than a `u64` (the words of the memory of a
+/// region: 8 bytes on most 64-bit targets, 4 on `i686`), has a non-zero size and no drop glue; the
+/// last three are checked at compile time, and so is that no pointer leads to a type holding a
+/// narrower one (see [`Offset`]).
 ///
 /// ```
 /// use nearest::{Flat, Near, flat};
@@ -1020,4 +1055,31 @@ pub unsafe fn make<T: Flat>(f: impl FnOnce(&mut Sink, usize)) -> impl Emit<T> {
     }
   }
   Make(f)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{ALIGN, aligned};
+
+  /// As aligned as an 8-byte word on x86-64; more than a `u64` on `i686` and `msp430`.
+  #[repr(C, align(8))]
+  struct Eight(u8);
+
+  /// More than a `u64` on every target.
+  #[repr(C, align(16))]
+  struct Sixteen(u8);
+
+  /// What `fits` accepts: no type more aligned than a `u64`, whatever the target. On `i686`
+  /// (Miri runs the library's tests there) a type aligned to 8 is refused at compile time.
+  #[test]
+  fn a_region_holds_types_aligned_as_its_words() {
+    assert_eq!(ALIGN, align_of::<u64>());
+    assert!(aligned::<u64>() && aligned::<f64>() && aligned::<i64>() && aligned::<u8>());
+    assert_eq!(aligned::<Eight>(), align_of::<u64>() == 8);
+    assert!(!aligned::<Sixteen>());
+    #[cfg(target_arch = "x86_64")]
+    assert!(aligned::<Eight>());
+    #[cfg(target_arch = "x86")]
+    assert!(!aligned::<Eight>() && ALIGN == 4);
+  }
 }

@@ -43,7 +43,7 @@
 //! let bytes = r.as_bytes().unwrap();
 //! let copy = Region::<Block>::from_bytes(bytes)?;
 //! assert_eq!(copy.insts[0].op, 9);
-//! // A memory-mapped file, or any 8-aligned slice, is read in place.
+//! // A memory-mapped file, or any slice aligned as a region is (as a `u64`), is read in place.
 //! let block: &Block = nearest::view(bytes)?;
 //! assert_eq!(block.id, 7);
 //! # Ok::<(), nearest::Error>(())
@@ -209,15 +209,16 @@
 //! [`Region::as_bytes`] returns the compact image, borrowed: the bytes a deep copy writes, which
 //! a region is until it is edited. Save an edited region by copying it first:
 //! `Region::new(&*r).as_bytes()`. [`Region::from_bytes`] checks and copies bytes; [`view`]
-//! checks an 8-aligned slice and reads it in place. Checking accepts exactly the compact images
+//! checks a slice aligned as a region is (as a `u64`: 8 bytes on x86-64, 4 on `i686`) and reads
+//! it in place. Checking accepts exactly the compact images
 //! of valid values, in one pass, without recursion or panics; an [`Error`] says where the
 //! bytes went wrong, or that a valid image does not fit the storage. Checking keeps the
 //! pointers still to visit in memory that grows with the nesting of the data: [`view_with`] and
 //! [`Region::from_bytes_with`] take it from the caller, as a slice of [`Pending`]
 //! (`bytes.len() / 4` entries are always enough, `/ 2` with 2-byte pointers), and say if it
 //! runs out. For bytes that are
-//! trusted, [`Region::from_bytes_unchecked`] and [`view_unchecked`] skip the check and are
-//! `unsafe`. The bytes hold the layout of the target, its values in the byte order of their
+//! trusted, or checked by the caller, [`Region::from_bytes_unchecked`] and [`view_unchecked`]
+//! skip the check and are `unsafe`. The bytes hold the layout of the target, its values in the byte order of their
 //! types, and distances and lengths as their [`Offset`] writes them (native-endian for `i16`,
 //! `i32` and `i64`).
 //!
@@ -301,8 +302,8 @@
 //! - No pointer is made from an integer. Miri runs the tests with Tree Borrows and strict
 //!   provenance.
 //!
-//! Stored types must have alignment at most 8, non-zero size and no drop glue (checked at
-//! compile time). A region holds at most what the pointers of its root reach (2 GiB with the
+//! Stored types must be no more aligned than a `u64` (the words of a region's memory: 8 bytes on
+//! x86-64, 4 on `i686`), and have a non-zero size and no drop glue (checked at compile time). A region holds at most what the pointers of its root reach (2 GiB with the
 //! default `i32`; see [Pointer widths](#pointer-widths)), or what its storage gives; growing past
 //! that panics.
 #![no_std]

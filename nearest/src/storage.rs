@@ -5,6 +5,10 @@ use core::{mem::MaybeUninit, slice};
 /// Where a [`Region`](crate::Region) keeps its bytes: memory of 8-byte words, which the region
 /// asks to grow, through [`memory_mut`](Self::memory_mut), as it needs.
 ///
+/// The words are what aligns a region: byte 0 is aligned as a `u64` is, `align_of::<u64>()` (8
+/// bytes on x86-64, 4 on `i686`, 2 on `msp430`), and so are the bytes of `as_bytes`. A region
+/// holds no type more aligned than that.
+///
 /// Two are provided: [`Heap`], the default (with `alloc`), and [`Inline<N>`], `N` bytes inside the
 /// `Region` value. Write your own for other memory, such as an arena or a memory-mapped file: the
 /// region needs nothing else, and a storage that does not grow ignores the length it is asked for.
@@ -97,7 +101,7 @@ impl Heap {
   #[must_use]
   pub fn with_capacity(bytes: usize) -> Self {
     let mut words = Vec::new();
-    words.resize(bytes.div_ceil(8), MaybeUninit::uninit());
+    words.resize(bytes.div_ceil(size_of::<u64>()), MaybeUninit::uninit());
     Self(words)
   }
 }
@@ -119,7 +123,8 @@ unsafe impl Storage for Heap {
   }
 }
 
-/// `N` bytes inside the `Region` value, 8-aligned: a region without a heap.
+/// `N` bytes inside the `Region` value, 8-aligned (at least as a `u64` is, on every target): a
+/// region without a heap.
 ///
 /// It does not grow: a region that needs more panics, and `from_bytes` of a larger image returns
 /// an error. `N` is rounded down to whole words.
@@ -132,16 +137,21 @@ impl<const N: usize> Default for Inline<N> {
   }
 }
 
+// The words of an `Inline` are its bytes, which must be aligned as a `u64` is.
+const _: () =
+  assert!(align_of::<Inline<0>>() >= align_of::<u64>(), "`Inline` is aligned as a word");
+
 // SAFETY: the bytes are the value's own; they move with it, and are reached only through
-// `&self` and `&mut self`. The words are the first `N / 8 * 8` bytes, 8-aligned.
+// `&self` and `&mut self`. The words are the first `N / 8 * 8` bytes, aligned as a `u64` is
+// (asserted above).
 unsafe impl<const N: usize> Storage for Inline<N> {
   fn memory(&self) -> &[MaybeUninit<u64>] {
     // SAFETY: as above.
-    unsafe { slice::from_raw_parts(self.0.as_ptr().cast(), N / 8) }
+    unsafe { slice::from_raw_parts(self.0.as_ptr().cast(), N / size_of::<u64>()) }
   }
 
   fn memory_mut(&mut self, _words: usize) -> &mut [MaybeUninit<u64>] {
     // SAFETY: as above; the memory does not grow.
-    unsafe { slice::from_raw_parts_mut(self.0.as_mut_ptr().cast(), N / 8) }
+    unsafe { slice::from_raw_parts_mut(self.0.as_mut_ptr().cast(), N / size_of::<u64>()) }
   }
 }
