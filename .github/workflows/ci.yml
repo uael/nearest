@@ -114,7 +114,7 @@ jobs:
   # an `isize` narrower than an `i64`) the library, the offsets and every storage; on `s390x`
   # (big-endian) the offsets and the image of `examples/ir.rs`, byte for byte. A test added to
   # `tests/common/integration.rs` runs in the jobs named after the storages. `tests/ir.rs` writes a
-  # file: `-Zmiri-disable-isolation`, for that run only (`flags`).
+  # file: `-Zmiri-disable-isolation`, for its job only (`flags`).
   miri:
     name: Miri (${{ matrix.where }}, ${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -146,9 +146,11 @@ jobs:
             name: no alloc
             tests: --no-default-features --test no_alloc
           - where: x86-64
-            name: views, corpus, ir
+            name: views, corpus
             tests: --test views --test corpus
-            more: --test ir
+          - where: x86-64
+            name: ir
+            tests: --test ir
             flags: -Zmiri-disable-isolation
           - where: x86-64
             name: width, 1 of 3
@@ -188,12 +190,38 @@ jobs:
               --test integration -- --exact moves_in_a_tree random_edits_match_a_model
               random_expression_rewrites_match_a_model
           - where: x86-64
-            name: inline
+            name: inline, 1 of 2
+            tests: >-
+              --test inline -- --exact
+              a_panic_in_a_list_operation_leaves_a_valid_list a_panic_leaves_the_old_value a_region_is_aligned_as_its_words a_region_moves_with_its_storage
+              a_value_overwrites_every_pointer a_very_deep_value_is_checked_without_recursion build_and_read builders_compose
+              builders_write_the_compact_image bytes_round_trip compaction constructors_box_pointer_fields
+              enum_handles enums_generics_and_nesting every_emit_source every_primitive
+              full_inline_storage
+          - where: x86-64
+            name: inline, 2 of 2
             tests: >-
               --test inline -- --exact --skip small_corruptions_are_rejected_or_harmless
               --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
               --skip noise_is_rejected_without_panicking
               --skip random_expression_rewrites_match_a_model
+              --skip a_panic_in_a_list_operation_leaves_a_valid_list
+              --skip a_panic_leaves_the_old_value
+              --skip a_region_is_aligned_as_its_words
+              --skip a_region_moves_with_its_storage
+              --skip a_value_overwrites_every_pointer
+              --skip a_very_deep_value_is_checked_without_recursion
+              --skip build_and_read
+              --skip builders_compose
+              --skip builders_write_the_compact_image
+              --skip bytes_round_trip
+              --skip compaction
+              --skip constructors_box_pointer_fields
+              --skip enum_handles
+              --skip enums_generics_and_nesting
+              --skip every_emit_source
+              --skip every_primitive
+              --skip full_inline_storage
           - where: x86-64
             name: user storage
             tests: >-
@@ -245,12 +273,39 @@ jobs:
               --skip random_expression_rewrites_match_a_model
           - where: 32 bits
             target: i686-unknown-linux-gnu
-            name: inline
+            name: inline, 1 of 2
+            tests: >-
+              --test inline -- --exact
+              a_panic_in_a_list_operation_leaves_a_valid_list a_panic_leaves_the_old_value a_region_is_aligned_as_its_words a_region_moves_with_its_storage
+              a_value_overwrites_every_pointer a_very_deep_value_is_checked_without_recursion build_and_read builders_compose
+              builders_write_the_compact_image bytes_round_trip compaction constructors_box_pointer_fields
+              enum_handles enums_generics_and_nesting every_emit_source every_primitive
+              full_inline_storage
+          - where: 32 bits
+            target: i686-unknown-linux-gnu
+            name: inline, 2 of 2
             tests: >-
               --test inline -- --exact --skip small_corruptions_are_rejected_or_harmless
               --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
               --skip noise_is_rejected_without_panicking
               --skip random_expression_rewrites_match_a_model
+              --skip a_panic_in_a_list_operation_leaves_a_valid_list
+              --skip a_panic_leaves_the_old_value
+              --skip a_region_is_aligned_as_its_words
+              --skip a_region_moves_with_its_storage
+              --skip a_value_overwrites_every_pointer
+              --skip a_very_deep_value_is_checked_without_recursion
+              --skip build_and_read
+              --skip builders_compose
+              --skip builders_write_the_compact_image
+              --skip bytes_round_trip
+              --skip compaction
+              --skip constructors_box_pointer_fields
+              --skip enum_handles
+              --skip enums_generics_and_nesting
+              --skip every_emit_source
+              --skip every_primitive
+              --skip full_inline_storage
           - where: 32 bits
             target: i686-unknown-linux-gnu
             name: user storage
@@ -261,23 +316,31 @@ jobs:
               --skip random_expression_rewrites_match_a_model
           - where: big-endian
             target: s390x-unknown-linux-gnu
-            name: views, corpus, ir
+            name: views, corpus
             tests: --test views --test corpus
-            more: --test ir
+          - where: big-endian
+            target: s390x-unknown-linux-gnu
+            name: ir
+            tests: --test ir
             flags: -Zmiri-disable-isolation
           - where: big-endian
             target: s390x-unknown-linux-gnu
-            name: width, 1 of 3
+            name: width, 1 of 4
             tests: >-
-              --test width -- w16:: w32:: w64:: be32:: i64be::
+              --test width -- w16:: w32:: w64::
           - where: big-endian
             target: s390x-unknown-linux-gnu
-            name: width, 2 of 3
+            name: width, 2 of 4
+            tests: >-
+              --test width -- be32:: i64be::
+          - where: big-endian
+            target: s390x-unknown-linux-gnu
+            name: width, 3 of 4
             tests: >-
               --test width -- be16:: be64:: i16be:: i16le:: i32be:: byte_orders
           - where: big-endian
             target: s390x-unknown-linux-gnu
-            name: width, 3 of 3
+            name: width, 4 of 4
             tests: >-
               --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
               --skip capacity_past_the_size_limit_is_not_used
@@ -304,15 +367,11 @@ jobs:
             ${{ env.MIRI_SOURCES }}
           key: miri-std-nightly-2026-11-17-${{ matrix.target || 'host' }}
       - run: cargo miri setup ${{ matrix.target && format('--target {0}', matrix.target) }}
-      - run: >-
-          cargo miri test -p nearest
-          ${{ matrix.target && format('--target {0}', matrix.target) }} ${{ matrix.tests }}
-      - if: matrix.more
-        env:
+      - env:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance ${{ matrix.flags }}
         run: >-
           cargo miri test -p nearest
-          ${{ matrix.target && format('--target {0}', matrix.target) }} ${{ matrix.more }}
+          ${{ matrix.target && format('--target {0}', matrix.target) }} ${{ matrix.tests }}
 
   deny:
     name: Cargo Deny
