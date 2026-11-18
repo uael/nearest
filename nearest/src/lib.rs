@@ -110,7 +110,7 @@
 //! | `#[flat]` enum `X` | generated | `as_mut()` (returns `XMut`), `set`, `replace`, `update` |
 //! | `Near<T>` | the handle of the `T` | |
 //! | `Near<[T]>` | [`ListEdit<T>`] | `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
-//! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `take`, `set`, `update` |
+//! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `take`, `set`, `replace`, `update` |
 //! | `Near<str>` | [`StrEdit`] | `set`, `replace`, `update` |
 //!
 //! Handles dereference to the value they designate, and mutably so for data without pointers

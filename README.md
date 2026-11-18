@@ -94,7 +94,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `puns` | the crate [`puns`](https://docs.rs/puns), re-exported: `view_ref` reads a value of a region as another type; `num` has numbers of a fixed byte order |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
 | `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
-| `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `update` |
+| `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `replace`, `update` |
 | `StrEdit<'e>` | the handle of a `Near<str>`: `set`, `replace`, `update` |
 | `Old<'e, T>` | a value that left its place: write it anywhere to move it there |
 | `Error` | the error of every loader: `Invalid(offset)`, `ScratchFull`, `StorageFull` |

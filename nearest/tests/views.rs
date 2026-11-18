@@ -479,6 +479,58 @@ struct Spans {
   spans: Near<[Span], i32le>,
 }
 
+/// A rule on a type that holds pointers.
+#[flat]
+#[derive(Debug, PartialEq, Eq)]
+#[pun(assert(lo <= hi))]
+struct Ruled {
+  lo: u16le,
+  hi: u16le,
+  name: Near<str, i32le>,
+  next: Option<Near<Ruled, i32le>>,
+}
+
+#[flat]
+#[derive(Debug, PartialEq, Eq)]
+struct Book {
+  names: Near<[Ruled], i32le>,
+}
+
+/// A value that breaks a rule of its type, and holds pointers, is copied and moved as any
+/// other (`puns::copy_in` and `pointers_in` do not need its rules, which `validate_in` checks):
+/// compacted, moved in its list (`insert`, `swap`, `retain`, `replace` and `set`), copied into
+/// another region, and still the value it was (under Miri on every target of CI).
+#[test]
+fn a_value_that_breaks_a_rule_is_copied_and_moved() {
+  let leaf = |lo, hi, name| Ruled::new(u16le::new(lo), u16le::new(hi), name, None);
+  let show = |b: &Book| {
+    (b.names.iter())
+      .map(|n| {
+        let next = n.next.as_ref().map(|m| (m.lo.get(), &*m.name));
+        format!("{} {} {} {next:?}", n.lo.get(), n.hi.get(), &*n.name)
+      })
+      .collect::<Vec<_>>()
+  };
+  // `9 > 1` and `8 > 2`: both break `lo <= hi`, one inside the other.
+  let bad = Ruled::new(u16le::new(9), u16le::new(1), "bad", Near::new(leaf(8, 2, "worse")));
+  let mut r = Region::new(Book::new((bad, leaf(1, 2, "good"))));
+  let names = r.edit().names();
+  names.insert(0, leaf(7, 3, "front"));
+  names.swap(0, 2);
+  names.retain(|n| &*n.name != "front");
+  // `bad` moves out of its place, and into the place of `good`.
+  let old = names.at(1).replace(leaf(5, 4, "other"));
+  names.at(0).set(old);
+  let compact = Region::new(&*r);
+  let copy = Region::new(Book::new(&r.names[..]));
+  let expected = vec!["9 1 bad Some((8, \"worse\"))".to_owned(), "5 4 other None".to_owned()];
+  assert_eq!(show(&r), expected);
+  assert_eq!(show(&compact), expected);
+  assert_eq!(show(&copy), expected);
+  // And it is still refused at load.
+  assert!(Region::<Book>::from_bytes(compact.as_bytes().unwrap()).is_err());
+}
+
 /// A value that breaks a rule of its type can be built and saved, not loaded.
 #[test]
 fn a_value_that_breaks_a_rule_is_saved_not_loaded() {

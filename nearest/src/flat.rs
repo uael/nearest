@@ -458,9 +458,17 @@ unsafe fn write_slice<T: Flat>(src: &[T], sink: &mut Sink, at: usize) {
 /// each pointer re-made to a copy of its target (`puns::pointers_in`), depth first and in the order
 /// of their positions, which is the order of the fields: the compact image.
 ///
+/// What `copy_in` and `pointers_in` rely on of a value is less than what `validate_in` checks:
+/// valid scalars and tags (a valid value of the type, as Rust has it), the bytes of the active
+/// variant initialized, and pointers that aim at valid targets in the same buffer (S3). Not the
+/// rules of `#[pun(..)]` (`assert(..)`, `valid(..)` of a field): a region can hold a value that
+/// breaks one (safe code wrote it, `a_value_that_breaks_a_rule_is_copied_and_moved`), which
+/// `validate_in` refuses and these two walk all the same.
+///
 /// # Safety
-/// `src` holds `n` valid `U`s, not in the sink's buffer, and `at` is allocated in the sink for
-/// them, zero.
+/// `src` holds `n` valid `U`s (in the sense above), not in the sink's buffer, and `at` is
+/// allocated in the sink for them, its bytes initialized (the bytes of the copy that `copy_in`
+/// does not write, padding, keep them).
 unsafe fn copy_values<U: Pun>(src: *const u8, n: usize, sink: &mut Sink, at: usize) {
   let size = const { U::LAYOUT.size() };
   // SAFETY: per the caller; each copy writes the bytes of its value only.
@@ -470,10 +478,13 @@ unsafe fn copy_values<U: Pun>(src: *const u8, n: usize, sink: &mut Sink, at: usi
       return;
     }
     for i in 0..n {
+      // SAFETY: the element `i`: valid scalars and tags, the bytes of its variant initialized
+      // (rules not needed); its room in the sink, which does not overlap it.
       puns::copy_in::<U>(src.add(i * size), (*sink.buf).ptr().add(at + i * size));
     }
     if const { U::LAYOUT.has_pointers() } {
       let mut deep = Deep { src, sink, at };
+      // SAFETY: the same values: their tags are read, and their pointers handed to `Deep`.
       let _ = puns::pointers_elems_in::<U, Deep<'_>>(src, 0, n, &mut deep);
     }
   }
@@ -484,7 +495,9 @@ unsafe fn copy_values<U: Pun>(src: *const u8, n: usize, sink: &mut Sink, at: usi
 /// # Safety
 /// As [`copy_values`], for one value.
 unsafe fn copy_value<U: Pun>(src: *const u8, sink: &mut Sink, at: usize) {
-  // SAFETY: per the caller.
+  // SAFETY: per the caller: valid scalars and tags, the bytes of the active variant initialized
+  // (rules not needed); `copy_in` writes the room at `at`, and `pointers_in` reads the tags and
+  // hands the pointers to `Deep`.
   unsafe {
     puns::copy_in::<U>(src, (*sink.buf).ptr().add(at));
     if const { U::LAYOUT.has_pointers() } {
@@ -648,8 +661,9 @@ unsafe fn shift<T: Flat>(buf: *mut Buf, at: usize, n: usize, d: isize) {
   if const { !<T as Pun>::LAYOUT.has_pointers() } {
     return;
   }
-  // SAFETY: per the caller; `puns` reads the tags and the offsets of the values, and `Shift`
-  // writes only their offsets.
+  // SAFETY: per the caller, values of the buffer: valid scalars and tags, the bytes of their
+  // variants initialized (rules not needed, see `copy_values`); `puns` reads the tags and the
+  // offsets of nullable pointers, and `Shift` writes only the offsets it is handed.
   unsafe {
     let base = (*buf).ptr();
     let _ = puns::pointers_elems_in::<T, Shift>(base, at, n, &mut Shift { base, d });
@@ -929,7 +943,9 @@ unsafe fn copy_str<O: Offset>(sink: &mut Sink, at: usize, s: &str) {
 ///
 /// # Safety
 ///
-/// `emit` writes a valid `T` at `at`, allocating whatever it points to.
+/// `emit` writes a valid `T` at `at`, allocating whatever it points to. `plain`, where it returns
+/// `Some(v)`, returns a valid `T` whose bytes are all initialized and hold no pointer, written as
+/// `emit` would write it: a list of `T: PLAIN` copies those bytes in place of calling `emit`.
 pub unsafe trait Emit<T: Flat> {
   /// Writes `self` as a `T` at `at`.
   ///
@@ -1158,7 +1174,9 @@ impl<O: Offset> List<O> {
       items.by_ref().take(self.cap - self.len).for_each(|item| {
         // SAFETY: `at` is an element of the room, sized for a `T`.
         unsafe {
-          if let Some(v) = item.plain() {
+          if T::PLAIN
+            && let Some(v) = item.plain()
+          {
             ptr::copy_nonoverlapping(ptr::from_ref(v).cast::<u8>(), base.add(at), size_of::<T>());
           } else {
             item.emit(sink, at);

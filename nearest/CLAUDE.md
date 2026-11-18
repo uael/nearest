@@ -303,8 +303,11 @@ struct of safe code can. Checking at construction would not make them a guarante
 break one right after, through a `&mut u8`. Nothing in `nearest` or `puns` relies on a rule, so
 nothing proven from one is false: `view_ref` from a type with a rule to a type with the same rule
 is proven by it (and carries the value as it is), and to a type without it, the rule is not
-read. The loaders check them (see Bytes): a value that breaks a rule is saved by `as_bytes` and
-refused when loaded (`a_value_that_breaks_a_rule_is_saved_not_loaded`).
+read. Copies and moves do not need them: `puns::copy_in` and `pointers_in` rely on valid scalars
+and tags and on the initialized bytes of the active variant, not on rules, which is what their
+SAFETY comments name (`a_value_that_breaks_a_rule_is_copied_and_moved`, under Miri). The loaders
+check them (see Bytes): a value that breaks a rule is saved by `as_bytes` and refused when loaded
+(`a_value_that_breaks_a_rule_is_saved_not_loaded`).
 
 ## Runtime checks
 
@@ -515,7 +518,8 @@ pub fn replace(&mut self, value: impl Emit<T>) -> Old<'e, T>  // `mem::replace(p
 pub fn update<'a, E: Emit<T>>(&'a mut self, f: impl FnOnce(Old<'a, T>) -> E)
 ```
 
-`OptionEdit` has `take` in place of `replace`. `replace` and `update` share `Raw::swap_in`.
+`OptionEdit` also has `take`, which returns the target instead of the pointer (`replace` returns
+the old `Option<Near<T>>`). `replace` and `update` share `Raw::swap_in`.
 
 - `set` keeps the old bytes of the place on the stack while the new value is written and puts
   them back if that unwinds (I7). It allocates nothing for the old value.
