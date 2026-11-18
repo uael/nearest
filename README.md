@@ -269,7 +269,7 @@ the pointers of its root reach (2 GiB by default), or what its storage gives. Th
 
 ## Getting started
 
-Stable Rust (1.100 or later), `#![no_std]`, no dependencies besides the macro and
+Stable Rust (1.99 or later, as `puns`), `#![no_std]`, no dependencies besides the macro and
 [`puns`](https://docs.rs/puns).
 
 ```sh

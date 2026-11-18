@@ -89,6 +89,23 @@ jobs:
           components: rustfmt
       - run: cargo +nightly-2026-11-17 fmt --all -- --check
 
+  # The `rust-version` of the crates (1.99, that of `puns`): the library, and the tests that use
+  # it the most. `RUSTUP_TOOLCHAIN` takes precedence over `rust-toolchain`.
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - run: cargo test -p nearest --lib --test integration --test views
+
   doc:
     name: Documentation
     runs-on: ubuntu-latest
