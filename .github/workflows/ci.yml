@@ -10,7 +10,7 @@ env:
 
 jobs:
   # In three jobs, each under a minute: the tests (with the compile-fail cases), the features
-  # (without `alloc`, `serde`), and what is built in release or run as a program.
+  # (without `alloc`, `serde`) and the examples, and what is built in release.
   test:
     name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -21,16 +21,17 @@ jobs:
           - name: all
             compile_fail: true
             run: cargo test --all
-          - name: features
+          - name: features, examples
             run: >-
               cargo test -p nearest --no-default-features --lib --test no_alloc &&
               cargo test -p nearest --features serde --test serde &&
-              cargo test -p nearest --features serde --doc
-          # A region past 2 GiB, with 8-byte pointers: about 4 GB of memory, seconds in release.
-          - name: release, examples
+              cargo test -p nearest --features serde --doc &&
+              cargo run --example expr && cargo run --example passes && cargo run --example ir
+          # A region past 2 GiB, with 8-byte pointers: about 4 GB of memory, seconds in release;
+          # and the benchmarks, once each, in the same profile.
+          - name: release
             run: >-
               cargo test --release -p nearest --test width -- --ignored &&
-              cargo run --example expr && cargo run --example passes && cargo run --example ir &&
               cargo bench --bench region -- --test
     steps:
       - uses: actions/checkout@v4
@@ -161,16 +162,16 @@ jobs:
             more: --test ir
             flags: -Zmiri-disable-isolation
           - where: x86-64
-            name: width, offsets of the target
+            name: width, 1 of 2
             tests: >-
-              --test width -- w16:: w32:: w64:: be32::
+              --test width -- w16:: w32:: w64:: be32:: i64be::
           - where: x86-64
-            name: width, the others
+            name: width, 2 of 2
             tests: >-
               --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
               --skip capacity_past_the_size_limit_is_not_used
               --skip bytes_past_the_size_limit_are_invalid
-              --skip w16:: --skip w32:: --skip w64:: --skip be32::
+              --skip w16:: --skip w32:: --skip w64:: --skip be32:: --skip i64be::
           - where: x86-64
             name: heap
             tests: >-
@@ -215,17 +216,17 @@ jobs:
             tests: --test views --test corpus
           - where: 32 bits
             target: i686-unknown-linux-gnu
-            name: width, offsets of the target
+            name: width, 1 of 2
             tests: >-
-              --test width -- w16:: w32:: w64:: be32::
+              --test width -- w16:: w32:: w64:: be32:: i64be::
           - where: 32 bits
             target: i686-unknown-linux-gnu
-            name: width, the others
+            name: width, 2 of 2
             tests: >-
               --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
               --skip capacity_past_the_size_limit_is_not_used
               --skip bytes_past_the_size_limit_are_invalid
-              --skip w16:: --skip w32:: --skip w64:: --skip be32::
+              --skip w16:: --skip w32:: --skip w64:: --skip be32:: --skip i64be::
           - where: 32 bits
             target: i686-unknown-linux-gnu
             name: heap
@@ -258,17 +259,17 @@ jobs:
             flags: -Zmiri-disable-isolation
           - where: big-endian
             target: s390x-unknown-linux-gnu
-            name: width, offsets of the target
+            name: width, 1 of 2
             tests: >-
-              --test width -- w16:: w32:: w64:: be32::
+              --test width -- w16:: w32:: w64:: be32:: i64be::
           - where: big-endian
             target: s390x-unknown-linux-gnu
-            name: width, the others
+            name: width, 2 of 2
             tests: >-
               --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
               --skip capacity_past_the_size_limit_is_not_used
               --skip bytes_past_the_size_limit_are_invalid
-              --skip w16:: --skip w32:: --skip w64:: --skip be32::
+              --skip w16:: --skip w32:: --skip w64:: --skip be32:: --skip i64be::
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
