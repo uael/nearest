@@ -151,16 +151,22 @@ jobs:
             more: --test ir
             flags: -Zmiri-disable-isolation
           - where: x86-64
-            name: width, 1 of 2
+            name: width, 1 of 3
             tests: >-
               --test width -- w16:: w32:: w64:: be32:: i64be::
           - where: x86-64
-            name: width, 2 of 2
+            name: width, 2 of 3
+            tests: >-
+              --test width -- be16:: be64:: i16be:: i16le:: i32be:: byte_orders
+          - where: x86-64
+            name: width, 3 of 3
             tests: >-
               --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
               --skip capacity_past_the_size_limit_is_not_used
               --skip bytes_past_the_size_limit_are_invalid
               --skip w16:: --skip w32:: --skip w64:: --skip be32:: --skip i64be::
+              --skip be16:: --skip be64:: --skip i16be:: --skip i16le:: --skip i32be::
+              --skip byte_orders
           - where: x86-64
             name: heap
             tests: >-
@@ -172,7 +178,10 @@ jobs:
             name: heap, corruptions
             tests: >-
               --test integration -- --exact small_corruptions_are_rejected_or_harmless
-              noise_is_rejected_without_panicking size_hint_may_lie
+              size_hint_may_lie
+          - where: x86-64
+            name: heap, noise
+            tests: --test integration -- --exact noise_is_rejected_without_panicking
           - where: x86-64
             name: heap, models
             tests: >-
@@ -208,17 +217,24 @@ jobs:
             tests: --test views --test corpus
           - where: 32 bits
             target: i686-unknown-linux-gnu
-            name: width, 1 of 2
+            name: width, 1 of 3
             tests: >-
               --test width -- w16:: w32:: w64:: be32:: i64be::
           - where: 32 bits
             target: i686-unknown-linux-gnu
-            name: width, 2 of 2
+            name: width, 2 of 3
+            tests: >-
+              --test width -- be16:: be64:: i16be:: i16le:: i32be:: byte_orders
+          - where: 32 bits
+            target: i686-unknown-linux-gnu
+            name: width, 3 of 3
             tests: >-
               --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
               --skip capacity_past_the_size_limit_is_not_used
               --skip bytes_past_the_size_limit_are_invalid
               --skip w16:: --skip w32:: --skip w64:: --skip be32:: --skip i64be::
+              --skip be16:: --skip be64:: --skip i16be:: --skip i16le:: --skip i32be::
+              --skip byte_orders
           - where: 32 bits
             target: i686-unknown-linux-gnu
             name: heap
@@ -251,17 +267,24 @@ jobs:
             flags: -Zmiri-disable-isolation
           - where: big-endian
             target: s390x-unknown-linux-gnu
-            name: width, 1 of 2
+            name: width, 1 of 3
             tests: >-
               --test width -- w16:: w32:: w64:: be32:: i64be::
           - where: big-endian
             target: s390x-unknown-linux-gnu
-            name: width, 2 of 2
+            name: width, 2 of 3
+            tests: >-
+              --test width -- be16:: be64:: i16be:: i16le:: i32be:: byte_orders
+          - where: big-endian
+            target: s390x-unknown-linux-gnu
+            name: width, 3 of 3
             tests: >-
               --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
               --skip capacity_past_the_size_limit_is_not_used
               --skip bytes_past_the_size_limit_are_invalid
               --skip w16:: --skip w32:: --skip w64:: --skip be32:: --skip i64be::
+              --skip be16:: --skip be64:: --skip i16be:: --skip i16le:: --skip i32be::
+              --skip byte_orders
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
