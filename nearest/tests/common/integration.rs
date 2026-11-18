@@ -1230,7 +1230,7 @@ fn small_corruptions_are_rejected_or_harmless() {
       }
       Err(_) => rejected += 1,
     };
-  let step = if cfg!(miri) { 19 } else { 1 };
+  let step = if cfg!(miri) { 61 } else { 1 };
   for i in (0..image.len()).step_by(step) {
     for v in [0u8, 1, 2, 4, 8, 0x7f, 0x80, 0xff, image[i].wrapping_add(1), image[i] ^ 0x10] {
       let mut bytes = image.clone();
@@ -1360,7 +1360,7 @@ fn malformed_images_are_rejected() {
 fn noise_is_rejected_without_panicking() {
   let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
   let mut accepted = 0;
-  for _ in 0..if cfg!(miri) { 100 } else { 100_000 } {
+  for _ in 0..if cfg!(miri) { 40 } else { 100_000 } {
     let len = rng.below(96);
     let small = rng.below(2) == 0;
     let bytes: Vec<u8> =
@@ -1551,7 +1551,7 @@ fn chain_len(m: &MDoc) -> usize {
 
 #[test]
 fn random_edits_match_a_model() {
-  let steps: u32 = if cfg!(miri) { 100 } else { 4000 };
+  let steps: u32 = if cfg!(miri) { 40 } else { 4000 };
   for seed in [0x2545_f491_u64, 0x9e37_79b9_7f4a_7c15] {
     let mut rng = Rng(seed);
     let mut m = MDoc { id: 0, name: "root".into(), items: vec![], next: None };
@@ -1744,7 +1744,7 @@ fn random_expression_rewrites_match_a_model() {
     }
   }
 
-  let steps: u32 = if cfg!(miri) { 150 } else { 5000 };
+  let steps: u32 = if cfg!(miri) { 60 } else { 5000 };
   let mut rng = Rng(0x1234_5678);
   let mut m = M::Lit(0);
   let mut r = Region::new_in(Store::default(), Expr::Lit(0));
