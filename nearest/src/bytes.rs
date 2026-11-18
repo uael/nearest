@@ -4,7 +4,7 @@ use core::{fmt, str};
 
 use crate::{
   Flat, Offset,
-  flat::{fits, fits_behind, limit},
+  flat::{ALIGN, fits, fits_behind, limit},
 };
 
 /// Why bytes could not be loaded: the error of every loader ([`view`], [`view_with`],
@@ -277,7 +277,9 @@ pub fn check<T: Flat>(bytes: &[u8], todo: Stack<'_>) -> Result<(), Error> {
 
 /// The value whose image is `bytes`, read in place, for example from a memory-mapped file.
 ///
-/// The slice must be 8-aligned; the bytes are checked as by
+/// The slice must be aligned as a region is, to `align_of::<u64>()` (the words of the memory of
+/// every [`Storage`](crate::Storage): 8 bytes on x86-64, 4 on `i686`), as the bytes of a region
+/// and a mapped file are; the bytes are checked as by
 /// [`Region::from_bytes`](crate::Region::from_bytes). It needs `alloc`; [`view_with`] does not.
 ///
 /// ```
@@ -287,7 +289,7 @@ pub fn check<T: Flat>(bytes: &[u8], todo: Stack<'_>) -> Result<(), Error> {
 /// struct Msg { id: u8, body: Near<str> }
 ///
 /// let r = Region::new(Msg::new(1, "hi"));
-/// let bytes = r.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
+/// let bytes = r.as_bytes().unwrap(); // the region's own buffer, aligned as a region is
 /// let msg: &Msg = nearest::view(bytes)?;
 /// assert_eq!(&*msg.body, "hi");
 /// # Ok::<(), nearest::Error>(())
@@ -295,7 +297,7 @@ pub fn check<T: Flat>(bytes: &[u8], todo: Stack<'_>) -> Result<(), Error> {
 ///
 /// # Errors
 /// [`Error::Invalid`] if the bytes are not the compact image of a valid `T`, or the slice is
-/// not 8-aligned (at offset 0).
+/// not aligned to `align_of::<u64>()` (at offset 0).
 #[cfg(feature = "alloc")]
 pub fn view<T: Flat>(bytes: &[u8]) -> Result<&T, Error> {
   read(bytes, Stack::Heap(Vec::new()))
@@ -316,7 +318,7 @@ pub fn view<T: Flat>(bytes: &[u8]) -> Result<&T, Error> {
 ///   r.edit().update(|sum| Expr::add(sum, Expr::Lit(i))); // deep on the left
 /// }
 /// let compact = Region::new(&*r);
-/// let bytes = compact.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
+/// let bytes = compact.as_bytes().unwrap(); // the region's own buffer, aligned as a region is
 /// let mut scratch = vec![Pending::default(); bytes.len() / 4];
 /// assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch), Ok(&*r));
 /// assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch[..10]), Err(Error::ScratchFull));
@@ -331,7 +333,7 @@ pub fn view_with<'b, T: Flat>(bytes: &'b [u8], scratch: &mut [Pending]) -> Resul
 
 /// `view`, checking with `todo`.
 fn read<'b, T: Flat>(bytes: &'b [u8], todo: Stack<'_>) -> Result<&'b T, Error> {
-  if !bytes.as_ptr().addr().is_multiple_of(8) {
+  if !bytes.as_ptr().addr().is_multiple_of(ALIGN) {
     return Err(Error::Invalid(0));
   }
   check::<T>(bytes, todo)?;
@@ -339,8 +341,8 @@ fn read<'b, T: Flat>(bytes: &'b [u8], todo: Stack<'_>) -> Result<&'b T, Error> {
   Ok(unsafe { view_unchecked(bytes) })
 }
 
-/// [`view`] without the check, for bytes that are trusted: nothing is read before the value is
-/// used.
+/// [`view`] without the check, for bytes that are trusted, or that the caller checked itself:
+/// nothing is read before the value is used.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -349,20 +351,26 @@ fn read<'b, T: Flat>(bytes: &'b [u8], todo: Stack<'_>) -> Result<&'b T, Error> {
 /// struct Msg { id: u8, body: Near<str> }
 ///
 /// let r = Region::new(Msg::new(1, "hi"));
-/// let bytes = r.as_bytes().unwrap(); // the region's own buffer, which is 8-aligned
-/// // SAFETY: the bytes come from `as_bytes` for the same type, in this build.
+/// let bytes = r.as_bytes().unwrap(); // the region's own buffer, aligned as a region is
+/// // SAFETY: the bytes come from `as_bytes` for the same type, in this build, and are aligned as
+/// // a region is.
 /// let msg: &Msg = unsafe { nearest::view_unchecked(bytes) };
 /// assert_eq!(&*msg.body, "hi");
 /// ```
 ///
 /// # Safety
-/// `bytes` is 8-aligned and holds what [`Region::as_bytes`](crate::Region::as_bytes) returned
-/// for a region of `T`, in a build with the same layout of `T`.
+/// [`view::<T>(bytes)`](view) would return `Ok`, in this build: `bytes` is at an address that is
+/// a multiple of `align_of::<u64>()` (the alignment of a region), and is the compact image of a
+/// valid `T`, every offset and length an `O` that `from_isize` makes (see [`Offset`]). That is what
+/// [`Region::as_bytes`](crate::Region::as_bytes) returned for a region of `T` in a build with the
+/// same layout of `T` (this one, for example), and what a check of the caller's that accepts no
+/// more than [`view`] accepted.
 #[must_use]
 pub const unsafe fn view_unchecked<T: Flat>(bytes: &[u8]) -> &T {
   fits::<T>();
-  // SAFETY: per the caller, the bytes are 8-aligned and the image of a valid `T`, whose
-  // pointers all aim inside them.
+  // SAFETY: per the caller, the bytes are aligned as a region is, so for `T` (`fits`: `T` is not
+  // more aligned), and the image of a valid `T`, whose pointers all aim inside them, at positions
+  // aligned for their targets, so at addresses aligned for them.
   unsafe { &*bytes.as_ptr().cast::<T>() }
 }
 

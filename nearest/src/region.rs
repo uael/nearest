@@ -170,7 +170,7 @@ impl<T: Flat, S: Storage> Region<T, S> {
   ///
   /// let mut r = Region::new(Msg::new(1, "hi"));
   /// let image = r.as_bytes().unwrap();
-  /// assert_eq!(&*nearest::view::<Msg>(image)?.body, "hi"); // the buffer is 8-aligned
+  /// assert_eq!(&*nearest::view::<Msg>(image)?.body, "hi"); // aligned as a region is
   /// r.edit().body().set("hello");
   /// assert!(r.as_bytes().is_none());
   /// let copy = Region::new(&*r);
@@ -260,7 +260,8 @@ impl<T: Flat, S: Storage> Region<T, S> {
     r.ok_or(Error::StorageFull)
   }
 
-  /// [`from_bytes`](Self::from_bytes) without the check, for bytes that are trusted.
+  /// [`from_bytes`](Self::from_bytes) without the check, for bytes that are trusted, or that the
+  /// caller checked itself.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -275,11 +276,15 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// ```
   ///
   /// # Safety
-  /// `bytes` are what [`as_bytes`](Self::as_bytes) returned for a region of `T`, in a build
-  /// with the same layout of `T`.
+  /// [`from_bytes`](Self::from_bytes) would not return [`Error::Invalid`] for them, in this
+  /// build: `bytes` (at any address) are the compact image of a valid `T`, no longer than its
+  /// limit, every offset and length an `O` that `from_isize` makes (see
+  /// [`Offset`](crate::Offset)). That is what [`as_bytes`](Self::as_bytes) returned for a region
+  /// of `T` in a build with the same layout of `T` (this one, for example), and what a check of
+  /// the caller's that accepts no more than `from_bytes` accepted.
   ///
   /// # Panics
-  /// If the storage cannot hold them (or they exceed what the pointers of `T` reach).
+  /// If the storage cannot hold them.
   #[must_use]
   pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self
   where
@@ -309,7 +314,8 @@ impl<T, S> Region<T, S> {
 impl<T, S: Storage> Deref for Region<T, S> {
   type Target = T;
   fn deref(&self) -> &T {
-    // SAFETY: a region holds a `T` at byte 0 of its 8-aligned buffer.
+    // SAFETY: a region holds a `T` at byte 0 of its buffer, aligned as a `u64` (the words of its
+    // memory), so for `T`, which is not more aligned (`fits`, on every way into a region).
     unsafe { &*self.base().cast() }
   }
 }
