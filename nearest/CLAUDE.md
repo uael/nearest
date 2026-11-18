@@ -81,29 +81,43 @@ Features:
 | `Option<Near<T, O>>`, `T: Flat` | `OptionEdit<'e, T, O>` (an `O`, `None` is 0) |
 | `#[flat]` types | generated |
 
-`Flat: 'static`: a stored type has no lifetime. Alignment at most 8, non-zero size and no drop glue
-are checked at compile time by `fits`, a `const` block that every use instantiates (building,
-editing, checking bytes). Every use of a pointer also instantiates `fits_behind`: its target holds
+`Flat: 'static`: a stored type has no lifetime. Alignment at most `ALIGN` (that of a `u64`, see
+Layout), non-zero size and no drop glue are checked at compile time by `fits`, a `const` block
+that every use instantiates (building, editing, checking bytes, the unchecked loaders); the
+alignment through `aligned::<T>()`, which a unit test of the library checks on each Miri target. Every use of a pointer also instantiates `fits_behind`: its target holds
 no narrower pointer (see Layout). Plain data means `T: Copy`; a `Copy` type cannot contain a `Near`,
 so it is safe to hand out as `&mut T`.
 
 ## Layout
 
-- The root is at position 0. The buffer is 8-aligned (memory is `u64` words).
+- The root is at position 0. Byte 0 of the buffer is aligned to `ALIGN = align_of::<u64>()`, the
+  alignment of the words of the memory (`flat.rs`): 8 on x86-64 and most 64-bit targets, 4 on
+  `i686`, 2 on `msp430`. Not 8 everywhere: a word is 8 bytes (`WORD`), its alignment is the
+  target's. **Positions and addresses differ**: a position is aligned for what is there (up to
+  `GRAIN = 8`, for the elements of a list behind `i64`), its address only to
+  `min(ALIGN, alignment of the position)`. Every typed access is at a position aligned for its
+  type, and no stored type is more aligned than `ALIGN` (`fits`), so its address is aligned for
+  it; offsets and lengths, whose positions may be aligned more than their addresses, are read
+  and written unaligned (`read_unaligned`, `Sink::write`).
 - `Near<T, O>`: `NonZero<O>`, target address minus own address. Below, `w` is `size_of::<O>()`.
 - `Near<str, O>` points at an `O` length, `w`-aligned; the bytes follow.
 - `Near<[T], O>` points at an `O` length; the elements follow at `+w`, an `O` capacity sits at
   `-w`. The elements are aligned to `max(w, align_of::<T>())` and the header `[cap][len]` takes
   the `2w` bytes before them (`Buf::alloc` places a block by its byte `inset = 2w`). With `i32`
   and `i64` the block itself starts so aligned; with `i16`, before 8-aligned elements, it starts
-  4 bytes past a multiple of 8.
+  4 bytes past a multiple of 8. On a target where a `u64` is 4-aligned, a block of `i64` lengths
+  is still at a position that is a multiple of 8, at an address that may not be: its lengths are
+  read unaligned, and its elements need no more than `ALIGN`.
 - `#[flat]` adds `#[repr(C)]` to structs (unless already `C` or `transparent`) and `#[repr(u8)]`
   to enums: the layout does not depend on the compiler's field order. Variant field offsets
   come from hidden `#[repr(C)]` mirror structs `(u8, fields..)`.
 - A region holds at most the limit of its root type, `limit::<T>()`: `T::REACH` (hidden `Flat`
   const: the `Offset::LIMIT`, `iN::MAX & !7`, of the narrowest pointer `T` holds by value, not
   through a pointer; `u64::MAX` without one) capped at `isize::MAX & !7`. So 32760 bytes with
-  `i16` at the root, `i32::MAX & !7` with `i32`, `isize::MAX & !7` with `i64`. A pointer only
+  `i16` at the root, `i32::MAX & !7` with `i32`, `isize::MAX & !7` with `i64`. Limits are
+  multiples of `GRAIN` (8), the largest alignment of a position, so that a position aligned up
+  from below a limit stays below it; this is about positions, not addresses, and not about
+  words. On a 16-bit target every limit is `isize::MAX & !7` = 32760. A pointer only
   leads to types whose `REACH` is at least its own `LIMIT` (`fits_behind`): widths grow, or stay,
   going down, so every distance and length in the region fits its `O`. `REACH` and `LIMIT` are
   `u64` so the rule is the same on every target (an `i64` pointer to an `i32` one is rejected on
@@ -119,16 +133,30 @@ native-endian; a user's offset can fix one for every target. The contract (the t
 `# Safety`, keep both the same):
 
 - every bit pattern of `size_of::<O>()` bytes is a valid `O`, which has no padding;
-- `from_isize(n).to_isize() == n` for `|n| <= LIMIT`;
+- `from_isize(n).to_isize() == n` for every `n: isize` with `|n| <= LIMIT` (on a target whose
+  `isize` is narrower, every `n`);
 - `from_isize(0)` is all zero bytes, and the only `O` whose `to_isize()` is 0: zeroed memory
   reads as 0 (null, an empty list), and a `None` is never read as a `Near`;
 - `O::NonZero` is `O` without zero: same size and alignment, valid for every pattern but zero,
   `Option<O::NonZero>` of `O`'s size with `None` zero, `Into<O>` keeping the bytes;
 - `from_isize` and `to_isize` depend only on their argument, never panic for those values (a
   panic between allocating and linking would leave a zero `Near`, I7), and do nothing else.
+  `from_isize` is only called within `LIMIT`.
+
+**Valid offsets.** A region holds only the `O`s that `from_isize` makes: `o` is valid when
+`from_isize(o.to_isize())` has the very bytes of `o` (and `|o.to_isize()| <= LIMIT`). The checker
+reads every offset and length through `near::read`, which refuses any other (`None`, so
+`Error::Invalid` at its position), for every `Offset`, the user's included. So an integer that
+does not fit `isize` (an `i64` of 2^32 + 8 on a 32-bit target, an `i32` of 2^16 on a 16-bit one),
+which `to_isize` truncates, is invalid: in 0.7.1 it was read as the truncated value (2^32 + 8 as
+8). `to_isize` is trusted only where it round-trips; elsewhere it may truncate (`as`), and should
+not panic (the checker calls it on bytes from outside: a panic is not unsound, but a loader would
+panic instead of failing). Truncation cannot be reached otherwise: a dereference, an edit and a
+copy read only offsets the region wrote (`from_isize` of a distance or a length within `LIMIT`)
+or that a loader checked; the unchecked loaders ask for bytes that the checker would accept.
 
 `near::offset::<O>()`, a `const` block, checks the layout half at compile time (2, 4 or 8
-bytes; `NonZero` and `Option<NonZero>` of that size, `NonZero` of that alignment; `LIMIT` a
+bytes, so at most `GRAIN`; `NonZero` and `Option<NonZero>` of that size, `NonZero` of that alignment; `LIMIT` a
 multiple of 8 that the integers of that size reach). Every function that reads or writes the
 bytes of an `O` calls it: `fits_behind`, `aim`, `read_len`, `Sink::link`, `Sink::write_len`,
 `Near::target`, `Near::target_mut`, `moved`, the `None` of `Option<Near>`, and `near::read`, which
@@ -142,7 +170,8 @@ Only what cannot be known before:
 - **Size.** Growing past the limit (2 GiB with `i32` at the root), or past what the storage
   gives, panics before anything changes (the capacity overflow of `Vec`); it is only looked at
   when the zeroed capacity is used up. `from_bytes*` return `Error::StorageFull` instead (and
-  `Error::Invalid(0)` for bytes longer than the limit).
+  `Error::Invalid(0)` for bytes longer than the limit). The growth is `max(end, 2 * cap, 64)` capped at the limit (not `clamp`, which
+  panicked on a limit below 64, possible with an `Offset` of the user's).
 - **Indices.** `at`, `insert`, `remove`, `swap` panic out of bounds; `try_at` returns `None`.
 - **Loaded bytes.** The loaders check bytes from outside (see Bytes). A region built or edited
   in the program is never checked; the `unsafe` unchecked loaders skip the check.
@@ -185,6 +214,39 @@ Only what cannot be known before:
   zero.
 - **Unsafe code.** `pub(crate)` never relaxes a safety precondition: a function that has one is
   an `unsafe fn`, whatever its visibility.
+
+## Target assumptions
+
+0.7.1 was released with two bugs that no check could find: "memory is `u64` words, so
+8-aligned" (false where a `u64` is aligned to 4 or 2: `fits` let an 8-aligned type in, references
+to it were misaligned, and `view` refused a region's own bytes) and `i64::to_isize` truncating on
+32-bit targets (an offset of 2^32 + 8 loaded as 8). What let them through:
+
+- **Nothing ran where the assumptions are false.** Miri ran on x86-64 only; `thumbv7em` and
+  `msp430` were only built, and a build finds no undefined behavior.
+- **An assumption about the target was written as a fact**, in prose, and never asserted.
+- **No test used a type that stresses it**: an over-aligned type, an integer wider than `isize`.
+
+The rule since: every assumption about the target that `unsafe` code relies on (the alignment of
+a primitive, the width of `usize` and `isize`, the byte order) is a `const` assertion where it
+is used or a constant derived from the target, never a literal justified by prose; the code runs
+under Miri on a target where the assumption does not hold (`i686-unknown-linux-gnu`: 32 bits, a
+`u64` aligned to 4; `s390x-unknown-linux-gnu`: big-endian), with the tests that run on x86-64;
+and a new `unsafe` access comes with the test that stresses it. A 16-bit target cannot run under
+Miri: assertions carry it. The assumptions, and what holds each:
+
+| Assumption (where) | Held by |
+|---|---|
+| The alignment of a region is that of a `u64`: `ALIGN = align_of::<u64>()`, not 8 (`flat.rs`; `Region::deref`, `Raw::get`/`place`, `relocate`, `plain_edit`, `set`'s `Restore`, `insert`, `swap`, `retain`, `Old::emit`, `ListEdit::deref_mut`, `Near::deref`/`list`/`as_pin_mut`/`iter_pin_mut`, `view_unchecked`) | a constant of the target; `fits` refuses a type more aligned (`aligned`, unit test on each Miri target; trybuild for 16); `view` checks the address against `ALIGN`; Miri on `i686`; `a_region_is_aligned_as_its_words` in every storage |
+| `ALIGN` is a power of two, at most `GRAIN` = 8, the largest alignment of a position (`limit`, `Buf::alloc`) | `const` assertion in `flat.rs` |
+| A word is 8 bytes (`Buf::attach`, `room`, `Heap::with_capacity`, `Inline<N>`) | `WORD = size_of::<u64>()`, asserted 8 |
+| The memory of `Inline<N>` is aligned as a `u64` (`Inline::memory*`) | `#[repr(C, align(8))]`, `const` assertion against `align_of::<u64>()` |
+| An offset is 2, 4 or 8 bytes, so its block is at most `GRAIN`-aligned (`List::new`, `list`) | `near::offset` (`const`) |
+| Offsets and lengths may sit at addresses less aligned than their positions (`i64` lengths on `i686`) | read and written unaligned only (`near::read`, `aim`, `read_len`, `Near::list`, `Sink::write`); Miri on `i686` |
+| The integer of an offset fits `isize` (`Near::target`, `aim`, `read_len`, `Near::list`) | Valid offsets: `near::read` refuses an `O` that does not round-trip, for every `Offset`; `integers_wider_than_isize_are_invalid` (Miri on `i686`), `offsets_that_from_isize_does_not_make_are_invalid` (every target); 16 bits: the same code, not run |
+| A region is at most `isize::MAX` bytes, so a distance fits `isize` (`distance`, `wrapping_offset`) | `limit` caps at `isize::MAX & !7`, from `isize::MAX` of the target |
+| `usize` is at least 16 bits (`limit`, positions) | Rust supports no narrower `usize`; built for `msp430` |
+| The byte order of `i16`, `i32`, `i64` and of stored numbers is the target's (`plain!`'s `from_ne_bytes`, the images) | no `unsafe` code depends on it; Miri on `s390x` runs the tests of the library, of offsets and of every storage big-endian; the tests write expected bytes with `to_ne_bytes` |
 
 ## Handles
 
@@ -377,12 +439,13 @@ pub unsafe trait Storage {
 }
 ```
 
-`Region<T, S: Storage>` keeps its bytes in the memory of `S`, which is words, so 8-aligned.
+`Region<T, S: Storage>` keeps its bytes in the memory of `S`, which is words, so aligned as a
+`u64` is (`ALIGN`; 8 bytes only where a `u64` is 8-aligned).
 `Heap` (`alloc`), the default, is a `Vec` that grows as asked; `Heap::with_capacity(bytes)`
 makes room up front (nothing written). `Inline<N>` is `N` bytes (rounded down to words) inside
 the `Region` value, and does not grow. Any other memory (an arena, a borrowed buffer, a mapped
 file) is a storage of the user's. `new_in(storage, value)` builds in any storage; `new` is
-`new_in(Heap::default(), ..)`. `from_bytes*`, `from_bytes_unchecked` and `clone` make a storage
+`new_in(Heap::default(), ..)`. `from_bytes*`, the unchecked loaders and `clone` make a storage
 with `Default`; a storage without one loads with `Region::new_in(storage, view::<T>(bytes)?)`.
 Everything else is the same for every storage.
 
@@ -430,7 +493,10 @@ byte there was written by it (a value, or the zeros of `cap`) and kept since (St
 so it is initialized whatever the memory held; pointers into the memory are taken after the
 region's last move and after every growth (Stable, Growth), and nothing else touches it (Its
 own); a growth that unwinds leaves the memory where the restoring guards of I7 write (Growth).
-Memory is words, so 8-aligned, and no more than the limit is used, so every offset fits.
+Memory is words, so aligned to `ALIGN`, and no stored type is more aligned (`fits`), so every
+typed access at a position aligned for its type is at an address aligned for it; no more than
+the limit is used, so every offset fits. `Inline<N>` is `#[repr(C, align(8))]`, at least `ALIGN`
+(asserted).
 
 A storage that cannot hold the region panics where the heap would grow: `new_in`,
 `from_bytes_unchecked`, `clone`, edits. `from_bytes*` load bytes from outside and return an
@@ -447,7 +513,7 @@ target. Builders write the same image.
 pub fn as_bytes(&self) -> Option<&[u8]>                                      // Region
 pub fn from_bytes(bytes: &[u8]) -> Result<Region<T, S>, Error>               // S: Default; alloc
 pub fn from_bytes_with(bytes: &[u8], scratch: &mut [Pending]) -> Result<Region<T, S>, Error>
-pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Region<T, S>
+pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Region<T, S>              // panics if full
 pub fn view<T: Flat>(bytes: &[u8]) -> Result<&T, Error>                       // crate root; alloc
 pub fn view_with<'b, T: Flat>(bytes: &'b [u8], scratch: &mut [Pending]) -> Result<&'b T, Error>
 pub const unsafe fn view_unchecked<T: Flat>(bytes: &[u8]) -> &T
@@ -461,23 +527,30 @@ pub const unsafe fn view_unchecked<T: Flat>(bytes: &[u8]) -> &T
   always compact and is how any region is saved.
 - `from_bytes` checks the bytes (any alignment) and copies them into a new region in any storage
   with `Default`. A valid image the storage cannot hold is `Error::StorageFull`, not a panic.
-- `view` checks an 8-aligned slice (a mapped file, a region's own buffer) and reads it in place;
+- `view` checks a slice aligned as a region is, to `ALIGN` (a mapped file, a region's own buffer,
+  on every target), and reads it in place;
   a `&T` needs nothing else, since `Near` resolves relative to itself. It is a function, not a
   method: it makes no region and has no storage.
 - The `_with` forms check with the caller's scratch; `Error::ScratchFull` says it ran out before
   the check finished, which says nothing about the bytes.
-- The unchecked forms are `unsafe`: the bytes are what `as_bytes` returned for the same `T` in a
-  build with the same layout (and, for `view_unchecked`, 8-aligned). Loading is then one
-  `memcpy`, and viewing reads nothing.
+- The unchecked forms are `unsafe`: the checked form would accept the bytes, in this build (for
+  `view_unchecked`, at an address aligned to `ALIGN`, and the compact image of a valid `T`; for
+  the loaders, the image at any address). That is what `as_bytes` returned for the same `T` in a
+  build with the same layout, and what a check of the caller's that accepts no more (a crate
+  that checks images itself) accepted. Loading is then one `memcpy`, and viewing reads nothing.
+  `from_bytes_unchecked` panics if the storage is full.
 - `Error` (exhaustive): `Invalid(at)`, where the bytes stop being the image of a valid value (0
-  for a misaligned slice in `view*`, or bytes shorter than a `T` or longer than its limit);
+  for a slice not aligned to `ALIGN` in `view*`, or bytes shorter than a `T` or longer than its
+  limit);
   `ScratchFull`; `StorageFull`.
 
 Checking (`bytes.rs`) accepts exactly the compact images of valid values. It walks the image
 once, in the order the copy wrote it, and requires every pointer to aim at the very position
 where the copy put its target: that one rule gives bounds, alignment, no sharing, no cycles and
 no gaps. Values are checked on the way: `bool`, `char`, `NonZero`, enum tags, UTF-8,
-`cap == len`; a negative length is as out of bounds as one too long. Padding is not looked at.
+`cap == len`; a negative length is as out of bounds as one too long, and an
+offset or a length that `from_isize` does not make (see Valid offsets) is invalid. Padding is
+not looked at.
 
 - It is safe code that never panics (checked arithmetic, `get` instead of indexing):
   `Flat::check(&mut Check, at) -> Result<(), Error>` (hidden, generated). The only unsafe step
@@ -499,7 +572,8 @@ no gaps. Values are checked on the way: `bool`, `char`, `NonZero`, enum tags, UT
   numbers: a large mapped table is ready at once.
 - The bytes hold the layout of the target, its values in the byte order of their types, and
   distances and lengths as their `Offset` writes them (native-endian for `i16`, `i32`, `i64`);
-  no header, no version. A build with the same layout reads back what `as_bytes` gave.
+  no header, no version in the bytes. A build with the same layout reads back what `as_bytes`
+  gave.
 - With `serde`, a region serializes as its bytes (`serialize_bytes` of `as_bytes`, or of a
   compact copy, `Region::new(&*r)`, if it was edited), and deserializes through `from_bytes`
   (any storage with `Default`); its `Error` becomes `de::Error::custom`. The visitor takes bytes
@@ -512,15 +586,16 @@ no gaps. Values are checked on the way: `bool`, `char`, `NonZero`, enum tags, UT
 Files of `src/`:
 
 - `lib.rs`: crate docs, exports, `Edit<'e, T>`, `__private`.
-- `flat.rs`: `limit`, `fits`, `fits_behind`, `Buf` (`attach`, `alloc`, `grow`, `room`, `load`),
-  `Sink` (`link`, `write_len`), `aim`, `Flat` and `Emit` with their impls, moves (`relocate`,
+- `flat.rs`: `ALIGN`, `WORD`, `GRAIN` (see Target assumptions), `limit`, `aligned`, `fits`,
+  `fits_behind`, `Buf` (`attach`, `alloc`, `grow`, `room`, `load`), `Sink` (`link`,
+  `write_len`), `aim`, `Flat` and `Emit` with their impls, moves (`relocate`,
   `detach`, `move_elems`), the list block `List<O>`, `make`.
 - `edit.rs`: `Raw` (the core of every handle: `set`, `replace`, `update`, `swap_in`, `pin`),
   `Old`, `ListEdit`, `OptionEdit`, `StrEdit`.
-- `bytes.rs`: `Error`, `Pending`, `Stack`, the checker `Check` and its steps (`target`, `list`,
+- `bytes.rs`: `Error`, `Pending`, `Stack`, the checker `Check` (`get`, `offset`) and its steps (`target`, `list`,
   `text`, `items`), `check`, `view`, `view_with`, `view_unchecked`.
 - `near.rs`: `Near<T, O>`: `Deref` for `T`, `[T]` and `str`, builders, trait impls; `Offset`,
-  its three impls (`offsets!`), `offset` (its layout, checked) and `read`.
+  its three impls (`offsets!`), `offset` (its layout, checked) and `read` (valid offsets only).
 - `region.rs`: `Region<T, S>`: `attach`, `base`, `copy_of`, constructors, `edit`, `as_bytes`,
   `from_bytes*`, trait impls, `serde` impls.
 - `storage.rs`: `Storage` and its contract, `Heap`, `Inline<N>`.
@@ -539,8 +614,12 @@ Mechanics:
 - Tests: `tests/common/integration.rs` runs in three storages (`integration`: heap, `inline`,
   `user_storage`); `width` runs tests generic over the width with `i16`, `i32` and `i64`, the
   limit (reached cheaply with `i16`), mixed widths, and `a_region_past_2_gib` (`#[ignore]`d;
-  CI runs it in release); `no_alloc` also without `alloc`; `serde` with that feature;
-  `compile_fail` (trybuild) holds the compile-time guarantees.
+  CI runs it in release), offsets that do not round-trip; `no_alloc` also
+  without `alloc`; `serde` with that feature; `compile_fail` (trybuild) holds the compile-time
+  guarantees. Miri runs `--lib` and the five tests above (not `serde`, `compile_fail`,
+  `pin_v2` but with `nightly`) on x86-64, and on `i686` and `s390x` what the target can change
+  (`miri-targets` in `ci.yml`): the tests assume nothing of the target (sizes and alignments are
+  written from `size_of`, `align_of` and `to_ne_bytes`).
 
 ## What is not here, and why
 
@@ -585,3 +664,11 @@ Mechanics:
 - No fallback to `i32` in inference: Rust does not default type parameters in expressions, so a
   region whose root is a bare pointer names its type (`Region::<Near<[u32]>>::new(..)`).
 - No test-only limit: `i16` pointers reach the real one at 32 KiB.
+- No 8-aligned words on every target (yet). The memory of a storage is `[MaybeUninit<u64>]`,
+  aligned as a `u64`; making a region 8-aligned everywhere would let the same types (an
+  `align(8)` type) be stored on every target and make `view` want the same address everywhere.
+  It needs memory of a type aligned to 8 (`#[repr(align(8))] struct Word(MaybeUninit<u64>)`, or
+  `[MaybeUninit<u8>]` with a stated alignment) in `Storage`, which changes the trait (breaking:
+  every user storage), or a region that panics on a storage whose memory is not 8-aligned
+  (breaking at run time where `i686` storages work today). A candidate for 0.8; 0.7 keeps the
+  alignment of the target.
