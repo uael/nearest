@@ -29,6 +29,7 @@
 !nearest/
 !nearest/benches/
 !nearest/examples/
+!nearest/examples/ir.image
 !nearest/src/
 !nearest/tests/
 !nearest/tests/compile-fail/
