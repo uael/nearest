@@ -447,7 +447,7 @@ fn read<'b, T: Flat>(bytes: &'b [u8], todo: Stack<'_>) -> Result<&'b T, Error> {
 /// # Safety
 /// [`view::<T>(bytes)`](view) would return `Ok`, in this build: `bytes` is at an address that is
 /// a multiple of `align_of::<u64>()` (the alignment of a region), and is the compact image of a
-/// valid `T`, every offset and length an `O` that `from_isize` makes (see [`Offset`]). That is what
+/// valid `T`, every offset and length an `O` that `from_isize` makes (see [`Offset`](crate::Offset)). That is what
 /// [`Region::as_bytes`](crate::Region::as_bytes) returned for a region of `T` in a build with the
 /// same layout of `T` (this one, for example), and what a check of the caller's that accepts no
 /// more than [`view`] accepted.
