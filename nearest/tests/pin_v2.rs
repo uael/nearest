@@ -1,7 +1,10 @@
 //! With the `nightly` feature, `#[flat]` marks every type `#[pin_v2]`, so patterns project a
 //! pinned value in a crate with `pin_ergonomics`: no `project` needed. Built only with
 //! `--features nightly`, on a nightly compiler.
-#![cfg(feature = "nightly")]
+//!
+//! Not for Clippy: on `nightly-2026-11-17` it panics on a binding of a pattern on a pinned value
+//! (`explicit deref of non-derefable type`, in `expr_use_visitor`), which the compiler builds.
+#![cfg(all(feature = "nightly", not(clippy)))]
 #![feature(pin_ergonomics)]
 #![expect(incomplete_features, reason = "pin_ergonomics")]
 

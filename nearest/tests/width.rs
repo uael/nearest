@@ -98,7 +98,8 @@ fn contract<O: Offset>() {
   let (least, most) = (i64::MIN >> (64 - 8 * w), i64::MAX >> (64 - 8 * w));
   let mut samples = vec![0, 1, -1, 2, 127, 128, 255, 256, -255, -256, 0x1234, -0x1234, limit];
   samples.extend([-limit, limit - 1, 8 - limit]);
-  samples.extend((0..63).map(|bit| (1i64 << bit) & limit));
+  // Under Miri, one bit in 8: the same code.
+  samples.extend((0..63).step_by(if cfg!(miri) { 8 } else { 1 }).map(|bit| (1i64 << bit) & limit));
   for n in samples {
     let Ok(wanted) = isize::try_from(n) else { continue };
     let o = O::from_isize(wanted);
@@ -274,24 +275,32 @@ fn bytes<O: Offset>() {
   assert_eq!(Region::<Near<str, O>>::from_bytes(&bad).err(), Some(Error::Invalid(w)));
 }
 
+/// Each test with each offset. Under Miri, the tests that build and check regions run with seven
+/// of the fifteen offsets (each width of the target, each width in big-endian, a user's and one
+/// of `puns::num` of either byte order), the others with `sizes` and `contract` only: they run
+/// the same code, and all of them would take the job past a minute.
 macro_rules! widths {
   ($($test:ident),*) => {
-    mod w16 { $(#[test] fn $test() { super::$test::<i16>() })* }
-    mod w32 { $(#[test] fn $test() { super::$test::<i32>() })* }
-    mod w64 { $(#[test] fn $test() { super::$test::<i64>() })* }
-    mod le16 { $(#[test] fn $test() { super::$test::<super::Le16>() })* }
-    mod le32 { $(#[test] fn $test() { super::$test::<super::Le32>() })* }
-    mod le64 { $(#[test] fn $test() { super::$test::<super::Le64>() })* }
-    mod be16 { $(#[test] fn $test() { super::$test::<super::Be16>() })* }
-    mod be32 { $(#[test] fn $test() { super::$test::<super::Be32>() })* }
-    mod be64 { $(#[test] fn $test() { super::$test::<super::Be64>() })* }
+    widths!(@ true ($($test),*) w16: i16, w32: i32, w64: i64, be32: super::Be32);
+    widths!(@ false ($($test),*) le16: super::Le16, le32: super::Le32, le64: super::Le64,
+      be16: super::Be16, be64: super::Be64);
     // The offsets of a fixed byte order of `puns::num`, which `nearest` implements.
-    mod i16le { $(#[test] fn $test() { super::$test::<nearest::puns::num::i16le>() })* }
-    mod i32le { $(#[test] fn $test() { super::$test::<nearest::puns::num::i32le>() })* }
-    mod i64le { $(#[test] fn $test() { super::$test::<nearest::puns::num::i64le>() })* }
-    mod i16be { $(#[test] fn $test() { super::$test::<nearest::puns::num::i16be>() })* }
-    mod i32be { $(#[test] fn $test() { super::$test::<nearest::puns::num::i32be>() })* }
-    mod i64be { $(#[test] fn $test() { super::$test::<nearest::puns::num::i64be>() })* }
+    widths!(@ true ($($test),*) i32le: nearest::puns::num::i32le,
+      i16be: nearest::puns::num::i16be, i64be: nearest::puns::num::i64be);
+    widths!(@ false ($($test),*) i16le: nearest::puns::num::i16le,
+      i64le: nearest::puns::num::i64le, i32be: nearest::puns::num::i32be);
+  };
+  (@ $miri:literal $tests:tt $($name:ident: $offset:ty),*) => {
+    $(widths!(@@ $miri $tests $name: $offset);)*
+  };
+  (@@ $miri:literal ($($test:ident),*) $name:ident: $offset:ty) => {
+    mod $name {
+      $(#[test] fn $test() {
+        if $miri || !cfg!(miri) || matches!(stringify!($test), "sizes" | "contract") {
+          super::$test::<$offset>();
+        }
+      })*
+    }
   };
 }
 widths!(sizes, contract, build_and_read, edit, helpers, layout, bytes);
