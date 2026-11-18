@@ -397,7 +397,7 @@ fn lists_stay_aligned<O: nearest::Offset, S: nearest::Storage + Default>() {
     e.octets().insert(0, [i; 8]);
     e.pairs().push([i, 0]);
   }
-  e.quads().retain(|q| q[0] % 3 != 0);
+  e.quads().retain(|q| u32::from_ne_bytes(*q) % 3 != 0);
   e.quads().swap(0, 2);
   let _ = e.numbers().remove(1);
   // A list moved to another place: `quads` takes the block of `pairs`'s bytes... of a new list.

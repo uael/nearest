@@ -9,21 +9,44 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # In three jobs, each under a minute: the tests (with the compile-fail cases), the features
+  # (without `alloc`, `serde`), and what is built in release or run as a program.
   test:
-    name: Test
+    name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: all
+            compile_fail: true
+            run: cargo test --all
+          - name: features
+            run: >-
+              cargo test -p nearest --no-default-features --lib --test no_alloc &&
+              cargo test -p nearest --features serde --test serde &&
+              cargo test -p nearest --features serde --doc
+          # A region past 2 GiB, with 8-byte pointers: about 4 GB of memory, seconds in release.
+          - name: release, examples
+            run: >-
+              cargo test --release -p nearest --test width -- --ignored &&
+              cargo run --example expr && cargo run --example passes && cargo run --example ir &&
+              cargo bench --bench region -- --test
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.100.0
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.name }}
       # Until `puns` 0.1.0 is on crates.io it is a git dependency, and the compile-fail tests
       # print paths of its sources, which are then those of a checkout on this machine. As a path
       # dependency, trybuild writes them `$PUNS/..`, the same everywhere: the revision that
       # `nearest/Cargo.toml` names is cloned next to this repository, and the manifest of this
-      # run points at it.
+      # run points at it. Only where the compile-fail cases run.
       - name: puns as a path dependency
+        if: matrix.compile_fail
         run: |
           rev=$(sed -n 's|.*uael/puns", rev = "\([0-9a-f]*\)".*|\1|p' nearest/Cargo.toml)
           git clone -q https://github.com/uael/puns ../puns
@@ -31,16 +54,7 @@ jobs:
           sed -i 's|git = "https://github.com/uael/puns", rev = "[0-9a-f]*"|path = "../../puns/puns"|' \
             nearest/Cargo.toml
           grep -q 'path = "../../puns/puns"' nearest/Cargo.toml
-      - run: cargo test --all
-      - run: cargo test -p nearest --no-default-features --lib --test no_alloc
-      - run: cargo test -p nearest --features serde --test serde
-      - run: cargo test -p nearest --features serde --doc
-      # A region past 2 GiB, with 8-byte pointers: about 4 GB of memory, seconds in release.
-      - run: cargo test --release -p nearest --test width -- --ignored
-      - run: cargo run --example expr
-      - run: cargo run --example passes
-      - run: cargo run --example ir
-      - run: cargo bench --bench region -- --test
+      - run: ${{ matrix.run }}
 
   clippy:
     name: Clippy
