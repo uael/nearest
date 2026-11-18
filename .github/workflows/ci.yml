@@ -25,6 +25,7 @@ jobs:
       # A region past 2 GiB, with 8-byte pointers: about 4 GB of memory, seconds in release.
       - run: cargo test --release -p nearest --test width -- --ignored
       - run: cargo run --example expr
+      - run: cargo run --example passes
       - run: cargo run --example ir
       - run: cargo bench --bench region -- --test
 
@@ -51,14 +52,9 @@ jobs:
           toolchain: 1.100.0
           targets: thumbv7em-none-eabihf
       - uses: Swatinem/rust-cache@v2
-      # A target without `std` or an allocator: nothing may need either.
+      # A target without `std` or an allocator: nothing may need either. No 16-bit target:
+      # `puns` does not build for one (see What is not here, in the specification).
       - run: cargo build -p nearest --no-default-features --target thumbv7em-none-eabihf
-      # A 16-bit target, whose `core` is built from source on the pinned nightly.
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-11-17
-          components: rust-src
-      - run: cargo +nightly-2026-11-17 build -p nearest --no-default-features -Zbuild-std=core --target msp430-none-elf
 
   fmt:
     name: Format
@@ -95,8 +91,9 @@ jobs:
   # on the storage; all three run them natively). On the targets where what the code assumes of
   # x86-64 does not hold, what the target can change: on `i686` (32 bits: a `u64` aligned to 4,
   # an `isize` narrower than an `i64`) the library, the offsets and every storage; on `s390x`
-  # (big-endian) the offsets. A test added to `tests/common/integration.rs` runs in the jobs
-  # named after the storages.
+  # (big-endian) the offsets and the image of `examples/ir.rs`, byte for byte. A test added to
+  # `tests/common/integration.rs` runs in the jobs named after the storages. `tests/ir.rs` writes a
+  # file: `-Zmiri-disable-isolation`, for that run only (`flags`).
   miri:
     name: Miri (${{ matrix.where }}, ${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -126,6 +123,11 @@ jobs:
             name: features
             tests: --no-default-features --test no_alloc
             more: --features nightly --test pin_v2
+          - where: x86-64
+            name: views, ir
+            tests: --test views
+            more: --test ir
+            flags: -Zmiri-disable-isolation
           - where: x86-64
             name: width
             tests: >-
@@ -162,7 +164,7 @@ jobs:
           - where: 32 bits
             target: i686-unknown-linux-gnu
             name: lib, no_alloc, limits
-            tests: --lib --test no_alloc
+            tests: --lib --test no_alloc --test views
             more: >-
               --test width -- --exact the_size_limit_panics_and_leaves_a_valid_region
               capacity_past_the_size_limit_is_not_used bytes_past_the_size_limit_are_invalid
@@ -199,6 +201,12 @@ jobs:
               --skip random_expression_rewrites_match_a_model
           - where: big-endian
             target: s390x-unknown-linux-gnu
+            name: views, ir
+            tests: --test views
+            more: --test ir
+            flags: -Zmiri-disable-isolation
+          - where: big-endian
+            target: s390x-unknown-linux-gnu
             name: width
             tests: >-
               --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
@@ -227,6 +235,8 @@ jobs:
           cargo miri test -p nearest
           ${{ matrix.target && format('--target {0}', matrix.target) }} ${{ matrix.tests }}
       - if: matrix.more
+        env:
+          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance ${{ matrix.flags }}
         run: >-
           cargo miri test -p nearest
           ${{ matrix.target && format('--target {0}', matrix.target) }} ${{ matrix.more }}
