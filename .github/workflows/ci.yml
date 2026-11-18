@@ -18,6 +18,19 @@ jobs:
         with:
           toolchain: 1.100.0
       - uses: Swatinem/rust-cache@v2
+      # Until `puns` 0.1.0 is on crates.io it is a git dependency, and the compile-fail tests
+      # print paths of its sources, which are then those of a checkout on this machine. As a path
+      # dependency, trybuild writes them `$PUNS/..`, the same everywhere: the revision that
+      # `nearest/Cargo.toml` names is cloned next to this repository, and the manifest of this
+      # run points at it.
+      - name: puns as a path dependency
+        run: |
+          rev=$(sed -n 's|.*uael/puns", rev = "\([0-9a-f]*\)".*|\1|p' nearest/Cargo.toml)
+          git clone -q https://github.com/uael/puns ../puns
+          git -C ../puns checkout -q "$rev"
+          sed -i 's|git = "https://github.com/uael/puns", rev = "[0-9a-f]*"|path = "../../puns/puns"|' \
+            nearest/Cargo.toml
+          grep -q 'path = "../../puns/puns"' nearest/Cargo.toml
       - run: cargo test --all
       - run: cargo test -p nearest --no-default-features --lib --test no_alloc
       - run: cargo test -p nearest --features serde --test serde
