@@ -447,7 +447,8 @@ dependencies = [
 [[package]]
 name = "puns"
 version = "0.1.0"
-source = "git+https://github.com/uael/puns?rev=6ccd7ce40cd1347364255efb3470c1a826c290bc#6ccd7ce40cd1347364255efb3470c1a826c290bc"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cafd0dd6d3a65ef8685d1e1ed2266d6f6c1a1f9a60d6fa725b122194006ade6"
 dependencies = [
  "puns-derive",
 ]
@@ -455,7 +456,8 @@ dependencies = [
 [[package]]
 name = "puns-derive"
 version = "0.1.0"
-source = "git+https://github.com/uael/puns?rev=6ccd7ce40cd1347364255efb3470c1a826c290bc#6ccd7ce40cd1347364255efb3470c1a826c290bc"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80261fa862d2d2f6507470aa6aaa6e584cb358efe5483e85c90436c182906dbf"
 dependencies = [
  "proc-macro2",
  "quote",

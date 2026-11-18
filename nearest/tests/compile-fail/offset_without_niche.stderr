@@ -24,7 +24,7 @@ note: erroneous constant encountered
   | |___^
 
 note: erroneous constant encountered
- --> $PUNS/src/relative.rs
+ --> $CARGO/puns-$VERSION/src/relative.rs
   |
   |         >(<$ty as $crate::SelfRelative>::POINTER));
   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -37,7 +37,7 @@ note: erroneous constant encountered
   = note: this note originates in the macro `puns::self_relative` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 note: erroneous constant encountered
- --> $PUNS/src/std_enums.rs
+ --> $CARGO/puns-$VERSION/src/std_enums.rs
   |
   |   const LAYOUT: Layout = match T::OPTION {
   |                                ^^^^^^^^^

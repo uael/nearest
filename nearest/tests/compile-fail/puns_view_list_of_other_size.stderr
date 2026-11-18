@@ -2,13 +2,13 @@ error[E0080]: evaluation panicked:
               cannot pun: a pointer of the target is not, in the source, a pointer whose target it can read (the same scheme and offset, the same kind of target, not larger nor more aligned): only a pointer proves a pointer, and no check makes up for it.
               This is at byte 0 of the target.
 
-    --> $PUNS/src/lib.rs
+    --> $CARGO/puns-$VERSION/src/lib.rs
      |
      |   const VIEW: () = Self::require(Self::check(Need::VIEW));
      |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `nearest::puns::Plan::<nearest::Near<[u32]>, nearest::Near<[u16]>>::VIEW` failed inside this call
      |
 note: inside `puns::Plan::<Near<[u32]>, Near<[u16]>>::require`
- --> $PUNS/src/lib.rs
+ --> $CARGO/puns-$VERSION/src/lib.rs
   |
   |       message.panic();
   |       ^^^^^^^^^^^^^^^
@@ -17,19 +17,19 @@ note: inside `puns::Message::panic`
   |
   = note: the failure occurred here
   |
- ::: $PUNS/src/lib.rs
+ ::: $CARGO/puns-$VERSION/src/lib.rs
   |
   |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
   |     ---------------------------------------------------------------------------------------- in this macro invocation
 
 note: erroneous constant encountered
- --> $PUNS/src/lib.rs
+ --> $CARGO/puns-$VERSION/src/lib.rs
   |
   |   const { Plan::<S, D>::VIEW };
   |           ^^^^^^^^^^^^^^^^^^
 
 note: erroneous constant encountered
- --> $PUNS/src/lib.rs
+ --> $CARGO/puns-$VERSION/src/lib.rs
   |
   |   const { Plan::<S, D>::VIEW };
   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -43,13 +43,13 @@ note: the above error was encountered while instantiating `fn view_ref::<Near<[u
 error[E0080]: evaluation panicked:
               cannot pun: a pointer of the target is not, in the source, a pointer of the same scheme and offset that aims at the same kind of thing (a value, a sequence, text): only a pointer proves a pointer.
 
-    --> $PUNS/src/deep.rs
+    --> $CARGO/puns-$VERSION/src/deep.rs
      |
      |   const { require(local::<S, D>(0)) };
      |           ^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `nearest::puns::deep::proof::<nearest::Near<[u32]>, nearest::Near<[u16]>>::{constant#0}` failed inside this call
      |
 note: inside `puns::deep::require`
- --> $PUNS/src/deep.rs
+ --> $CARGO/puns-$VERSION/src/deep.rs
   |
   |     Message::new(why).panic();
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -58,19 +58,19 @@ note: inside `puns::Message::panic`
   |
   = note: the failure occurred here
   |
- ::: $PUNS/src/lib.rs
+ ::: $CARGO/puns-$VERSION/src/lib.rs
   |
   |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
   |     ---------------------------------------------------------------------------------------- in this macro invocation
 
 note: erroneous constant encountered
- --> $PUNS/src/deep.rs
+ --> $CARGO/puns-$VERSION/src/deep.rs
   |
   |   const { require(local::<S, D>(0)) };
   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: the above error was encountered while instantiating `fn puns::deep::proof::<Near<[u32]>, Near<[u16]>>`
- --> $PUNS/src/lib.rs
+ --> $CARGO/puns-$VERSION/src/lib.rs
   |
   |   deep::proof::<S, D>();
   |   ^^^^^^^^^^^^^^^^^^^^^

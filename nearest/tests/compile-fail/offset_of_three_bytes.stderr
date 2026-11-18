@@ -21,7 +21,7 @@ note: erroneous constant encountered
   | |___^
 
 note: erroneous constant encountered
- --> $PUNS/src/relative.rs
+ --> $CARGO/puns-$VERSION/src/relative.rs
   |
   |       >(<$ty as $crate::SelfRelative>::POINTER);
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
