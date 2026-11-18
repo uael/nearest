@@ -27,7 +27,10 @@ with everything it points to (`puns::view_ref`), and the numbers of a fixed byte
   `puns::Pun` type.
 - `nearest::puns`: the crate `puns`, re-exported, so that `puns::num`, `puns::view_ref` and the
   derive are those of the version that `nearest` uses.
-- `trait Flat: puns::Pun + Sized + 'static`: `type Edit<'e>: ?Sized`; the rest is hidden. `trait Emit<T>`: all hidden; "can
+- `trait Flat: puns::Pun + Sized + 'static`: `type Edit<'e>: ?Sized + Handle<'e, Self::Value>`,
+  `type Value: Flat` (what its handle writes: `Self`, the target's for `Near<T>`), `type Ref<'a,
+  'e>` (what getters give: `&'a mut Edit<'e, Self>`, a `Plain` for plain data); the rest is
+  hidden. `trait Emit<T>`: all hidden; "can
   be written as a `T`". `type Edit<'e, T> = <T as Flat>::Edit<'e>`: the handle of a place
   holding a `T`.
 - `Near<T, O: Offset = i32>`: builders `new`, `from_iter`; pinned view `as_pin_mut`,
@@ -45,10 +48,14 @@ with everything it points to (`puns::view_ref`), and the numbers of a fixed byte
 - `unsafe trait Storage`: `memory`, `memory_mut(words)`, where a region keeps its bytes.
   Storages: `Heap` (the default; `with_capacity(bytes)`), `Inline<N>` (`N` bytes inside the
   region).
+- `trait Handle<'e, T: Flat>`: `set`, `replace`, `update`, implemented by every handle (each also
+  has them as its own methods): the bound of `Flat::Edit`, for code generic over the stored type.
 - Handles: `ListEdit<'e, T, O = i32>` (`push`, `insert`, `remove`, `swap`, `truncate`,
   `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut`),
-  `OptionEdit<'e, T, O = i32>` (`as_mut`, `insert`, `take`, `set`, `update`),
-  `StrEdit<'e, O = i32>` (`set`, `replace`, `update`).
+  `OptionEdit<'e, T, O = i32>` (`as_mut`, `insert`, `take`, `set`, `replace`, `update`),
+  `StrEdit<'e, O = i32>` (`set`, `replace`, `update`), `PlainEdit<'e, T>` (`set`, `replace`,
+  `update`; the handle of plain data), and `Plain<'a, 'e, T>` (the same by value: `edit` gives
+  the `&mut PlainEdit`).
 - `Old<'e, T>`: no methods; a value that left its place, which can only be written somewhere.
 - `enum Error`: `Invalid(usize)`, `ScratchFull`, `StorageFull`; the error of every loader.
 - `Pending`: no methods; an entry of the scratch that `from_bytes_with` and `view_with` take.
@@ -81,9 +88,9 @@ Features:
 
 | Type | `Edit` |
 |---|---|
-| `u8`..`u64`, `i8`..`i64`, `f32`, `f64`, `bool`, `char`, `NonZero<_>` of those integers | itself |
-| the numbers of `puns::num`: `u16le`..`u128be`, `i16le`..`i128be`, `f32le`..`f64be` (byte arrays, every value valid), `u8c<V>`, `u8in<MIN, MAX>`, `u16lec<V>`..`u128bec<V>` (checked as `puns::try_pun` checks them) | itself |
-| `[T; N]`, `T: Flat + Copy`, `N > 0` | itself |
+| `u8`..`u64`, `i8`..`i64`, `f32`, `f64`, `bool`, `char`, `NonZero<_>` of those integers | `PlainEdit<'e, Self>` |
+| the numbers of `puns::num`: `u16le`..`u128be`, `i16le`..`i128be`, `f32le`..`f64be` (byte arrays, every value valid), `u8c<V>`, `u8in<MIN, MAX>`, `u16lec<V>`..`u128bec<V>` (checked as `puns::try_pun` checks them) | `PlainEdit<'e, Self>` |
+| `[T; N]`, `T: Flat + Copy`, `N > 0` | `PlainEdit<'e, Self>` |
 | `Near<T, O>`, `T: Flat` | `Edit<'e, T>`: the handle is the target's |
 | `Near<[T], O>`, `T: Flat` | `ListEdit<'e, T, O>` |
 | `Near<str, O>` | `StrEdit<'e, O>` |
@@ -399,29 +406,45 @@ A handle is `&'a mut` to an unsized `#[repr(transparent)]` wrapper of `Raw`: its
 region's `Buf` (which cannot move while the region is borrowed), its slice length the position
 of the place. It holds no address into the buffer, so it survives reallocation; real references
 (`&T` from `Deref`, `&mut` plain data) borrow the handle and so end before the next allocation
-(I3). `ListEdit`, `OptionEdit`, `StrEdit` and generated handles wrap `Raw`. `Flat::edit(buf, at)`
-(hidden) builds a place's handle; for `Near<T>` it reads the offset and returns the target's.
+(I3). `ListEdit`, `OptionEdit`, `StrEdit`, `PlainEdit` and generated handles wrap `Raw`.
+`Flat::edit(buf, at)` (hidden) builds a place's handle; for `Near<T>` it reads the offset and
+returns the target's. Every handle implements `Handle<'e, Value>` (`set`, `replace`, `update`,
+the same functions as its own methods: `set` through the trait compiles to the machine code of
+`set` on the handle), the bound of `Flat::Edit`.
+
+Getters (field methods, `ListEdit::{at, try_at, push, insert}`, `OptionEdit::{as_mut, insert}`,
+the variants of `XMut`, `Region::edit`) give `T::Ref<'a, 'e>`, through the hidden
+`Flat::reference`: `&'a mut Edit<'e, T>`, but for plain data a `Plain<'a, 'e, T>`, the handle by
+value, whose `Deref`/`DerefMut` are the value, so that one star reaches it as with a `&mut`
+(`*e.count() += 1`, `*list.at(0) = 5`; a field `bump` is `inc byte [..]`, as with `&mut u8`).
+Bound by a pattern, it is mutable as a value is (`Some(mut n) => *n += 1`). A `#[flat]` type
+that is `Copy` keeps `&mut` to its generated handle, so two stars reach its value
+(`**e.term() = ..`): the macro cannot know that a type is `Copy` (an impl can be written apart
+from its derive), and a by-value `Ref` derefs to one target, the value, which would hide the
+handle's field methods and `as_mut`.
 
 Lifetimes: `'e` is the edit, the borrow taken by
-`Region::edit(&'e mut self) -> &'e mut Edit<'e, T>`, the same for every handle of it; `'a`
+`Region::edit(&'e mut self) -> T::Ref<'e, 'e>`, the same for every handle of it; `'a`
 borrows the parent handle. Both are elided when a
 handle is only passed down (`fn pass(e: &mut Edit<Expr>)`); a function returning a handle or an
 `Old` names them:
 
 ```rust
 fn first<'a, 'e>(e: &'a mut Edit<'e, Block>) -> &'a mut Edit<'e, Inst> { e.insts().at(0) }
+fn count<'a, 'e>(e: &'a mut Edit<'e, Block>) -> Plain<'a, 'e, u32> { e.count() }
 fn pop<'e>(list: &mut Edit<'e, Near<[Inst]>>) -> Old<'e, Inst> { list.remove(0) }
 ```
 
 Every handle derefs to its value (`[T]`, `str`, `Option<Near<T>>` for the three below), and
-mutably for plain data (`T: Copy`):
+mutably for data without pointers (`T: Copy`):
 
-- plain `T`: `&mut T`, ordinary Rust;
+- plain `T` (numbers, `bool`, `char`, `NonZero`, `puns::num`, arrays of them): `PlainEdit<'e, T>`,
+  given as `Plain`; `set`, `replace`, `update`;
 - `#[flat]` struct: generated; a method per field, `set`, `replace`, `update`, `pin`;
 - `#[flat]` enum: generated; `as_mut`, `set`, `replace`, `update`, `pin`;
 - `Near<[T]>`: `ListEdit<'e, T>`; list operations, `set`, `replace`, `update`, `iter_pin_mut`;
-- `Option<Near<T>>`: `OptionEdit<'e, T>`; `as_mut() -> Option<&mut Edit<'e, T>>`,
-  `insert(x) -> &mut Edit<'e, T>`, `take() -> Option<Old<'e, T>>`, `set`, `update`;
+- `Option<Near<T>>`: `OptionEdit<'e, T>`; `as_mut() -> Option<T::Ref<'_, 'e>>`,
+  `insert(x) -> T::Ref<'_, 'e>`, `take() -> Option<Old<'e, T>>`, `set`, `replace`, `update`;
 - `Near<str>`: `StrEdit<'e>`; `set`, `replace`, `update`.
 
 The three take the width as a last parameter, `i32` by default (`ListEdit<'e, T, O>`).
@@ -446,7 +469,8 @@ did: a loader already made any value whose fields are valid from bytes.
 For a type `X`, `#[flat]` emits, inside `const _: () = { .. }`, the `Flat` impl (`Edit<'e>`,
 `REACH` (the least of the fields', left at the default without fields), `edit`, calling
 `fits`), the constructors, the handle
-`__NearestEdit<'e, ..>` (`set`, `replace`, `update`, `pin`, a method per struct field, `as_mut`
+`__NearestEdit<'e, ..>` (`set`, `replace`, `update`, `pin`, `Handle`, a method per struct field
+returning the field's `Ref`, `as_mut`
 for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), the mirror structs, and `X::project`;
 next to `X`, with its visibility, `XPin<'a>`, for a struct with fields `XInit<..>`, and for an
 enum with fields `XMut<'a, 'e>` (an item of the user's with one of those names is a duplicate
@@ -473,8 +497,8 @@ definition).
 - `#[flat]` reads and strips every `#[flat(..)]` on the type, variants and fields (`take_args`);
   unknown, repeated or misplaced arguments are errors.
 - `XMut<'a, 'e>` has the variants of `X`, all tuple-like: a unit stays a unit; one field holds
-  `&'a mut Edit<'e, Field>`; several fields hold one `&'a mut` payload handle with a method per
-  field (two handles cannot be live at once, I3). The payload handle is a `Raw` of the mirror,
+  `Field::Ref<'a, 'e>` (a `Plain` for plain data); several fields hold one `&'a mut` payload
+  handle with a method per field, returning its `Ref` (two handles cannot be live at once, I3). The payload handle is a `Raw` of the mirror,
   named through `__private::Variant<I>`, with no `set` or `replace`: the variant cannot change
   under it. An enum with only unit variants gets no `as_mut`.
 - Generic type parameters must be `Flat` (an `O: Offset` is). A field written `Near<X>` or

@@ -100,11 +100,12 @@
 //! # Editing
 //!
 //! [`Region::edit`] returns the handle of the root, a `&mut` [`Edit<T>`]. Handles reach every
-//! place in the region:
+//! place in the region, and every handle has `set`, `replace` and `update`, also through the
+//! trait [`Handle`] for code generic over the stored type:
 //!
 //! | Place | Handle | Operations |
 //! |---|---|---|
-//! | plain data (`T: Copy`) | `&mut T` | ordinary Rust |
+//! | plain data (numbers, `bool`, arrays of them, ..) | [`PlainEdit<T>`], given as [`Plain`] | `*` is the value: `*e.count() += 1` |
 //! | `#[flat]` struct | generated | a method per field, `set`, `replace`, `update` |
 //! | `#[flat]` enum `X` | generated | `as_mut()` (returns `XMut`), `set`, `replace`, `update` |
 //! | `Near<T>` | the handle of the `T` | |
@@ -112,9 +113,12 @@
 //! | `Option<Near<T>>` | [`OptionEdit<T>`] | `as_mut`, `insert`, `take`, `set`, `update` |
 //! | `Near<str>` | [`StrEdit`] | `set`, `replace`, `update` |
 //!
-//! Handles dereference to the value they designate, and mutably so for plain data. A handle
-//! borrows its parent handle, so one handle is usable at a time, and no reference into the
-//! buffer outlives a change that may grow it.
+//! Handles dereference to the value they designate, and mutably so for data without pointers
+//! (`T: Copy`). The getters (field methods, `at`, `push`, `as_mut`, ..) give a `&mut` to the handle
+//! of the place, but a [`Plain`] by value for plain data, so that one star reaches the value; a
+//! `#[flat]` type that is `Copy` takes two (`**e.term() = Term::Ret(0)`), since its handle is the
+//! one with its field methods. A handle borrows its parent handle, so one handle is usable at a
+//! time, and no reference into the buffer outlives a change that may grow it.
 //!
 //! A handle has two lifetimes, `&'a mut Edit<'e, T>`: `'a` borrows the parent handle, `'e` is the
 //! edit, the borrow of the region taken by `Region::edit`. Both can be left out in the usual
@@ -385,7 +389,7 @@ mod storage;
 #[cfg(feature = "alloc")]
 pub use bytes::view;
 pub use bytes::{Error, Pending, view_unchecked, view_with};
-pub use edit::{ListEdit, Old, OptionEdit, StrEdit};
+pub use edit::{Handle, ListEdit, Old, OptionEdit, Plain, PlainEdit, StrEdit};
 pub use flat::{Emit, Flat};
 pub use near::{Near, Offset};
 /// Makes a struct or enum storable in a region.

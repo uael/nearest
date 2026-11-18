@@ -9,7 +9,7 @@ use puns::Pun;
 
 use crate::{
   Near, Offset, Storage,
-  edit::{ListEdit, OptionEdit, Raw, StrEdit},
+  edit::{Handle, ListEdit, OptionEdit, Plain, PlainEdit, Raw, StrEdit},
   near::offset,
 };
 
@@ -360,8 +360,8 @@ unsafe fn read_len<O: Offset>(buf: *mut Buf, at: usize) -> usize {
 ///
 /// | Type | [`Edit`](Flat::Edit) |
 /// |---|---|
-/// | `u8`..`u64`, `i8`..`i64`, `f32`, `f64`, `bool`, `char`, `NonZero` integers | itself |
-/// | `[T; N]`, `T: Flat + Copy` | itself |
+/// | `u8`..`u64`, `i8`..`i64`, `f32`, `f64`, `bool`, `char`, `NonZero` integers, `puns::num` | [`PlainEdit<'e, Self>`] |
+/// | `[T; N]`, `T: Flat + Copy` | [`PlainEdit<'e, Self>`] |
 /// | `Near<T, O>` | `Edit<'e, T>`, the target's handle |
 /// | `Near<[T], O>` | [`ListEdit<'e, T, O>`] |
 /// | `Near<str, O>` | [`StrEdit<'e, O>`] |
@@ -396,7 +396,20 @@ pub unsafe trait Flat: Pun + Sized + 'static {
   /// The handle of a place holding a `Self`, during the edit `'e`: what
   /// [`Region::edit`](crate::Region::edit) and field methods return a `&mut` to. See
   /// [`Edit`](crate::Edit).
-  type Edit<'e>: ?Sized + 'e;
+  type Edit<'e>: ?Sized + Handle<'e, Self::Value> + 'e;
+
+  /// What a handle of a place of `Self` writes: `Self`, but what the target writes for
+  /// `Near<T, O>`, whose handle is the target's.
+  type Value: Flat;
+
+  /// What the getters of handles (field methods, `at`, `push`, `as_mut`, `Region::edit`, ..) give
+  /// for a place of `Self`: `&'a mut Edit<'e, Self>`, but for plain data a [`Plain`], whose `*`
+  /// is the value.
+  type Ref<'a, 'e: 'a>;
+
+  /// The `Ref` of a handle.
+  #[doc(hidden)]
+  fn reference<'a, 'e: 'a>(edit: &'a mut Self::Edit<'e>) -> Self::Ref<'a, 'e>;
 
   /// No pointers and no padding: may be copied as bytes. From the layout, not to be given.
   #[doc(hidden)]
@@ -711,17 +724,25 @@ pub unsafe fn move_elems<T: Flat>(buf: *mut Buf, from: usize, to: usize, n: usiz
 ///
 /// # Safety
 /// As for [`Flat::edit`].
-const unsafe fn plain_edit<'a, T>(buf: *mut Buf, at: usize) -> &'a mut T {
+const unsafe fn plain_edit<'a, 'e: 'a, T: Flat + Copy>(
+  buf: *mut Buf,
+  at: usize,
+) -> &'a mut PlainEdit<'e, T> {
   // SAFETY: per the caller.
-  unsafe { &mut *(*buf).ptr().add(at).cast::<T>() }
+  unsafe { PlainEdit::new(Raw::new(buf, at)) }
 }
 
 macro_rules! plain {
   ($($t:ty),*) => {$(
     // SAFETY: primitive values have no pointers and no padding (their layouts say so).
     unsafe impl Flat for $t {
-      type Edit<'e> = Self;
-      unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
+      type Edit<'e> = PlainEdit<'e, Self>;
+      type Value = Self;
+      type Ref<'a, 'e: 'a> = Plain<'a, 'e, Self>;
+      fn reference<'a, 'e: 'a>(edit: &'a mut PlainEdit<'e, Self>) -> Plain<'a, 'e, Self> {
+        Plain::new(edit)
+      }
+      unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut PlainEdit<'e, Self> {
         // SAFETY: forwarded.
         unsafe { plain_edit(buf, at) }
       }
@@ -744,6 +765,7 @@ mod num {
   };
 
   use super::{Buf, Flat, plain_edit};
+  use crate::edit::{Plain, PlainEdit};
 
   macro_rules! numbers {
     ($([$($generics:tt)*] $t:ty;)+) => {$(
@@ -751,8 +773,13 @@ mod num {
       // or only those that its constructors make, which its layout tells and loading checks. A
       // `&mut Self` is given only for a valid `Self`, through which only a `Self` is written.
       unsafe impl<$($generics)*> Flat for $t {
-        type Edit<'e> = Self;
-        unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
+        type Edit<'e> = PlainEdit<'e, Self>;
+        type Value = Self;
+        type Ref<'a, 'e: 'a> = Plain<'a, 'e, Self>;
+        fn reference<'a, 'e: 'a>(edit: &'a mut PlainEdit<'e, Self>) -> Plain<'a, 'e, Self> {
+          Plain::new(edit)
+        }
+        unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut PlainEdit<'e, Self> {
           // SAFETY: forwarded.
           unsafe { plain_edit(buf, at) }
         }
@@ -784,8 +811,13 @@ mod num {
 // SAFETY: an array is its elements, without padding between them; `Copy` elements have no
 // pointers.
 unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
-  type Edit<'e> = Self;
-  unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self {
+  type Edit<'e> = PlainEdit<'e, Self>;
+  type Value = Self;
+  type Ref<'a, 'e: 'a> = Plain<'a, 'e, Self>;
+  fn reference<'a, 'e: 'a>(edit: &'a mut PlainEdit<'e, Self>) -> Plain<'a, 'e, Self> {
+    Plain::new(edit)
+  }
+  unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut PlainEdit<'e, Self> {
     fits::<Self>();
     // SAFETY: forwarded.
     unsafe { plain_edit(buf, at) }
@@ -795,6 +827,11 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
 // SAFETY: copies the target.
 unsafe impl<T: Flat, O: Offset> Flat for Near<T, O> {
   type Edit<'e> = T::Edit<'e>;
+  type Value = T::Value;
+  type Ref<'a, 'e: 'a> = T::Ref<'a, 'e>;
+  fn reference<'a, 'e: 'a>(edit: &'a mut T::Edit<'e>) -> T::Ref<'a, 'e> {
+    T::reference(edit)
+  }
   const REACH: u64 = O::LIMIT;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut T::Edit<'e> {
     fits_behind::<T, O>();
@@ -806,6 +843,11 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<T, O> {
 // SAFETY: copies the list.
 unsafe impl<T: Flat, O: Offset> Flat for Near<[T], O> {
   type Edit<'e> = ListEdit<'e, T, O>;
+  type Value = Self;
+  type Ref<'a, 'e: 'a> = &'a mut ListEdit<'e, T, O>;
+  fn reference<'a, 'e: 'a>(edit: &'a mut ListEdit<'e, T, O>) -> &'a mut ListEdit<'e, T, O> {
+    edit
+  }
   const REACH: u64 = O::LIMIT;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut ListEdit<'e, T, O> {
     fits_behind::<T, O>();
@@ -817,6 +859,11 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<[T], O> {
 // SAFETY: copies the text.
 unsafe impl<O: Offset> Flat for Near<str, O> {
   type Edit<'e> = StrEdit<'e, O>;
+  type Value = Self;
+  type Ref<'a, 'e: 'a> = &'a mut StrEdit<'e, O>;
+  fn reference<'a, 'e: 'a>(edit: &'a mut StrEdit<'e, O>) -> &'a mut StrEdit<'e, O> {
+    edit
+  }
   const REACH: u64 = O::LIMIT;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut StrEdit<'e, O> {
     // SAFETY: forwarded.
@@ -827,6 +874,11 @@ unsafe impl<O: Offset> Flat for Near<str, O> {
 // SAFETY: `None` is a zero offset; `Some` is the `Near`.
 unsafe impl<T: Flat, O: Offset> Flat for Option<Near<T, O>> {
   type Edit<'e> = OptionEdit<'e, T, O>;
+  type Value = Self;
+  type Ref<'a, 'e: 'a> = &'a mut OptionEdit<'e, T, O>;
+  fn reference<'a, 'e: 'a>(edit: &'a mut OptionEdit<'e, T, O>) -> &'a mut OptionEdit<'e, T, O> {
+    edit
+  }
   const REACH: u64 = O::LIMIT;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut OptionEdit<'e, T, O> {
     fits_behind::<T, O>();

@@ -179,8 +179,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     let doc = format!("The handle of `{label}`.");
     quote! {
       #[doc = #doc]
-      #fvis fn #mname(&mut self) -> &mut ::nearest::Edit<#e, #fty> {
-        unsafe { self.0.field::<#fty>(#off) }
+      #fvis fn #mname(&mut self) -> <#fty as ::nearest::Flat>::Ref<'_, #e> {
+        <#fty as ::nearest::Flat>::reference(unsafe { self.0.field::<#fty>(#off) })
       }
     }
   };
@@ -375,8 +375,10 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         // Tells the dead-code lint that the variant is built, by the constructor.
         built.push(quote!(let _ = |#(#binds),*| Self::#vname #pat;));
         if let ([ty], [off]) = (&tys[..], &offs[..]) {
-          views.push(quote!(#[doc = #vdoc] #vname(&#lt mut ::nearest::Edit<#e, #ty>)));
-          view_arms.push(quote!(#view_arm(unsafe { self.0.field::<#ty>(#off) })));
+          views.push(quote!(#[doc = #vdoc] #vname(<#ty as ::nearest::Flat>::Ref<#lt, #e>)));
+          view_arms.push(quote! {
+            #view_arm(<#ty as ::nearest::Flat>::reference(unsafe { self.0.field::<#ty>(#off) }))
+          });
           continue;
         }
         // Several fields: one handle with a method per field, named through `Variant`. It wraps
@@ -521,6 +523,11 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       #(#mirrors)*
       unsafe impl #impl_g ::nearest::Flat for #self_ty #where_c {
         type Edit<#e> = #handle #h_ty;
+        type Value = Self;
+        type Ref<#lt, #e: #lt> = &#lt mut #handle #h_ty;
+        fn reference<#lt, #e: #lt>(edit: &#lt mut #handle #h_ty) -> &#lt mut #handle #h_ty {
+          edit
+        }
         #reach
         unsafe fn edit<#lt, #e: #lt>(
           #buf: *mut #np::Buf,
@@ -558,6 +565,23 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         }
         #update
         #(#methods)*
+      }
+      impl #h_impl ::nearest::Handle<#e, #self_ty> for #handle #h_ty #h_where {
+        fn set(&mut self, value: impl ::nearest::Emit<#self_ty>) {
+          self.0.set(value);
+        }
+        fn replace(
+          &mut self,
+          value: impl ::nearest::Emit<#self_ty>,
+        ) -> ::nearest::Old<#e, #self_ty> {
+          self.0.replace(value)
+        }
+        fn update<#lt, __NearestNew: ::nearest::Emit<#self_ty>>(
+          &#lt mut self,
+          f: impl ::core::ops::FnOnce(::nearest::Old<#lt, #self_ty>) -> __NearestNew,
+        ) {
+          self.0.update(f);
+        }
       }
       impl #h_impl ::core::ops::Deref for #handle #h_ty #h_where {
         type Target = #self_ty;

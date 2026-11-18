@@ -7,7 +7,7 @@ use core::{
 };
 
 use crate::{
-  Edit, Emit, Flat, Near, Offset,
+  Emit, Flat, Near, Offset,
   flat::{
     Buf, List, Sink, aim, detach, fits, fits_behind, move_elems, relocate, stash, unstash,
     write_copy,
@@ -213,6 +213,185 @@ impl<'e, T: Flat> Raw<'e, T> {
   }
 }
 
+/// What every handle does, whatever the type of its place: the trait of
+/// [`Edit<'e, T>`](crate::Edit), so that code generic over the stored type writes through a handle.
+///
+/// Every handle has these three as its own methods too, so that the trait is needed only by such
+/// code. They are the same functions: `set` through the trait compiles to the machine code of
+/// `set` on the handle.
+///
+/// ```
+/// use nearest::{Edit, Emit, Flat, Handle, Near, Region, flat};
+///
+/// /// Writes `value` over the place, whatever it holds (`Value` is `T`, but what a pointer's
+/// /// target is for a pointer, whose handle is the target's).
+/// fn reset<T: Flat>(place: &mut Edit<'_, T>, value: impl Emit<T::Value>) {
+///   place.set(value);
+/// }
+///
+/// #[flat]
+/// struct Node { value: u32, next: Option<Near<Node>> }
+///
+/// let mut r = Region::new(Node::new(1, Near::new(Node::new(2, None))));
+/// let n = r.edit();
+/// reset::<Option<Near<Node>>>(n.next(), None);
+/// reset::<Node>(n, Node::new(3, None));
+/// assert_eq!((r.value, r.next.is_none()), (3, true));
+/// ```
+pub trait Handle<'e, T: Flat> {
+  /// Writes `value` over the value, like `*place = value`.
+  fn set(&mut self, value: impl Emit<T>);
+
+  /// Writes `value` over the value and returns the old one, like `mem::replace`.
+  fn replace(&mut self, value: impl Emit<T>) -> Old<'e, T>;
+
+  /// Writes over the value what `f` builds from the old one, which moves into it. See
+  /// `update` on the handles of `#[flat]` types.
+  fn update<'a, E: Emit<T>>(&'a mut self, f: impl FnOnce(Old<'a, T>) -> E);
+}
+
+/// Implements [`Handle`] for a handle that wraps the `Raw` of its place in `.0`.
+macro_rules! handle {
+  ($([$($g:tt)*] $handle:ty => $t:ty;)*) => {$(
+    impl<'e, $($g)*> Handle<'e, $t> for $handle {
+      fn set(&mut self, value: impl Emit<$t>) {
+        self.0.set(value);
+      }
+      fn replace(&mut self, value: impl Emit<$t>) -> Old<'e, $t> {
+        self.0.replace(value)
+      }
+      fn update<'a, E: Emit<$t>>(&'a mut self, f: impl FnOnce(Old<'a, $t>) -> E) {
+        self.0.update(f);
+      }
+    }
+  )*};
+}
+
+handle! {
+  [T: Flat + Copy] PlainEdit<'e, T> => T;
+  [T: Flat, O: Offset] ListEdit<'e, T, O> => Near<[T], O>;
+  [T: Flat, O: Offset] OptionEdit<'e, T, O> => Option<Near<T, O>>;
+  [O: Offset] StrEdit<'e, O> => Near<str, O>;
+}
+
+/// The handle of plain data, `Edit<'e, T>` for a number, a `bool` or an array of plain data.
+///
+/// That is also a `char`, a `NonZero`, a number of [`puns::num`](crate::puns::num): it reads and
+/// writes as the value (`Deref`, `DerefMut`), and has `set`, `replace` and `update` as every
+/// handle has. The getters of handles (field methods, `at`, `push`, ..) give it as [`Plain`],
+/// whose `*` is the value.
+#[repr(transparent)]
+pub struct PlainEdit<'e, T>(Raw<'e, T>);
+
+impl<'e, T: Flat + Copy> PlainEdit<'e, T> {
+  pub(crate) const fn new<'a>(raw: &'a mut Raw<'e, T>) -> &'a mut Self {
+    // SAFETY: `PlainEdit` is a transparent wrapper.
+    unsafe { &mut *(ptr::from_mut(raw) as *mut Self) }
+  }
+
+  /// Writes `value` over the value, like `*place = value`.
+  pub fn set(&mut self, value: impl Emit<T>) {
+    self.0.set(value);
+  }
+
+  /// Writes `value` over the value and returns the old one, like `mem::replace`; as for every
+  /// handle, it is an [`Old`], which can only be written somewhere.
+  pub fn replace(&mut self, value: impl Emit<T>) -> Old<'e, T> {
+    self.0.replace(value)
+  }
+
+  /// Writes over the value what `f` builds from the old one.
+  pub fn update<'a, E: Emit<T>>(&'a mut self, f: impl FnOnce(Old<'a, T>) -> E) {
+    self.0.update(f);
+  }
+}
+
+impl<T: Flat + Copy> Deref for PlainEdit<'_, T> {
+  type Target = T;
+  fn deref(&self) -> &T {
+    self.0.get()
+  }
+}
+
+impl<T: Flat + Copy> DerefMut for PlainEdit<'_, T> {
+  fn deref_mut(&mut self) -> &mut T {
+    self.0.get_mut()
+  }
+}
+
+/// A place of plain data, given by value by the getters of handles: `*` is the value.
+///
+/// So a field reads and writes with one star, as a `&mut` would (`*e.count() += 1`), and it is a
+/// handle too (`set`, `replace`, `update`). Bound by a pattern, it is mutable if the binding is
+/// (`Some(mut n) => *n += 1`), as any value.
+///
+/// ```
+/// use nearest::{Near, Region, flat};
+///
+/// #[flat]
+/// struct Counter { count: u32, names: Near<[Near<str>]> }
+///
+/// let mut r = Region::new(Counter::new(1, ()));
+/// let c = r.edit();
+/// *c.count() += 1;
+/// let n = *c.count();
+/// c.count().set(n * 10);
+/// assert_eq!(r.count, 20);
+/// ```
+pub struct Plain<'a, 'e, T>(&'a mut PlainEdit<'e, T>);
+
+impl<'a, 'e, T: Flat + Copy> Plain<'a, 'e, T> {
+  pub(crate) const fn new(edit: &'a mut PlainEdit<'e, T>) -> Self {
+    Self(edit)
+  }
+
+  /// Writes `value` over the value, like `*place = value`.
+  pub fn set(&mut self, value: impl Emit<T>) {
+    self.0.set(value);
+  }
+
+  /// Writes `value` over the value and returns the old one, like `mem::replace`.
+  pub fn replace(&mut self, value: impl Emit<T>) -> Old<'e, T> {
+    self.0.replace(value)
+  }
+
+  /// Writes over the value what `f` builds from the old one.
+  pub fn update<'b, E: Emit<T>>(&'b mut self, f: impl FnOnce(Old<'b, T>) -> E) {
+    self.0.update(f);
+  }
+
+  /// The handle of the place, `&mut Edit<'e, T>`, as other places are given.
+  #[must_use]
+  pub const fn edit(self) -> &'a mut PlainEdit<'e, T> {
+    self.0
+  }
+}
+
+impl<'e, T: Flat + Copy> Handle<'e, T> for Plain<'_, 'e, T> {
+  fn set(&mut self, value: impl Emit<T>) {
+    self.0.set(value);
+  }
+  fn replace(&mut self, value: impl Emit<T>) -> Old<'e, T> {
+    self.0.replace(value)
+  }
+  fn update<'a, E: Emit<T>>(&'a mut self, f: impl FnOnce(Old<'a, T>) -> E) {
+    self.0.update(f);
+  }
+}
+
+impl<T: Flat + Copy> Deref for Plain<'_, '_, T> {
+  type Target = T;
+  fn deref(&self) -> &T {
+    self.0
+  }
+}
+
+impl<T: Flat + Copy> DerefMut for Plain<'_, '_, T> {
+  fn deref_mut(&mut self) -> &mut T {
+    self.0
+  }
+}
+
 /// A value that left its place, during the edit `'e`: returned by `replace`,
 /// [`ListEdit::remove`] and [`OptionEdit::take`].
 ///
@@ -330,13 +509,13 @@ impl<'e, T: Flat, O: Offset> ListEdit<'e, T, O> {
   /// r.edit().insts().push(Inst::new(1, ())).args().push(10);
   /// assert_eq!((r.insts[0].op, &r.insts[0].args[..]), (1, &[10][..]));
   /// ```
-  pub fn push(&mut self, value: impl Emit<T>) -> &mut Edit<'e, T> {
+  pub fn push(&mut self, value: impl Emit<T>) -> T::Ref<'_, 'e> {
     let (buf, list) = self.stage(value);
     let at = list.elem::<T>(list.len);
     // SAFETY: the element is complete; the new handle borrows this one.
     unsafe {
       Self::set_len(buf, &list, list.len + 1);
-      T::edit(buf, at)
+      T::reference(T::edit(buf, at))
     }
   }
 
@@ -356,7 +535,7 @@ impl<'e, T: Flat, O: Offset> ListEdit<'e, T, O> {
   /// r.edit().names().insert(1, "b");
   /// assert_eq!(r.names.iter().map(|s| &**s).collect::<Vec<_>>(), ["a", "b", "c"]);
   /// ```
-  pub fn insert(&mut self, index: usize, value: impl Emit<T>) -> &mut Edit<'e, T> {
+  pub fn insert(&mut self, index: usize, value: impl Emit<T>) -> T::Ref<'_, 'e> {
     let len = self.len();
     assert!(index <= len, "insertion index (is {index}) should be <= len (is {len})");
     let (buf, list) = self.stage(value);
@@ -369,7 +548,7 @@ impl<'e, T: Flat, O: Offset> ListEdit<'e, T, O> {
       move_elems::<T>(buf, at, list.elem::<T>(index + 1), len - index);
       unstash(buf, &v, staged, at);
       Self::set_len(buf, &list, len + 1);
-      T::edit(buf, at)
+      T::reference(T::edit(buf, at))
     }
   }
 
@@ -524,7 +703,7 @@ impl<'e, T: Flat, O: Offset> ListEdit<'e, T, O> {
   /// inst.args().push(11);
   /// assert_eq!((r.insts[0].op, &r.insts[0].args[..]), (2, &[10, 11][..]));
   /// ```
-  pub fn at(&mut self, index: usize) -> &mut Edit<'e, T> {
+  pub fn at(&mut self, index: usize) -> T::Ref<'_, 'e> {
     let len = self.len();
     self
       .try_at(index)
@@ -548,10 +727,10 @@ impl<'e, T: Flat, O: Offset> ListEdit<'e, T, O> {
   /// assert!(names.try_at(1).is_none());
   /// assert_eq!(&*r.names[0], "b");
   /// ```
-  pub fn try_at(&mut self, index: usize) -> Option<&mut Edit<'e, T>> {
+  pub fn try_at(&mut self, index: usize) -> Option<T::Ref<'_, 'e>> {
     let (buf, list) = self.list();
     // SAFETY: a valid element; the new handle borrows this one.
-    (index < list.len).then(|| unsafe { T::edit(buf, list.elem::<T>(index)) })
+    (index < list.len).then(|| unsafe { T::reference(T::edit(buf, list.elem::<T>(index))) })
   }
 
   /// Replaces the list with `value`.
@@ -687,9 +866,9 @@ impl<'e, T: Flat, O: Offset> OptionEdit<'e, T, O> {
   /// }
   /// assert_eq!(r.next.as_ref().unwrap().value, 20);
   /// ```
-  pub fn as_mut(&mut self) -> Option<&mut Edit<'e, T>> {
+  pub fn as_mut(&mut self) -> Option<T::Ref<'_, 'e>> {
     // SAFETY: a `Some` holds a `Near<T>` at offset 0.
-    self.0.get().is_some().then(|| unsafe { self.0.field::<Near<T, O>>(0) })
+    self.0.get().is_some().then(|| T::reference(unsafe { self.0.field::<Near<T, O>>(0) }))
   }
 
   /// Points to a new target written from `value`, like [`Option::insert`]; returns its handle.
@@ -705,7 +884,7 @@ impl<'e, T: Flat, O: Offset> OptionEdit<'e, T, O> {
   /// r.edit().next().insert(Node::new(2, None)).next().insert(Node::new(3, None));
   /// assert_eq!(r.next.as_ref().unwrap().next.as_ref().unwrap().value, 3);
   /// ```
-  pub fn insert(&mut self, value: impl Emit<T>) -> &mut Edit<'e, T> {
+  pub fn insert(&mut self, value: impl Emit<T>) -> T::Ref<'_, 'e> {
     fits_behind::<T, O>();
     let (buf, at) = (self.0.buf(), self.0.at());
     // SAFETY: `buf` is the edit's `me`; the target is complete before the pointer is written,
@@ -715,7 +894,7 @@ impl<'e, T: Flat, O: Offset> OptionEdit<'e, T, O> {
       let t = sink.alloc(size_of::<T>(), align_of::<T>());
       value.emit(&mut sink, t);
       sink.link::<O>(at, t);
-      T::edit(buf, t)
+      T::reference(T::edit(buf, t))
     }
   }
 
@@ -760,6 +939,12 @@ impl<'e, T: Flat, O: Offset> OptionEdit<'e, T, O> {
   /// ```
   pub fn set(&mut self, value: impl Emit<Option<Near<T, O>>>) {
     self.0.set(value);
+  }
+
+  /// Replaces the pointer with `value` and returns the old one, like `mem::replace`; `take`
+  /// returns the target instead.
+  pub fn replace(&mut self, value: impl Emit<Option<Near<T, O>>>) -> Old<'e, Option<Near<T, O>>> {
+    self.0.replace(value)
   }
 
   /// Replaces the pointer with what `f` builds from the old one, which moves into it.

@@ -108,7 +108,8 @@ iterator, a string, or a generated constructor. A constructor parameter for a fi
 where one is expected (optional pointers, lists of pointers). For a struct, `XInit` takes the same
 builders by name, in any order: `FuncInit { name: "f", blocks: () }` is `Func::new("f", ())`.
 
-Handles reach every place in a region. Plain data (`T: Copy`) is a real `&mut T` or `&mut [T]`.
+Handles reach every place in a region. A field of plain data reads and writes with one star,
+`*e.count() += 1`, and a list of it is a real `&mut [T]`.
 A handle borrows its parent handle, so one handle is usable at a time, and no reference into
 the buffer outlives a change that may grow it. Every handle has `set` (assign); `replace`
 (assign and return the old value), `ListEdit::remove` and `OptionEdit::take` return the value

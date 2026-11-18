@@ -637,7 +637,7 @@ fn plain_handles_deref_mut() {
   assert_eq!(*r, Rgb { r: 4, g: 9, b: 9, c: Color::Blue });
   let mut s = Region::new_in(Store::default(), Shape::Dot);
   **s.edit() = Shape::Circle(1);
-  if let ShapeMut::Circle(radius) = s.edit().as_mut() {
+  if let ShapeMut::Circle(mut radius) = s.edit().as_mut() {
     *radius += 1;
   }
   assert_eq!(*s, Shape::Circle(2));
@@ -683,7 +683,7 @@ fn enum_handles() {
   // Generic enums.
   let mut t = Region::new_in(Store::default(), Tree::node(Tree::Leaf(1u32), Tree::Leaf(2)));
   if let TreeMut::Node(kids) = t.edit().as_mut() {
-    if let TreeMut::Leaf(x) = kids._0().as_mut() {
+    if let TreeMut::Leaf(mut x) = kids._0().as_mut() {
       *x = 10;
     }
     kids._1().set(Tree::node(Tree::Leaf(3), Tree::Leaf(4)));
@@ -779,7 +779,7 @@ fn list_index_panics() {
   // `try_at` is `at` without the panic.
   let list = r.edit();
   assert!(list.try_at(2).is_none());
-  if let Some(x) = list.try_at(1) {
+  if let Some(mut x) = list.try_at(1) {
     *x += 1;
   }
   assert_eq!((r[..].to_vec(), r.byte_len()), (vec![1, 3], 4 + 8 + 8));
@@ -1878,7 +1878,7 @@ fn random_expression_rewrites_match_a_model() {
         if let M::Lit(n) = mm {
           *n += s;
         }
-        if let ExprMut::Lit(n) = e.as_mut() {
+        if let ExprMut::Lit(mut n) = e.as_mut() {
           *n += s;
         }
       }

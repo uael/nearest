@@ -5,7 +5,7 @@ use core::{fmt, marker::PhantomData, ops::Deref, slice};
 #[cfg(feature = "alloc")]
 use crate::Heap;
 use crate::{
-  Edit, Emit, Error, Flat, Pending, Storage,
+  Emit, Error, Flat, Pending, Storage,
   bytes::{Stack, check},
   flat::{Buf, Sink, fits, limit},
 };
@@ -147,14 +147,14 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// b.name().set("entry");
   /// assert_eq!((r.id, &r.insts[..], &*r.name), (7, &[1, 3, 4][..], "entry"));
   /// ```
-  pub fn edit(&mut self) -> &mut Edit<'_, T> {
+  pub fn edit(&mut self) -> T::Ref<'_, '_> {
     fits::<T>();
     self.attach();
     self.buf.compact = false;
     self.buf.me = &raw mut self.buf;
     // SAFETY: the root is a `T` at byte 0, the buffer is attached, the region is borrowed for
     // the edit, and every access of the edit goes through `me` (I8).
-    unsafe { T::edit(self.buf.me, 0) }
+    T::reference(unsafe { T::edit(self.buf.me, 0) })
   }
 
   /// The compact image of the region, borrowed: the bytes a deep copy writes, which the loaders

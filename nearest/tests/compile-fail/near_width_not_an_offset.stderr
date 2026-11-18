@@ -161,6 +161,30 @@ note: required by a bound in `Near`
   |                               ^^^^^^ required by this bound in `Near`
   = note: this error originates in the attribute macro `flat` which comes from the expansion of the macro `offsets` (in Nightly builds, run with -Z macro-backtrace for more info)
 
+error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know its layout and its valid values
+ --> tests/compile-fail/near_width_not_an_offset.rs:5:21
+  |
+5 | struct Byte { next: Option<Near<Byte, u8>> }
+  |                     ^^^^^^^^^^^^^^^^^^^^^^ not a `Pun` type
+  |
+  = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with `SelfRelative` and `self_relative!`
+help: the trait `Pun` is conditionally implemented for `Option<T>`
+ --> $CARGO/puns-$VERSION/src/std_enums.rs
+  |
+  | unsafe impl<T: Pun> Pun for Option<T> {
+  | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
+  |                |
+  |                unsatisfied requirement introduced here: `Near<Byte, u8>: Pun`
+note: required by a bound in `nearest::Flat::reference`
+ --> src/flat.rs
+  |
+  | pub unsafe trait Flat: Pun + Sized + 'static {
+  |                        ^^^ required by this bound in `Flat::reference`
+...
+  |   fn reference<'a, 'e: 'a>(edit: &'a mut Self::Edit<'e>) -> Self::Ref<'a, 'e>;
+  |
+
 error[E0277]: the trait bound `u8: Offset` is not satisfied
  --> tests/compile-fail/near_width_not_an_offset.rs:4:1
   |

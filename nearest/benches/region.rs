@@ -146,7 +146,7 @@ fn edit(c: &mut Criterion) {
       for i in 0..blocks.len() {
         let insts = blocks.at(i).insts();
         for j in 0..insts.len() {
-          let op = insts.at(j).op();
+          let mut op = insts.at(j).op();
           *op = op.wrapping_add(1);
         }
       }
