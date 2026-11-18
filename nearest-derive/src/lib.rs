@@ -110,6 +110,26 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // `Near<..>` takes what `Pointer` says: for `Near<X>` (or `Near<X, O>`) a builder of `X`,
   // whose target the constructor allocates.
   // A field marked `#[flat(into)]` takes `impl Into<FieldType>`.
+  // What the parameter of the field `f` takes, and how its value `p` is written: for a field
+  // written `Near<X>` (or `Near<X, O>`) a builder of `X`, whose target is allocated; for one marked
+  // `#[flat(into)]` anything that converts to the field; else a builder of the field.
+  let param = |f: &Field, into: bool, p: &Ident| {
+    let ty = &f.ty;
+    match near_target(ty) {
+      _ if into => {
+        (quote!(::core::convert::Into<#ty>), quote!(::core::convert::Into::<#ty>::into(#p)))
+      }
+      // A type parameter is a sized target; naming it lets the argument infer it.
+      Some(Type::Path(x)) if type_params.iter().any(|t| x.path.is_ident(*t)) => {
+        (quote!(::nearest::Emit<#x>), quote!(<#ty>::new(#p)))
+      }
+      Some(_) => (
+        quote!(::nearest::Emit<<#ty as #np::Pointer>::Arg>),
+        quote!(<#ty as #np::Pointer>::wrap(#p)),
+      ),
+      None => (quote!(::nearest::Emit<#ty>), p.to_token_stream()),
+    }
+  };
   let ctor = |fname: Ident,
               doc: String,
               fields: &Fields,
@@ -123,26 +143,9 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       .collect();
     let (mut ptys, mut vals) = (Vec::new(), Vec::new());
     for ((f, p), into) in fields.iter().zip(&params).zip(into) {
-      let ty = &f.ty;
-      match near_target(ty) {
-        _ if *into => {
-          ptys.push(quote!(impl ::core::convert::Into<#ty>));
-          vals.push(quote!(::core::convert::Into::<#ty>::into(#p)));
-        }
-        // A type parameter is a sized target; naming it lets the argument infer it.
-        Some(Type::Path(x)) if type_params.iter().any(|t| x.path.is_ident(*t)) => {
-          ptys.push(quote!(impl ::nearest::Emit<#x>));
-          vals.push(quote!(<#ty>::new(#p)));
-        }
-        Some(_) => {
-          ptys.push(quote!(impl ::nearest::Emit<<#ty as #np::Pointer>::Arg>));
-          vals.push(quote!(<#ty as #np::Pointer>::wrap(#p)));
-        }
-        None => {
-          ptys.push(quote!(impl ::nearest::Emit<#ty>));
-          vals.push(p.to_token_stream());
-        }
-      }
+      let (bound, val) = param(f, *into, p);
+      ptys.push(quote!(impl #bound));
+      vals.push(val);
     }
     let tys = fields.iter().map(|f| &f.ty);
     // One parameter per field is the point of a constructor.
@@ -183,6 +186,56 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   };
 
   // What differs between structs and enums.
+  // `XInit`: the fields of a struct as builders, named, in any order; written as `X::new` writes
+  // them, which it calls (the same machine code). Its type parameters are the builders.
+  let init_name = format_ident!("{name}Init");
+  let init_struct = |fields: &Fields, into: &[bool]| {
+    let members: Vec<Member> = fields.members().collect();
+    let binds: Vec<Ident> =
+      (0..fields.len()).map(|k| format_ident!("f{k}", span = Span::mixed_site())).collect();
+    let gs: Vec<Ident> = (0..fields.len()).map(|k| format_ident!("__F{k}")).collect();
+    let mut init_g = generics.clone();
+    let (mut vals, mut tys) = (vec![], vec![]);
+    for ((f, g), (into, b)) in fields.iter().zip(&gs).zip(into.iter().zip(&binds)) {
+      // Outside the impl of `X`, `Self` in a field type is spelled out.
+      let (bound, val) = param(f, *into, b);
+      let bound = unself(bound, &self_ty);
+      init_g.params.push(parse_quote!(#g: #bound));
+      vals.push(unself(val, &self_ty));
+      tys.push(unself(f.ty.to_token_stream(), &self_ty));
+    }
+    let (i_impl, _, i_where) = init_g.split_for_impl();
+    let doc = format!(
+      "The fields of a `{name}`, as builders, by name and in any order: written as \
+       `{name}::new` writes them."
+    );
+    let decl = if let Fields::Named(_) = fields {
+      let docs = members.iter().map(|m| format!("`{}`.", m.to_token_stream()));
+      quote!(#vis struct #init_name<#(#gs),*> { #(#[doc = #docs] #vis #members: #gs,)* })
+    } else {
+      quote!(#vis struct #init_name<#(#gs),*>(#(#vis #gs),*);)
+    };
+    quote! {
+      #[doc = #doc]
+      #decl
+      // SAFETY: every field written at its offset, as `X::new` writes them.
+      unsafe impl #i_impl ::nearest::Emit<#self_ty> for #init_name<#(#gs),*> #i_where {
+        unsafe fn emit(self, #sink: &mut #np::Sink, #at: usize) {
+          #np::fits::<#self_ty>();
+          let Self { #(#members: #binds),* } = self;
+          // SAFETY: each field at its offset, as `new` writes it.
+          unsafe {
+            #(::nearest::Emit::<#tys>::emit(
+              #vals,
+              #sink,
+              #at + ::core::mem::offset_of!(#self_ty, #members),
+            );)*
+          }
+        }
+      }
+    }
+  };
+  let mut init = None;
   let (mut mirrors, mut ctors, mut methods, mut extra) = (vec![], vec![], vec![], vec![]);
   let mut view = None;
   // The declaration of `XPin` and the body of `project`, and every field type of the type.
@@ -202,6 +255,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       if !s.fields.is_empty() {
         let doc = format!("Builds a `{name}` from its fields, in declaration order.");
         ctors.push(ctor(format_ident!("new"), doc, &s.fields, &into[0], quote!(), offs));
+        init = Some(init_struct(&s.fields, &into[0]));
       }
       for (i, (f, m)) in s.fields.iter().zip(&members).enumerate() {
         let off = quote!(::core::mem::offset_of!(#self_ty, #m));
@@ -461,6 +515,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     #input
     #view
     #pin_decl
+    #init
     const _: () = {
       #unpin
       #(#mirrors)*

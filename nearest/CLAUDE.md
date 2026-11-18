@@ -448,11 +448,19 @@ For a type `X`, `#[flat]` emits, inside `const _: () = { .. }`, the `Flat` impl 
 `fits`), the constructors, the handle
 `__NearestEdit<'e, ..>` (`set`, `replace`, `update`, `pin`, a method per struct field, `as_mut`
 for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), the mirror structs, and `X::project`;
-next to `X`, with its visibility, `XPin<'a>` and, for an enum with fields, `XMut<'a, 'e>` (an
-item of the user's with one of those names is a duplicate definition).
+next to `X`, with its visibility, `XPin<'a>`, for a struct with fields `XInit<..>`, and for an
+enum with fields `XMut<'a, 'e>` (an item of the user's with one of those names is a duplicate
+definition).
 
 - Constructors: `X::new(fields..)` for a struct; one function per non-unit variant, in snake
   case. They return `impl Emit<X>` (see Building).
+- `XInit<__F0, ..>`: for a struct with fields, a struct (tuple-like for a tuple struct) with the
+  fields of `X`, each of a type parameter bounded as the parameter of `new` is (a builder of the
+  field, of the target of a pointer, `impl Into` with `#[flat(into)]`), all with the visibility of
+  `X`, as `new` takes every field. It is `Emit<X>`, writing each field at its offset as `new`
+  does: the same machine code (an `XInit` and `X::new` of the same fields compile to identical
+  functions), and the same bytes (`init_structs_name_the_fields`). The names are the point: a
+  struct of seven fields (`Function` of `examples/ir.rs`) reads as a literal.
 - Field methods are named after the field (`_0`, `_1`, .. for tuple fields), have its
   visibility and return `&mut Edit<'e, FieldType>`. Names the code uses itself get a trailing
   underscore: fields `set`, `replace`, `pin`, `update`; the constructor of a variant `Project`
@@ -528,7 +536,7 @@ panics.
 - `Near<T>` and `Option<Near<T>>`: `Near::new(e)`;
 - `Near<[T]>`: `[E; N]`, tuples up to 12 and `()`, `&[T]`, `Near::from_iter(iter)`;
 - `Near<str>`: `&str`;
-- `#[flat]` types: the generated constructors.
+- `#[flat]` types: the generated constructors, and `XInit { .. }` for a struct.
 
 Constructors are lazy: nothing is written until the builder reaches a region. Types without
 pointers can also be built with a plain literal. Pointers are transparent where unambiguous: a

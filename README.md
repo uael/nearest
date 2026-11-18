@@ -105,7 +105,8 @@ Anything that can be written as a `T` is accepted wherever a `T` is built: a val
 (`&T`, from any region), a move (`Old`), a list literal (`[a, b]`, `(a, b)`, `()`), a slice, an
 iterator, a string, or a generated constructor. A constructor parameter for a field written
 `Near<X>` takes a builder of `X` and allocates the target; `Near::new(x)` builds a pointer
-where one is expected (optional pointers, lists of pointers).
+where one is expected (optional pointers, lists of pointers). For a struct, `XInit` takes the same
+builders by name, in any order: `FuncInit { name: "f", blocks: () }` is `Func::new("f", ())`.
 
 Handles reach every place in a region. Plain data (`T: Copy`) is a real `&mut T` or `&mut [T]`.
 A handle borrows its parent handle, so one handle is usable at a time, and no reference into

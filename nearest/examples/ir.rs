@@ -172,13 +172,13 @@ pub fn sum_of_squares() -> Region<Function> {
   let set = |register, operand| Inst::Set(u16le::new(register), operand);
   let square = Expr::bin(Op::Mul, leaf(reg(I)), leaf(reg(I)));
   let sum = Expr::bin(Op::Add, leaf(reg(TOTAL)), Expr::neg(Expr::neg(square)));
-  Region::new(Function::new(
-    u32lec::new(),
-    u16le::new(1),
-    u16le::new(1),
-    u16le::new(4),
-    "sum_of_squares",
-    (
+  Region::new(FunctionInit {
+    magic: u32lec::new(),
+    version: u16le::new(1),
+    params: u16le::new(1),
+    registers: u16le::new(4),
+    name: "sum_of_squares",
+    blocks: (
       Block::new("entry", [set(TOTAL, int(0)), set(I, int(0))], End::Jump(block(1))),
       Block::new(
         "test",
@@ -196,8 +196,8 @@ pub fn sum_of_squares() -> Region<Function> {
         End::Return(reg(TOTAL)),
       ),
     ),
-    ["unused", "sum of squares below"],
-  ))
+    strings: ["unused", "sum of squares below"],
+  })
 }
 
 // -------------------------------------------------------------------------------------------------

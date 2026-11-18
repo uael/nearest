@@ -404,6 +404,9 @@ pub use near::{Near, Offset};
 ///   for a field written `Near<X>` takes a builder of `X` and allocates the target (a list or
 ///   string builder if `X` is a slice or `str`); one for a field of plain data marked
 ///   `#[flat(into)]` takes `impl Into<FieldType>`;
+/// - for structs with fields, `XInit`, next to `X`: the same builders as the fields of a struct,
+///   named and in any order (`XInit { name: "f", blocks: () }`), which writes what `X::new`
+///   writes, with the same machine code;
 /// - the handle, [`Edit<'e, X>`](Edit), with `set` (assign), `replace` (assign and return the
 ///   old value as an [`Old`]), `update` (build the new value from the old one) and `pin` (a
 ///   pinned view), and for structs one method per field

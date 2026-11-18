@@ -305,6 +305,18 @@ fn every_primitive() {
   assert_eq!(lists.items[1], p);
 }
 
+/// `XInit` names the fields of a struct, in any order, and writes what `X::new` writes.
+#[test]
+fn init_structs_name_the_fields() {
+  let positional = Region::new_in(Store::default(), Func::new("f", Block::new(1, [Inst::new(2, [3])], None), true));
+  let named = Region::new_in(Store::default(), FuncInit {
+    flag: true,
+    entry: BlockInit { next: None, insts: [InstInit { args: [3], op: 2 }], id: 1 },
+    name: "f",
+  });
+  assert_eq!(positional.as_bytes(), named.as_bytes());
+}
+
 #[test]
 fn every_emit_source() {
   let other = func();
