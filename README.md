@@ -90,7 +90,8 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `view`, `view_with` | functions: the value whose image is a slice aligned as a `u64`, checked and read in place; `unsafe` `view_unchecked` |
 | `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap (`Heap::with_capacity`), `N` bytes inside the region |
 | `Near<T, O = i32>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
-| `Offset` | the integer a `Near` keeps its distance in: `i16`, `i32`, `i64`, or a type of yours (an `unsafe` trait) |
+| `Offset` | the integer a `Near` keeps its distance in: `i16`, `i32`, `i64`, `i32le`.. of `puns::num`, or a type of yours (an `unsafe` trait) |
+| `puns` | the crate [`puns`](https://docs.rs/puns), re-exported: `view_ref` reads a value of a region as another type; `num` has numbers of a fixed byte order |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
 | `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
 | `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `update` |
@@ -168,6 +169,41 @@ The pointers of the root bound the region, and a pointer may only lead to types 
 are at least as wide (checked at compile time), so every distance fits. Building or editing past
 the bound panics, and bytes longer than it do not load.
 
+The offsets of `puns::num` (`i16le`, `i32le`, `i64le` and their big-endian counterparts) and its
+numbers (`u32le`, `f64be`, `u16bec<MAGIC>`, ...) make the bytes of a region the same on every
+machine:
+
+```rust
+use nearest::puns::num::{i32le, u16le};
+
+#[flat]
+struct Table { name: Near<str, i32le>, rows: Near<[u16le], i32le> }
+```
+
+## One value read as another
+
+Every `#[flat]` type is a [`puns`](https://docs.rs/puns) type too, and `Near` is declared to it as
+a self-relative pointer. So a value of a region can be read as another type, with everything it
+points to, when every value of the first is one of the second: `puns::view_ref` proves it at
+compile time, and costs nothing at run time. The bytes saved by a program are read by its next
+version without converting them:
+
+```rust
+#[flat]
+enum Expr { Lit(i64), Neg(Near<Expr>) }
+
+#[flat]
+enum NewExpr { Lit(i64), Neg(Near<NewExpr>), Abs(Near<NewExpr>) }   // one more variant
+
+let old = Region::new(Expr::neg(Expr::Lit(2)));
+let new: &NewExpr = nearest::puns::view_ref(&*old);                // the same bytes
+```
+
+The other way does not compile. `puns::try_view_ref` checks what cannot be proven of the value
+itself, and `#[pun(valid(..))]` and `#[pun(assert(..))]` can be written on a `#[flat]` type:
+requirements that `puns` checks where it does not prove them (regions do not check them when
+they build or edit a value).
+
 ## Bytes
 
 `as_bytes` returns the compact image of a region, the bytes a deep copy writes, borrowed: a
@@ -186,8 +222,8 @@ trust, or check yourself, `from_bytes_unchecked` and `view_unchecked` skip the c
 `unsafe`. An offset or a length is valid only as its
 `Offset` writes it: an `i64` that does not fit `isize` on a 32-bit target is invalid. The bytes
 hold the layout of the target, its values in the byte order of their types, and distances and
-lengths as their `Offset` writes them: native-endian for `i16`, `i32` and `i64`, or a byte order
-of your choice with an `Offset` of yours (an `unsafe` trait).
+lengths as their `Offset` writes them: native-endian for `i16`, `i32` and `i64`, or as their
+names say for the offsets of `puns::num`.
 
 ## Storage
 
@@ -227,7 +263,8 @@ the pointers of its root reach (2 GiB by default), or what its storage gives. Th
 
 ## Getting started
 
-Stable Rust (1.95 or later), `#![no_std]`, no dependencies besides the macro.
+Stable Rust (1.100 or later), `#![no_std]`, no dependencies besides the macro and
+[`puns`](https://docs.rs/puns). Not for 16-bit targets, for which `puns` does not build yet.
 
 ```sh
 cargo add nearest
@@ -250,8 +287,9 @@ The opt-in feature `serde` (with `alloc`) makes a `Region` `Serialize` and `Dese
 bytes, checked when loaded, like `as_bytes` and `from_bytes`.
 
 Examples: [`expr.rs`](nearest/examples/expr.rs) simplifies an expression tree by rewriting it
-in place; [`ir.rs`](nearest/examples/ir.rs) runs constant folding and dead-code elimination on
-a small IR.
+in place; [`passes.rs`](nearest/examples/passes.rs) runs constant folding and dead-code
+elimination on a small IR; [`ir.rs`](nearest/examples/ir.rs) is a compiler IR that is its own
+file format, the same bytes on every machine, saved, loaded and run in place.
 
 ## License
 

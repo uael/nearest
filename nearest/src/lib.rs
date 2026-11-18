@@ -177,9 +177,10 @@
 //! wide (checked at compile time), so every distance fits. Building or editing past the bound
 //! panics, as growing past a storage does, and bytes longer than it do not load.
 //!
-//! `Offset` is an `unsafe` trait that a type of yours can implement, for example to keep
-//! distances and lengths little-endian on every target, so that the bytes of a region are the
-//! same everywhere (see [`Offset`]).
+//! The signed integers of a fixed byte order of [`puns::num`] (`i16le`, `i32le`, `i64le`, `i16be`,
+//! `i32be`, `i64be`) are offsets too, and its other numbers (`u32le`, `f64be`, `u16bec<V>`, ...)
+//! can be stored: with them the bytes of a region are the same on every machine. `Offset` is an
+//! `unsafe` trait that a type of yours can implement as well (see [`Offset`]).
 //!
 //! ```
 //! use nearest::{Near, Offset, Region, flat};
@@ -192,6 +193,62 @@
 //! assert_eq!((small.rows[2], large.rows[2]), (3, 3));
 //! assert_eq!((size_of::<Table<i16>>(), size_of::<Table<i64>>()), (4, 16));
 //! ```
+//!
+//! # One value read as another
+//!
+//! Every `#[flat]` type is also a [`puns::Pun`] type: its layout and its valid values are known
+//! at compile time, and [`Near`] is declared to `puns` as a self-relative pointer
+//! ([`puns::SelfRelative`]). So a value of a region can be read as another type, with
+//! everything it points to, when every value of the first is a value of the second:
+//! [`puns::view_ref`] proves it at compile time and costs nothing at run time, and
+//! [`puns::try_view_ref`] checks what could not be proven of the value itself. Bytes saved by one
+//! version of a program are read by the next, without converting them:
+//!
+//! ```
+//! use nearest::{Near, Region, flat, puns};
+//!
+//! #[flat]
+//! enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
+//!
+//! /// The next version: one more variant, at the end.
+//! #[flat]
+//! enum NewExpr { Lit(i64), Neg(Near<NewExpr>), Add(Near<NewExpr>, Near<NewExpr>), Mul(Near<NewExpr>, Near<NewExpr>) }
+//!
+//! fn eval(e: &NewExpr) -> i64 {
+//!   match e {
+//!     NewExpr::Lit(n) => *n,
+//!     NewExpr::Neg(x) => -eval(x),
+//!     NewExpr::Add(a, b) => eval(a) + eval(b),
+//!     NewExpr::Mul(a, b) => eval(a) * eval(b),
+//!   }
+//! }
+//!
+//! let old = Region::new(Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2))));
+//! // Every `Expr`, and what it points to, is a `NewExpr`: nothing is checked, nothing is copied.
+//! let new: &NewExpr = puns::view_ref(&*old);
+//! assert_eq!(eval(new), -1);
+//! ```
+//!
+//! The other way does not compile: a `NewExpr` may be a `Mul`, behind a pointer, where nothing
+//! can be checked.
+//!
+//! ```compile_fail
+//! # use nearest::{Near, Region, flat, puns};
+//! # #[flat] enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
+//! # #[flat] enum NewExpr { Lit(i64), Neg(Near<NewExpr>), Add(Near<NewExpr>, Near<NewExpr>), Mul(Near<NewExpr>, Near<NewExpr>) }
+//! fn back(new: &NewExpr) -> &Expr {
+//!   puns::view_ref(new)
+//! }
+//! # let _: fn(&NewExpr) -> &Expr = back;
+//! ```
+//!
+//! What `#[pun(..)]` says of a type, `valid(..)` of a field and `assert(..)` of a struct, are
+//! requirements that `puns` checks where it does not prove them. A region does not check them
+//! when it builds or edits a value: like a field of a struct that safe code can write, a value of
+//! a region may not meet them, and nothing relies on it. Until `puns` describes `Option` of a
+//! pointer and the signed `NonZero` integers, a type with a field written `Option<Near<..>>` or
+//! `NonZero<iN>` is not a `Pun` type, and a type that holds or points to one says so with
+//! `#[flat(no_pun)]`.
 //!
 //! # The `nightly` feature
 //!
@@ -220,7 +277,7 @@
 //! trusted, or checked by the caller, [`Region::from_bytes_unchecked`] and [`view_unchecked`]
 //! skip the check and are `unsafe`. The bytes hold the layout of the target, its values in the byte order of their
 //! types, and distances and lengths as their [`Offset`] writes them (native-endian for `i16`,
-//! `i32` and `i64`).
+//! `i32` and `i64`; as their names say for the offsets of [`puns::num`]).
 //!
 //! # The `serde` feature
 //!
@@ -302,6 +359,11 @@
 //! - No pointer is made from an integer. Miri runs the tests with Tree Borrows and strict
 //!   provenance.
 //!
+//! What [`puns`] makes of a value that holds a `Near` keeps all of this: it reads such a value
+//! as plain data, makes one only by [`puns::view_ref`] and [`puns::try_view_ref`] from a value
+//! that holds, at the same place, a pointer whose target it proves to be one, and never gives a
+//! `&mut` to one.
+//!
 //! Stored types must be no more aligned than a `u64` (the words of a region's memory: 8 bytes on
 //! x86-64, 4 on `i686`), and have a non-zero size and no drop glue (checked at compile time). A region holds at most what the pointers of its root reach (2 GiB with the
 //! default `i32`; see [Pointer widths](#pointer-widths)), or what its storage gives; growing past
@@ -336,7 +398,11 @@ pub use near::{Near, Offset};
 /// Makes a struct or enum storable in a region.
 ///
 /// It implements [`Flat`] and adds `#[repr(C)]` to structs (unless they are already `C` or
-/// `transparent`) and `#[repr(u8)]` to enums. It generates:
+/// `transparent`) and `#[repr(u8)]` to enums. It derives [`puns::Pun`], so that `#[pun(..)]`
+/// options (`valid(..)` on a field, `assert(..)` on a struct, `bound(..)`) can be written on the
+/// type (see [One value read as another](crate#one-value-read-as-another)); a type must not
+/// derive it again, and the types of the fields of a `pub` type must be as visible as it is. It
+/// generates:
 ///
 /// - constructors whose parameters take anything that can be written as the field's type
 ///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
@@ -358,6 +424,10 @@ pub use near::{Near, Offset};
 ///   of whose variants are tuple-like: unit variants stay units, a variant with one field holds
 ///   that field's handle, and a variant with several fields holds a handle with a method per
 ///   field (and no `set` or `replace`, so the variant cannot change under it).
+///
+/// `#[flat(no_pun)]` leaves `Pun` out, for a type that holds or points to one that is not a
+/// `Pun` type yet (one with a field written `Option<Near<..>>` or `NonZero<iN>`, which leave it
+/// out by themselves).
 ///
 /// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
 /// `repr`s other than `u8`, explicit discriminants, empty enums, enums of more than 256
