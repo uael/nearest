@@ -201,8 +201,9 @@ let new: &NewExpr = nearest::puns::view_ref(&*old);                // the same b
 
 The other way does not compile. `puns::try_view_ref` checks what cannot be proven of the value
 itself, and `#[pun(valid(..))]` and `#[pun(assert(..))]` can be written on a `#[flat]` type:
-requirements that `puns` checks where it does not prove them (regions do not check them when
-they build or edit a value).
+requirements that the loaders check, and `puns` where it does not prove them (regions do not
+check them when they build or edit a value: one that breaks a rule is saved, and refused when
+loaded).
 
 ## Bytes
 
@@ -211,7 +212,8 @@ region is compact until it is edited, and a copy, `Region::new(&*r)`, always is.
 checks bytes and copies them into a new region; `nearest::view` checks a slice aligned as
 a region is (as a `u64`: 8 bytes on x86-64, 4 on `i686`), such as a memory-mapped file, and reads
 it in place. Checking accepts exactly the compact images of valid
-values, in one pass, in safe code, without recursion or panics. Every loader returns
+values, in one pass, in safe code, without recursion or panics: each value as its layout says
+(`puns`), its rules included. Every loader returns
 `Result<_, Error>`: `Error::Invalid(offset)` says where the bytes went wrong, and
 `Error::StorageFull` that a valid image is larger than the storage of `from_bytes`. Checking
 keeps the pointers still to visit in memory that grows with the nesting of the data;
@@ -264,7 +266,7 @@ the pointers of its root reach (2 GiB by default), or what its storage gives. Th
 ## Getting started
 
 Stable Rust (1.100 or later), `#![no_std]`, no dependencies besides the macro and
-[`puns`](https://docs.rs/puns). Not for 16-bit targets, for which `puns` does not build yet.
+[`puns`](https://docs.rs/puns).
 
 ```sh
 cargo add nearest

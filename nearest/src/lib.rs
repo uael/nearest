@@ -535,7 +535,6 @@ pub mod __private {
   pub use crate::unpin::unpin;
   use crate::{Emit, Flat, Near, Offset};
   pub use crate::{
-    bytes::Check,
     edit::Raw,
     flat::{Buf, Sink, fits, make},
     near::Packed,
