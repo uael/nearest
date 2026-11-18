@@ -32,7 +32,7 @@ nearest-derive = { version = "=0.7.2", path = "../nearest-derive" }
 # byte order (`puns::num`), and `view_ref`. Re-exported as `nearest::puns`.
 # From its repository until 0.1.0 is published: crates.io takes no git dependency, so the release
 # of `nearest` 0.8 waits for it.
-puns = { version = "0.1.0", git = "https://github.com/uael/puns", rev = "5d8f9a71eff85d2ed204a67deef8f5ce280beffd" }
+puns = { version = "0.1.0", git = "https://github.com/uael/puns", rev = "6ccd7ce40cd1347364255efb3470c1a826c290bc" }
 serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

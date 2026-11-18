@@ -9,8 +9,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # In three jobs, each under a minute: the tests (with the compile-fail cases), the features
-  # (without `alloc`, `serde`) and the examples, and what is built in release.
+  # In four jobs, each under a minute: the tests (with the compile-fail cases), the features
+  # (without `alloc`, `serde`) and the examples, a region past 2 GiB, the benchmarks.
   test:
     name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -27,12 +27,12 @@ jobs:
               cargo test -p nearest --features serde --test serde &&
               cargo test -p nearest --features serde --doc &&
               cargo run --example expr && cargo run --example passes && cargo run --example ir
-          # A region past 2 GiB, with 8-byte pointers: about 4 GB of memory, seconds in release;
-          # and the benchmarks, once each, in the same profile.
-          - name: release
-            run: >-
-              cargo test --release -p nearest --test width -- --ignored &&
-              cargo bench --bench region -- --test
+          # A region past 2 GiB, with 8-byte pointers: about 4 GB of memory, seconds in release.
+          - name: past 2 GiB
+            run: cargo test --release -p nearest --test width -- --ignored
+          # The benchmarks, once each.
+          - name: benchmarks
+            run: cargo bench --bench region -- --test
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
