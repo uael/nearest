@@ -447,7 +447,7 @@ dependencies = [
 [[package]]
 name = "puns"
 version = "0.2.0-beta.2"
-source = "git+https://github.com/uael/puns?rev=43cb1c25865527a7a9da8b2089cf479357756a56#43cb1c25865527a7a9da8b2089cf479357756a56"
+source = "git+https://github.com/uael/puns?rev=4c0252f8e6eff8e5c0c106ae756d1e9ade40f179#4c0252f8e6eff8e5c0c106ae756d1e9ade40f179"
 dependencies = [
  "puns-derive",
 ]
@@ -455,7 +455,7 @@ dependencies = [
 [[package]]
 name = "puns-derive"
 version = "0.2.0-beta.2"
-source = "git+https://github.com/uael/puns?rev=43cb1c25865527a7a9da8b2089cf479357756a56#43cb1c25865527a7a9da8b2089cf479357756a56"
+source = "git+https://github.com/uael/puns?rev=4c0252f8e6eff8e5c0c106ae756d1e9ade40f179#4c0252f8e6eff8e5c0c106ae756d1e9ade40f179"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -389,8 +389,9 @@ unsafe fn read_len<O: Offset>(buf: *mut Buf, at: usize) -> usize {
 /// # Safety
 ///
 /// `Self` has no drop glue and no pointers other than [`Near`]; its layout as a [`Pun`] type is
-/// its own, whose scalars that a pun never makes are the pointers of this crate: whether a value
-/// is copied as bytes (`PLAIN`) or not looked at (`ANY`) is read from it. `store` writes every
+/// its own, whose scalars that a pun never makes are the pointers of this crate; `POINTERS` is
+/// true if a field, at any depth, is a pointer. Whether a value is copied as bytes (`PLAIN`) or
+/// not looked at (`ANY`) is read from them. `store` writes every
 /// field of `self` at `at`, with a copy of what each pointer aims at; `shift` re-aims every
 /// pointer of the value at `at` and nothing else; `check` accepts exactly the compact images of
 /// valid values, in the order `store` writes them, and queues every pointer of the value.
@@ -445,7 +446,8 @@ pub unsafe trait Flat: Pun + Sized + 'static {
 
   /// Writes a deep copy of `self` at `at`: each field where it is, and for each pointer a copy of
   /// its target, allocated depth first in the order of the fields, which is the compact image.
-  /// Padding is not written, so it keeps the zeros of the buffer.
+  /// Padding is not written, so it keeps the bytes that the buffer held there, which are
+  /// initialized.
   ///
   /// # Safety
   /// `at` is allocated in the sink, aligned and sized for `Self`, and `self` is not in the sink's

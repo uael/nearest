@@ -68,10 +68,11 @@ the target. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, `
 `core::error::Error`, `Clone`, `Copy`, `PartialEq`, `Eq`. `Pending`: `Default`, `Clone`, `Copy`,
 `Debug`.
 
-Hidden: `nearest::__private::{Raw, Buf, Sink, fits, make, Variant, Pointer}`, the plumbing of the macro; `__private::Packed<T>`, the `NonZero` of the offsets
-of `puns::num`, an associated type that must be public; the hidden items of `Flat` (`PLAIN`, `ANY`, `REACH`,
-`edit`; `PLAIN` and `ANY` are read from the layout, `Pun::LAYOUT.is_plain()`
-and `is_free()`, not given) and `Emit` (`emit`, `plain`).
+Hidden: `nearest::__private::{Raw, Buf, Sink, Check, fits, make, Variant, Pointer}`, the plumbing
+of the macro; `__private::Packed<T>`, the `NonZero` of the offsets of `puns::num`, an associated
+type that must be public; the hidden items of `Flat` (`POINTERS`, `PLAIN`, `ANY`, `REACH`, `edit`,
+`store`, `shift`, `check`; `PLAIN` and `ANY` are not given: `PLAIN` is `Pun::LAYOUT.is_plain()`
+and no `POINTERS`, `ANY` is `is_free()`) and `Emit` (`emit`, `plain`).
 Nothing else is public; do not add public items.
 
 Features:
@@ -765,7 +766,9 @@ Mechanics:
   its variant), and for a pointer, the target allocated as the pointer says (one value, a list
   block `[cap][len]` as `List::new` makes it, text), copied the same way, then the offset;
   depth first and in the order of the fields, which is the compact image. Padding is not written,
-  so it keeps the zeros of the buffer, and `as_bytes` reads initialized bytes. A move
+  so it keeps what the buffer held there: zeros in new capacity (so a compact copy has zero
+  padding), the old bytes under `set`, the bytes of the image after a load. They are always
+  initialized, so `as_bytes` reads initialized bytes. A move
   (`move_elems`, and `relocate`, `detach` for one value) copies the bytes at once (`ptr::copy`:
   the buffer's bytes are initialized) and re-aims the pointers where they are now (`shift`, which
   calls `Flat::shift` on each value: the pointers of its fields, of its variant for an enum);

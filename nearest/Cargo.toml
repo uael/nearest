@@ -29,7 +29,7 @@ nearest-derive = { version = "=0.8.1", path = "../nearest-derive" }
 # of a fixed byte order (`puns::num`). Re-exported as `nearest::puns`. A revision after 0.2.0-beta.2
 # (an `Option` of a scalar that a pun never makes), until its release: `cargo publish` would take
 # 0.2.0-beta.2 from crates.io instead, and refuse to build with it.
-puns = { version = "0.2.0-beta.2", git = "https://github.com/uael/puns", rev = "43cb1c25865527a7a9da8b2089cf479357756a56" }
+puns = { version = "0.2.0-beta.2", git = "https://github.com/uael/puns", rev = "4c0252f8e6eff8e5c0c106ae756d1e9ade40f179" }
 serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

@@ -106,7 +106,21 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let puns_attrs = |attrs: &[syn::Attribute]| -> Vec<syn::Attribute> {
     attrs.iter().filter(|a| a.path().is_ident("pun")).cloned().collect()
   };
-  let rules = !puns_attrs(&input.attrs).is_empty();
+  // A type has rules if one of its options is not `bound(..)` or `crate`, which are not rules.
+  let mut rules = false;
+  for a in puns_attrs(&input.attrs) {
+    let mut first = true;
+    for t in a.meta.require_list()?.tokens.clone() {
+      match &t {
+        TokenTree::Punct(p) if p.as_char() == ',' => first = true,
+        TokenTree::Ident(i) if first => {
+          rules |= i != "bound" && i != "crate";
+          first = false;
+        }
+        _ => first = false,
+      }
+    }
+  }
   let mut valids = vec![];
   let mut valid = |f: &Field, ty: &TokenStream, off: &TokenStream| -> TokenStream {
     let attrs = puns_attrs(&f.attrs);
