@@ -685,10 +685,12 @@ pointer queued (`Check::pointer`; one whose bytes are zero is refused where it i
 is, and is `None` for an `Option<Near>`). What is not a pointer is checked by
 `puns::validate_but_never` (`Check::value` for a leaf; `items` for the elements of a list without
 pointers, all at once, one by one only to tell where the first invalid one is): `bool`, `char`,
-`NonZero`, the numbers of given values of `puns::num`. A rule of a field (`valid(..)`) is checked
+`NonZero`, the numbers of given values of `puns::num`. A type with rules, of a field
+(`valid(..)`) or of the type (`assert(..)`), is checked whole by `puns` (`Check::whole`), which
+reads each byte but the pointers once, and then only its pointers are queued (`Flat::pointers`).
+Only if `puns` refuses it are its fields checked one by one, to tell where: a rule of a field
 after the field, as `puns` checks a hidden struct of that field alone with the same rules
-(`Check::valid`), refused where the field is; the rules of the type (`assert(..)`) after its
-fields, as `puns` checks the value (`Check::rules`), refused where the value is. The steps
+(`Check::valid`), refused where the field is; a rule of the type where the value is. The steps
 (`target`, `list`, `text`) place the target, check UTF-8 and `cap == len`, and check what is
 there. A negative length is as out of bounds as one too long, and an offset or a length that
 `from_isize` does not make (see Valid offsets) is invalid. Padding is not looked at.
@@ -745,7 +747,7 @@ Files of `src/`:
   `List<O>`, `make`.
 - `edit.rs`: `Raw` (the core of every handle: `set`, `replace`, `update`, `swap_in`, `pin`),
   `Old`, `ListEdit`, `OptionEdit`, `StrEdit`.
-- `bytes.rs`: `Error`, `Pending`, `Stack`, the checker `Check` (`value`, `valid`, `rules`, `tag`,
+- `bytes.rs`: `Error`, `Pending`, `Stack`, the checker `Check` (`value`, `valid`, `whole`, `tag`,
   `pointer`, `offset`, `len`, `claim`, `extend`) and its steps (`target`, `list`, `text`, `items`),
   `check`, `view`, `view_with`, `view_unchecked`.
 - `near.rs`: `Near<T, O>`: `Deref` for `T`, `[T]` and `str`, builders, trait impls; `Offset`,

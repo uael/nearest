@@ -394,7 +394,9 @@ unsafe fn read_len<O: Offset>(buf: *mut Buf, at: usize) -> usize {
 /// not looked at (`ANY`) is read from them. `store` writes every
 /// field of `self` at `at`, with a copy of what each pointer aims at; `shift` re-aims every
 /// pointer of the value at `at` and nothing else; `check` accepts exactly the compact images of
-/// valid values, in the order `store` writes them, and queues every pointer of the value.
+/// valid values, in the order `store` writes them, and queues every pointer of the value;
+/// `pointers` does what `check` does on a value whose bytes other than its pointers `puns` found
+/// valid.
 /// `REACH` is at most the `REACH` of every field; `edit` returns the handle of a valid `Self` at
 /// `at`.
 pub unsafe trait Flat: Pun + Sized + 'static {
@@ -468,6 +470,12 @@ pub unsafe trait Flat: Pun + Sized + 'static {
   /// pointers.
   #[doc(hidden)]
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
+
+  /// Queues the pointers of the `Self` at `at` of the image, whose other bytes `puns` found valid
+  /// as part of a value that holds it: what `check` does there, without checking those bytes
+  /// again. A pointer that `check` refuses, such as a zero `Near`, is refused the same way.
+  #[doc(hidden)]
+  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
 }
 
 /// A deep copy of `src` at `at`.
@@ -607,6 +615,10 @@ macro_rules! data {
     fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
       ck.value::<Self>(at)
     }
+    #[inline]
+    fn pointers(_: &mut Check<'_>, _: usize) -> Result<(), Error> {
+      Ok(())
+    }
   };
 }
 
@@ -718,6 +730,10 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
     }
     (0..N).try_for_each(|i| T::check(ck, at + i * size_of::<T>()))
   }
+  #[inline]
+  fn pointers(_: &mut Check<'_>, _: usize) -> Result<(), Error> {
+    Ok(())
+  }
 }
 
 // SAFETY: copies the target.
@@ -753,6 +769,11 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<T, O> {
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     ck.pointer::<O>(at, false, bytes::target::<T, O>)
   }
+  #[inline]
+  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    // A pointer is all of its bytes, so `puns` checked none of them.
+    Self::check(ck, at)
+  }
 }
 
 // SAFETY: copies the list.
@@ -782,6 +803,11 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<[T], O> {
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     ck.pointer::<O>(at, false, bytes::list::<T, O>)
   }
+  #[inline]
+  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    // A pointer is all of its bytes, so `puns` checked none of them.
+    Self::check(ck, at)
+  }
 }
 
 // SAFETY: copies the text.
@@ -809,6 +835,11 @@ unsafe impl<O: Offset> Flat for Near<str, O> {
   #[inline]
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     ck.pointer::<O>(at, false, bytes::text::<O>)
+  }
+  #[inline]
+  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    // A pointer is all of its bytes, so `puns` checked none of them.
+    Self::check(ck, at)
   }
 }
 
@@ -850,6 +881,11 @@ unsafe impl<T: Flat, O: Offset> Flat for Option<Near<T, O>> {
   #[inline]
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     ck.pointer::<O>(at, true, bytes::target::<T, O>)
+  }
+  #[inline]
+  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    // A pointer is all of its bytes, so `puns` checked none of them.
+    Self::check(ck, at)
   }
 }
 

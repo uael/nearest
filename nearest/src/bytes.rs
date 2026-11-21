@@ -173,13 +173,13 @@ impl Check<'_> {
     puns::validate_but_never::<T>(bytes).map_err(|_| Error::Invalid(at))
   }
 
-  /// Checks the rules of the `T` at `at`, whose fields are checked, as `puns` validates it: a
-  /// rule that does not hold is refused where the value is. `puns` does not read its pointers.
+  /// Checks the `T` at `at` whole, as `puns` validates it: every byte but its pointers, which
+  /// `puns` does not read, its rules and those of its fields included. Refused where the value is.
   ///
   /// # Errors
-  /// If a rule does not hold.
+  /// If a part of the value other than its pointers is not valid, or a rule does not hold.
   #[inline]
-  pub fn rules<T: Flat>(&self, at: usize) -> Result<(), Error> {
+  pub fn whole<T: Flat>(&self, at: usize) -> Result<(), Error> {
     let bytes = self.span(at, size_of::<T>())?;
     puns::validate_but_never::<T>(bytes).map_err(|_| Error::Invalid(at))
   }
