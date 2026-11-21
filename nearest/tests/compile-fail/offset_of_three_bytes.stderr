@@ -21,17 +21,10 @@ note: erroneous constant encountered
   | |___^
 
 note: erroneous constant encountered
- --> $CARGO/puns-$VERSION/src/relative.rs
+ --> $CARGO/puns-$VERSION/src/lib.rs
   |
-  |       >(<$ty as $crate::SelfRelative>::POINTER);
-  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |
- ::: src/near.rs
-  |
-  | puns::self_relative!(impl[O: Offset] Near<str, O>);
-  | -------------------------------------------------- in this macro invocation
-  |
-  = note: this note originates in the macro `puns::self_relative` (in Nightly builds, run with -Z macro-backtrace for more info)
+  |     let layout = Layout::scalar::<T>(T::SPEC).identified(T::ID);
+  |                                      ^^^^^^^
 
 note: erroneous constant encountered
   --> tests/compile-fail/offset_of_three_bytes.rs:27:1

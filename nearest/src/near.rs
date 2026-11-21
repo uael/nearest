@@ -11,14 +11,14 @@ use core::{
 };
 
 use puns::{
-  SelfRelative,
-  layout::{Endian, Pointer},
+  Scalar,
+  layout::{Endian, Spec},
   num::{i16be, i16le, i32be, i32le, i64be, i64le},
 };
 
 use crate::{
   Emit, Flat,
-  flat::{ALIGN, New, Seq, fits_behind},
+  flat::{New, Seq, fits_behind},
 };
 
 /// A pointer to a `T` in the same [`Region`](crate::Region), stored as the distance from its
@@ -100,9 +100,7 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// ```
 ///
 /// An `Offset` of yours is an integer in two's complement of a byte order that it tells
-/// ([`ENDIAN`](Offset::ENDIAN)): `puns` reads a pointer of one offset as a pointer of another of
-/// the same width and byte order (see [`puns::view_ref`]), which finds the same target only
-/// because both read the same integer from the same bytes.
+/// ([`ENDIAN`](Offset::ENDIAN)), in which the loaders read it.
 ///
 /// ```
 /// use std::num::NonZero;
@@ -161,7 +159,7 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 ///
 /// A region reads and writes the distances and lengths of an `O` only through `from_isize` and
 /// `to_isize`, and reads stored ones as values of `Self` and [`NonZero`](Offset::NonZero) made of
-/// bytes it checked (see Valid offsets) or wrote; `puns` reads them as integers of the width
+/// bytes it checked (see Valid offsets) or wrote; its loaders read them as integers of the width
 /// and the byte order of `Self`. It trusts that:
 ///
 /// - **Two's complement.** The bytes of every `Self` are a signed integer in two's complement,
@@ -186,8 +184,7 @@ pub unsafe trait Offset: Flat + Copy + fmt::Debug + Eq + Ord + Hash {
   /// The largest region whose distances and lengths fit, a multiple of 8, whatever the target.
   /// By default, the largest multiple of 8 that a signed integer of the size of `Self` holds.
   const LIMIT: u64 = (1 << (8 * size_of::<Self>() - 1)) - 8;
-  /// The byte order of the integer: what a pointer of this offset tells `puns` (see
-  /// [`SelfRelative`](puns::SelfRelative)).
+  /// The byte order of the integer, in which the loaders read it.
   const ENDIAN: Endian;
   /// The `Self` of `n`, which is within `LIMIT` of 0.
   fn from_isize(n: isize) -> Self;
@@ -294,75 +291,34 @@ fixed! {
   i64be: i64 Big;
 }
 
-/// The scheme of the pointers of `nearest`, as `puns` names it (see
-/// [`SelfRelative`](puns::SelfRelative)): how a `Near` and the bytes of its region tell where its
-/// target is and how long it is. A `Near<T, O>` is the distance from its own address to its
-/// target, an `O`; a `Near<[T], O>` aims at the length of the list, an `O`, whose elements
-/// follow it, and a `Near<str, O>` at the length of the text, whose UTF-8 follows it. Changing
-/// this way changes the name.
-pub const SCHEME: &str = "nearest: the distance from the pointer to its target; a list or a text \
-                          is its length, of the width of the offset, then its elements";
-
-/// The alignment of the address of the first element of a list of `T` whose lengths are `O`s:
-/// its position is aligned to the larger of the alignment of `T` and the width of `O` (see
-/// `List::new`), and an address to that, but at most to [`ALIGN`], that of the buffer. `T` is not
-/// more aligned than `ALIGN` (`fits`).
-const fn first<T, O>() -> usize {
-  let w = if size_of::<O>() < ALIGN { size_of::<O>() } else { ALIGN };
-  if align_of::<T>() > w { align_of::<T>() } else { w }
-}
-
-// SAFETY: (the contract of `SelfRelative`, S1 to S7, against the invariants of the specification)
-// - S1: a `Near<T, O>` is `#[repr(transparent)]` over `O::NonZero`, which has the size of `O`
-//   (asserted by `offset`), no padding and no `UnsafeCell`; the integer
-//   is two's complement in `O::ENDIAN` (the contract of `Offset`).
-// - S2: the target is at the address of the pointer plus `to_isize` of its bytes (`Near::target`),
-//   which depends only on the width, the byte order and the bytes (`Offset`, two's complement),
-//   for every type of the scheme, which only this crate declares.
-// - S3: a `Near` exists only in a region (I1), where it aims at a valid `T` at a position aligned
-//   for it, so at an address aligned for it (the buffer is aligned to `ALIGN`, `T` no more:
-//   `fits`), in the same buffer, for as long as the region is borrowed (I5: nothing reachable is
-//   freed or written while a `&` lives).
-// - S4: while a `&Near` lives, the region (or the handle it comes from) is borrowed shared, so no
-//   handle can write (I3), and no `&mut` reaches a value that holds a pointer (I2); the target is
-//   owned by this pointer alone (I4), so writing through a sibling does not reach it.
-// - S5: not nullable.
-// - S6: `Target` is `T`, and `POINTER` is made with it.
-// - S7: `Near` follows a pointer by `Near::target` only, which relies on S1 to S3.
-unsafe impl<T: Flat, O: Offset> SelfRelative for Near<T, O> {
-  type Target = T;
-  const POINTER: Pointer = {
+// SAFETY: (the `# Safety` of `Scalar`) a `Near<T, O>` is `#[repr(transparent)]` over
+// `O::NonZero`, which has the size of `O` (asserted by `offset`, which `fits_behind` calls) and,
+// by the contract of `Offset`, no padding and no `UnsafeCell`: every byte of every value is
+// initialized, as `Spec::never` says, which accepts no value. So `puns` reads a pointer as
+// initialized bytes and makes none: a region makes every `Near` and checks every one it loads.
+// `Option<Near<T, O>>` is then such a scalar too: `None` is zero, the niche of `O::NonZero`.
+unsafe impl<T: Flat, O: Offset> Scalar for Near<T, O> {
+  const SPEC: Spec = {
     fits_behind::<T, O>();
-    Pointer::one::<T>(SCHEME, size_of::<O>(), O::ENDIAN)
+    Spec::never::<Self>()
   };
 }
 
-puns::self_relative!(impl[T: Flat, O: Offset] Near<T, O>);
-
-// SAFETY: as for `Near<T, O>`, but S3: the pointer aims at the length of the list, an `O`, whose
-// `len` elements follow at `+ size_of::<O>()`, at a position aligned to the larger of the
-// alignment of `T` and the width of `O`, so at an address aligned to `first::<T, O>()`.
-unsafe impl<T: Flat, O: Offset> SelfRelative for Near<[T], O> {
-  type Target = T;
-  const POINTER: Pointer = {
+// SAFETY: as for `Near<T, O>`.
+unsafe impl<T: Flat, O: Offset> Scalar for Near<[T], O> {
+  const SPEC: Spec = {
     fits_behind::<T, O>();
-    Pointer::sequence::<T>(SCHEME, size_of::<O>(), O::ENDIAN, first::<T, O>())
+    Spec::never::<Self>()
   };
 }
 
-puns::self_relative!(impl[T: Flat, O: Offset] Near<[T], O>);
-
-// SAFETY: as for `Near<T, O>`, but S3: the pointer aims at the length of the text, an `O`, whose
-// bytes follow, UTF-8 (written from a `&str`, or checked when loaded). Its target type is `()`.
-unsafe impl<O: Offset> SelfRelative for Near<str, O> {
-  type Target = ();
-  const POINTER: Pointer = {
+// SAFETY: as for `Near<T, O>`.
+unsafe impl<O: Offset> Scalar for Near<str, O> {
+  const SPEC: Spec = {
     offset::<O>();
-    Pointer::text(SCHEME, size_of::<O>(), O::ENDIAN)
+    Spec::never::<Self>()
   };
 }
-
-puns::self_relative!(impl[O: Offset] Near<str, O>);
 
 impl<T: ?Sized, O: Offset> Near<T, O> {
   /// The address of the target, derived from `self` so that it keeps the provenance of the

@@ -91,7 +91,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap (`Heap::with_capacity`), `N` bytes inside the region |
 | `Near<T, O = i32>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
 | `Offset` | the integer a `Near` keeps its distance in: `i16`, `i32`, `i64`, `i32le`.. of `puns::num`, or a type of yours (an `unsafe` trait) |
-| `puns` | the crate [`puns`](https://docs.rs/puns), re-exported: `view_ref` reads a value of a region as another type; `num` has numbers of a fixed byte order |
+| `puns` | the crate [`puns`](https://docs.rs/puns), re-exported: its layouts check the values of a region; `num` has numbers of a fixed byte order |
 | `Edit<'e, T>` | the handle of a place holding a `T` during the edit `'e`, always behind `&mut` |
 | `ListEdit<'e, T>` | the handle of a `Near<[T]>`: `push`, `insert`, `remove`, `swap`, `truncate`, `retain`, `at`, `try_at`, `set`, `replace`, `update`, `iter_pin_mut` |
 | `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `replace`, `update` |
@@ -184,13 +184,13 @@ use nearest::puns::num::{i32le, u16le};
 struct Table { name: Near<str, i32le>, rows: Near<[u16le], i32le> }
 ```
 
-## One value read as another
+## One version read as another
 
-Every `#[flat]` type is a [`puns`](https://docs.rs/puns) type too, and `Near` is declared to it as
-a self-relative pointer. So a value of a region can be read as another type, with everything it
-points to, when every value of the first is one of the second: `puns::view_ref` proves it at
-compile time, and costs nothing at run time. The bytes saved by a program are read by its next
-version without converting them:
+Every `#[flat]` type is a [`puns`](https://docs.rs/puns) type too, and `Near` is a scalar that
+`puns` never makes: it reads a value that holds one as plain data, since where a pointer aims is
+not a property of its bytes. The loaders check everything but the pointers with `puns`, and the
+pointers themselves. So the bytes saved by a program load in its next version, in place, when
+they are a value of it:
 
 ```rust
 #[flat]
@@ -200,14 +200,13 @@ enum Expr { Lit(i64), Neg(Near<Expr>) }
 enum NewExpr { Lit(i64), Neg(Near<NewExpr>), Abs(Near<NewExpr>) }   // one more variant
 
 let old = Region::new(Expr::neg(Expr::Lit(2)));
-let new: &NewExpr = nearest::puns::view_ref(&*old);                // the same bytes
+let new: &NewExpr = nearest::view(old.as_bytes().unwrap())?;      // checked, the same bytes
 ```
 
-The other way does not compile. `puns::try_view_ref` checks what cannot be proven of the value
-itself, and `#[pun(valid(..))]` and `#[pun(assert(..))]` can be written on a `#[flat]` type:
-requirements that the loaders check, and `puns` where it does not prove them (regions do not
-check them when they build or edit a value: one that breaks a rule is saved, and refused when
-loaded).
+The other way, an `Abs` is refused where its tag is. `#[pun(valid(..))]` and
+`#[pun(assert(..))]` can be written on a `#[flat]` type: requirements that the loaders check
+(regions do not check them when they build or edit a value: one that breaks a rule is saved,
+and refused when loaded).
 
 ## Bytes
 

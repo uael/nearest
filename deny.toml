@@ -16,3 +16,7 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# `puns` at the revision that `nearest` needs, until it is released: replace the git dependency
+# by the release, and remove this, before `nearest` is released (crates.io refuses a git
+# dependency).
+allow-git = ["https://github.com/uael/puns"]

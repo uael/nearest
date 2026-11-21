@@ -1,6 +1,6 @@
 error[E0080]: evaluation panicked:
-              cannot pun: the target holds a self-relative pointer, and what a pointer aims at is not a property of its bytes.
-              Use `view_ref` to read a value that holds pointers as another type (it proves what they aim at).
+              cannot pun: no value of the source is valid for the target.
+              This is at byte 4 of the target.
 
     --> $CARGO/puns-$VERSION/src/lib.rs
      |
@@ -25,17 +25,17 @@ note: inside `puns::Message::panic`
 note: erroneous constant encountered
  --> $CARGO/puns-$VERSION/src/lib.rs
   |
-  |   const { Plan::<S, D>::TRY_REF };
-  |           ^^^^^^^^^^^^^^^^^^^^^
+  |   const { Plan::<[u8], D>::TRY_REF };
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: erroneous constant encountered
  --> $CARGO/puns-$VERSION/src/lib.rs
   |
-  |   const { Plan::<S, D>::TRY_REF };
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   const { Plan::<[u8], D>::TRY_REF };
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-note: the above error was encountered while instantiating `fn try_pun_ref::<[u8], Node>`
- --> $CARGO/puns-$VERSION/src/lib.rs
-  |
-  |   try_pun_ref::<[u8], D>(bytes)
-  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: the above error was encountered while instantiating `fn nearest::puns::from_bytes::<Node>`
+  --> tests/compile-fail/puns_bytes_as_pointer.rs:13:11
+   |
+13 |   let _ = nearest::puns::from_bytes::<Node>(&[0; 8]);
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

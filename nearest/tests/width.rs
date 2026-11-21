@@ -588,11 +588,11 @@ fn offsets_that_from_isize_does_not_make_are_invalid() {
 // ---------------------------------------------------------------------------------------------
 // Offsets of the same width and byte order read each other's regions
 
-/// A region of `Tree<A>` read as `Tree<B>` with `puns::view_ref`: the same targets, since both
+/// The image of a `Tree<A>` read as a `Tree<B>` with `nearest::view`: the same targets, since both
 /// offsets are the same two's complement integer of the same bytes (the contract of `Offset`).
 fn read_as<A: Offset, B: Offset>() {
   let r = tree::<A>();
-  let view: &Tree<B> = nearest::puns::view_ref(&*r);
+  let view: &Tree<B> = nearest::view(r.as_bytes().unwrap()).unwrap();
   assert_eq!(ids(view), ids(&r));
   assert_eq!((&*view.name, &*view.kids[1].kids[0].name), ("root", "c"));
   // A deep copy of the view is the same image.
