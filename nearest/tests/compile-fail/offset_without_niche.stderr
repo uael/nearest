@@ -32,7 +32,7 @@ note: erroneous constant encountered
 note: erroneous constant encountered
  --> $CARGO/puns-$VERSION/src/std_enums.rs
   |
-  |   const LAYOUT: Layout = if T::LAYOUT.is_never() { never::<T>() } else { discovered::<T>() };
+  |   const LAYOUT: Layout = if T::LAYOUT.is_never() {
   |                             ^^^^^^^^^
 
 note: erroneous constant encountered

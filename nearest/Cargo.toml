@@ -26,10 +26,9 @@ serde = ["alloc", "dep:serde"]
 [dependencies]
 nearest-derive = { version = "=0.8.1", path = "../nearest-derive" }
 # The layouts and the validity of values: `Pun` for every stored type, its check, and the numbers
-# of a fixed byte order (`puns::num`). Re-exported as `nearest::puns`. A revision after 0.2.0-beta.2
-# (an `Option` of a scalar that a pun never makes), until its release: `cargo publish` would take
-# 0.2.0-beta.2 from crates.io instead, and refuse to build with it.
-puns = { version = "0.2.0-beta.2", git = "https://github.com/uael/puns", rev = "4c0252f8e6eff8e5c0c106ae756d1e9ade40f179" }
+# of a fixed byte order (`puns::num`). Re-exported as `nearest::puns`. Exact, as a beta of `puns`
+# may change its API in the next one.
+puns = "=0.2.0-beta.3"
 serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
