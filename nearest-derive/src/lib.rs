@@ -97,7 +97,49 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let mut handle_g = generics.clone();
   handle_g.params.insert(0, GenericParam::Lifetime(parse_quote!(#e)));
   let (h_impl, h_ty, h_where) = handle_g.split_for_impl();
-  let [sink, at, buf] = ["sink", "at", "buf"].map(|s| Ident::new(s, Span::mixed_site()));
+  let [sink, at, buf, base, d, ck] =
+    ["sink", "at", "buf", "base", "d", "ck"].map(|s| Ident::new(s, Span::mixed_site()));
+  // The rules of the user, `#[pun(..)]`, which a check of the value asks `puns` about. A type with
+  // rules is checked whole by `puns` first (`#np::Check::whole`), which reads every byte but the
+  // pointers once; then only its pointers are queued (`Flat::pointers`). Only if `puns` refuses it
+  // are the fields checked one by one, to tell where: one of a field (`valid(..)`) is refused where
+  // the field is, as a hidden struct of the field alone with the same attributes is checked there,
+  // after the field (`#np::Check::valid`), and one of the type (`assert(..)`) where the value is.
+  let puns_attrs = |attrs: &[syn::Attribute]| -> Vec<syn::Attribute> {
+    attrs.iter().filter(|a| a.path().is_ident("pun")).cloned().collect()
+  };
+  // A type has rules if one of its options is not `bound(..)` or `crate`, which are not rules.
+  let mut rules = false;
+  for a in puns_attrs(&input.attrs) {
+    let mut first = true;
+    for t in a.meta.require_list()?.tokens.clone() {
+      match &t {
+        TokenTree::Punct(p) if p.as_char() == ',' => first = true,
+        TokenTree::Ident(i) if first => {
+          rules |= i != "bound" && i != "crate";
+          first = false;
+        }
+        _ => first = false,
+      }
+    }
+  }
+  let mut valids = vec![];
+  let mut valid = |f: &Field, ty: &TokenStream, off: &TokenStream| -> TokenStream {
+    let attrs = puns_attrs(&f.attrs);
+    if attrs.is_empty() {
+      return quote!();
+    }
+    let wrapper = format_ident!("__NearestValid{}", valids.len());
+    valids.push(quote! {
+      #[derive(::nearest::puns::Pun)]
+      #[pun(crate = ::nearest::puns)]
+      #[repr(C)]
+      #[allow(dead_code)]
+      struct #wrapper #impl_g (#(#attrs)* #ty, ::core::marker::PhantomData<fn() -> #self_ty>)
+        #where_c;
+    });
+    quote!(#ck.valid::<#wrapper #ty_g>(#at + #off)?;)
+  };
   let np = quote!(::nearest::__private);
   let pin = quote!(::core::pin::Pin);
   let handle = format_ident!("__NearestEdit");
@@ -243,7 +285,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // What `edit` holds besides building the handle: for an enum, a closure per variant with
   // fields that builds it, never called, which tells the dead-code lint that the variant is
   // built (by its constructor, which it cannot see through `make`).
-  let built = match &input.data {
+  // The bodies of `store`, `shift`, `check` and `pointers`, and the types of all fields.
+  let (built, store, shift, check, pointers) = match &input.data {
     Data::Union(u) => {
       return Err(Error::new(u.union_token.span, "`#[flat]` does not support unions"));
     }
@@ -284,7 +327,18 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         ));
       }
       field_tys.extend(tys.iter().map(|ty| unself(ty.clone(), &self_ty)));
-      quote!()
+      let offs: Vec<_> =
+        members.iter().map(|m| quote!(::core::mem::offset_of!(Self, #m))).collect();
+      let valids: Vec<_> = (s.fields.iter().zip(&field_tys).zip(&offs))
+        .map(|((f, ty), off)| valid(f, ty, off))
+        .collect();
+      (
+        quote!(),
+        quote!(#(::nearest::Flat::store(&self.#members, #sink, #at + #offs);)*),
+        quote!(#(<#tys as ::nearest::Flat>::shift(#base, #at + #offs, #d);)*),
+        quote!(#(<#tys as ::nearest::Flat>::check(#ck, #at + #offs)?; #valids)*),
+        quote!(#(<#tys as ::nearest::Flat>::pointers(#ck, #at + #offs)?;)*),
+      )
     }
     Data::Enum(data) => {
       if let Some(v) = data.variants.iter().nth(256) {
@@ -295,6 +349,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       }
       let mut_name = format_ident!("{name}Mut");
       let (mut built, mut views, mut view_arms) = (vec![], vec![], vec![]);
+      let (mut store_arms, mut shift_arms, mut check_arms) = (vec![], vec![], vec![]);
+      let mut pointer_arms = vec![];
       let mut ctor_names = vec![];
       let (mut pin_variants, mut pin_arms) = (vec![], vec![]);
       for (i, v) in data.variants.iter().enumerate() {
@@ -330,7 +386,9 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         };
         pin_variants.push(quote!(#[doc = #vdoc] #vname #pin_decl));
         pin_arms.push(quote!(Self::#vname #pat => #pin_name::#vname #pin_make));
+        let tag_store = quote!(::nearest::Flat::store(&#tag, #sink, #at););
         if matches!(v.fields, Fields::Unit) {
+          store_arms.push(quote!(Self::#vname => { #tag_store }));
           if let Some(r) = &renames[i] {
             return Err(Error::new_spanned(r, "a unit variant has no constructor to rename"));
           }
@@ -355,6 +413,19 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
             quote!(::core::mem::offset_of!(#mirror #ty_g, #k))
           })
           .collect();
+        store_arms.push(quote! {
+          Self::#vname #pat => { #tag_store #(::nearest::Flat::store(#binds, #sink, #at + #offs);)* }
+        });
+        shift_arms
+          .push(quote!(#tag => { #(<#tys as ::nearest::Flat>::shift(#base, #at + #offs, #d);)* }));
+        let valids: Vec<_> =
+          (v.fields.iter().zip(&tys).zip(&offs)).map(|((f, ty), off)| valid(f, ty, off)).collect();
+        check_arms.push(quote! {
+          #tag => { #(<#tys as ::nearest::Flat>::check(#ck, #at + #offs)?; #valids)* }
+        });
+        pointer_arms.push(quote! {
+          #tag => { #(<#tys as ::nearest::Flat>::pointers(#ck, #at + #offs)?;)* }
+        });
         let doc = format!("Builds `{name}::{vname}` from its fields, in declaration order.");
         let tag_emit = quote!(::nearest::Emit::<u8>::emit(#tag, #sink, #at););
         let cname = renames[i].clone().unwrap_or_else(|| snake(vname));
@@ -438,8 +509,45 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           quote!(match self.get_unchecked_mut() { #(#pin_arms,)* }),
         ));
       }
-      quote!(#(#built)*)
+      let count = data.variants.len();
+      (
+        quote!(#(#built)*),
+        quote!(match self { #(#store_arms)* }),
+        // The tag of a valid value, read from the buffer: a `u8` at the start (`repr(u8)`).
+        quote! {
+          match unsafe { #base.add(#at).read() } {
+            #(#shift_arms)*
+            _ => {}
+          }
+        },
+        quote! {
+          match #ck.tag(#at, #count)? {
+            #(#check_arms)*
+            _ => {}
+          }
+        },
+        quote! {
+          match #ck.tag(#at, #count)? {
+            #(#pointer_arms)*
+            _ => {}
+          }
+        },
+      )
     }
+  };
+  // Checked whole first if `puns` reads rules in it, of the type or of a field.
+  let whole = (rules || !valids.is_empty()).then(|| {
+    quote! {
+      if #ck.whole::<Self>(#at).is_ok() {
+        return <Self as ::nearest::Flat>::pointers(#ck, #at);
+      }
+    }
+  });
+  // Where the fields one by one find nothing, `puns` refused a rule of the type.
+  let end = if whole.is_some() {
+    quote!(::core::result::Result::Err(::nearest::Error::Invalid(#at)))
+  } else {
+    quote!(::core::result::Result::Ok(()))
   };
 
   let mut copy_g = handle_g.clone();
@@ -466,11 +574,12 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // as the impls of this macro are, every type parameter `Flat` (so `Pun`), and by nothing that
   // the derive would find from the fields: through pointers, the bounds of types that hold each
   // other would go round in a circle.
-  let flat_params = input.generics.type_params().map(|p| &p.ident);
-  input.attrs.insert(
-    0,
-    parse_quote!(#[pun(crate = ::nearest::puns, bound(#(#flat_params: ::nearest::Flat),*))]),
-  );
+  // `puns` takes `bound` only where there are bounds to write: an enum without fields has no
+  // type parameter.
+  let flat_params: Vec<_> = input.generics.type_params().map(|p| &p.ident).collect();
+  let bound =
+    (!flat_params.is_empty()).then(|| quote!(, bound(#(#flat_params: ::nearest::Flat),*)));
+  input.attrs.insert(0, parse_quote!(#[pun(crate = ::nearest::puns #bound)]));
   input.attrs.insert(0, parse_quote!(#[derive(::nearest::puns::Pun)]));
   // A pinned value must keep its pointers, so the type is `Unpin` exactly when its fields are.
   // An impl with a bound on all the fields says so, and makes any impl written by hand a
@@ -521,6 +630,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     const _: () = {
       #unpin
       #(#mirrors)*
+      #(#valids)*
       unsafe impl #impl_g ::nearest::Flat for #self_ty #where_c {
         type Edit<#e> = #handle #h_ty;
         type Value = Self;
@@ -529,6 +639,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           edit
         }
         #reach
+        const POINTERS: bool = false #(|| <#field_tys as ::nearest::Flat>::POINTERS)*;
         unsafe fn edit<#lt, #e: #lt>(
           #buf: *mut #np::Buf,
           #at: usize,
@@ -537,6 +648,31 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           #built
           let raw = unsafe { #np::Raw::<#e, Self>::new(#buf, #at) };
           unsafe { &mut *(::core::ptr::from_mut(raw) as *mut #handle #h_ty) }
+        }
+        unsafe fn store(&self, #sink: &mut #np::Sink, #at: usize) {
+          #np::fits::<Self>();
+          unsafe { #store }
+        }
+        unsafe fn shift(#base: *mut u8, #at: usize, #d: isize) {
+          unsafe { #shift }
+        }
+        #[inline]
+        fn check(
+          #ck: &mut #np::Check<'_>,
+          #at: usize,
+        ) -> ::core::result::Result<(), ::nearest::Error> {
+          #np::fits::<Self>();
+          #whole
+          #check
+          #end
+        }
+        #[inline]
+        fn pointers(
+          #ck: &mut #np::Check<'_>,
+          #at: usize,
+        ) -> ::core::result::Result<(), ::nearest::Error> {
+          #pointers
+          ::core::result::Result::Ok(())
         }
       }
       impl #impl_g #self_ty #where_c {

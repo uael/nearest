@@ -307,7 +307,7 @@ const EXPECTED: &str = include_str!("corpus.expected");
 ///
 /// An expression whose tag is changed to the one of `Call` (two pointers) where its bytes are the
 /// `i64` of a `Lit` then zeros: the second pointer is zero, which a `Near` (a `NonZero`) cannot
-/// be. `puns::validate_in` refuses it where it is, as it validates the value; 0.7 queued both
+/// be. The check of the value refuses it where it is; 0.7 queued both
 /// pointers and refused the first, whose bytes aim nowhere, when it followed it. Both refuse the
 /// bytes, each at a place where they stop being a value.
 const CHANGED: [(&str, usize, &str, &str); 4] = [

@@ -5,16 +5,16 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
   |                  ^^^^^^ not a `Pun` type
   |
   = help: the trait `Scalar` is not implemented for `String`
-  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with `SelfRelative` and `self_relative!`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
   = help: the following other types implement trait `Scalar`:
             ()
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
             NonZero<i128>
             NonZero<i16>
             NonZero<i32>
             NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
           and $N others
   = note: required for `String` to implement `Pun`
 note: required by a bound in `nearest::puns::Fields::Type`
@@ -97,16 +97,16 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
   |                  ^^^^^^ not a `Pun` type
   |
   = help: the trait `Scalar` is not implemented for `String`
-  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with `SelfRelative` and `self_relative!`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
   = help: the following other types implement trait `Scalar`:
             ()
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
             NonZero<i128>
             NonZero<i16>
             NonZero<i32>
             NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
           and $N others
   = note: required for `String` to implement `Pun`
 
@@ -134,16 +134,16 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
   |                  ^^^^^^ not a `Pun` type
   |
   = help: the trait `Scalar` is not implemented for `String`
-  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with `SelfRelative` and `self_relative!`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
   = help: the following other types implement trait `Scalar`:
             ()
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
             NonZero<i128>
             NonZero<i16>
             NonZero<i32>
             NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
           and $N others
   = note: required for `String` to implement `Pun`
 note: required by a bound in `nearest::Flat::REACH`
@@ -162,16 +162,156 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
   |                  ^^^^^^ not a `Pun` type
   |
   = help: the trait `Scalar` is not implemented for `String`
-  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with `SelfRelative` and `self_relative!`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
   = help: the following other types implement trait `Scalar`:
             ()
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
             NonZero<i128>
             NonZero<i16>
             NonZero<i32>
             NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
+          and $N others
+  = note: required for `String` to implement `Pun`
+note: required by a bound in `nearest::Flat::POINTERS`
+ --> src/flat.rs
+  |
+  | pub unsafe trait Flat: Pun + Sized + 'static {
+  |                        ^^^ required by this bound in `Flat::POINTERS`
+...
+  |   const POINTERS: bool = false;
+  |
+
+error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and its valid values
+ --> tests/compile-fail/flat_non_flat_field.rs:4:1
+  |
+4 | #[flat]
+  | ^^^^^^^ not a `Pun` type
+  |
+  = help: the trait `Scalar` is not implemented for `String`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
+  = help: the following other types implement trait `Scalar`:
+            ()
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
+            NonZero<i128>
+            NonZero<i16>
+            NonZero<i32>
+            NonZero<i64>
+          and $N others
+  = note: required for `String` to implement `Pun`
+note: required by a bound in `nearest::Flat::store`
+ --> src/flat.rs
+  |
+  | pub unsafe trait Flat: Pun + Sized + 'static {
+  |                        ^^^ required by this bound in `Flat::store`
+...
+  |   unsafe fn store(&self, sink: &mut Sink, at: usize);
+  = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and its valid values
+ --> tests/compile-fail/flat_non_flat_field.rs:5:18
+  |
+5 | struct S { name: String }
+  |                  ^^^^^^ not a `Pun` type
+  |
+  = help: the trait `Scalar` is not implemented for `String`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
+  = help: the following other types implement trait `Scalar`:
+            ()
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
+            NonZero<i128>
+            NonZero<i16>
+            NonZero<i32>
+            NonZero<i64>
+          and $N others
+  = note: required for `String` to implement `Pun`
+note: required by a bound in `nearest::Flat::shift`
+ --> src/flat.rs
+  |
+  | pub unsafe trait Flat: Pun + Sized + 'static {
+  |                        ^^^ required by this bound in `Flat::shift`
+...
+  |   unsafe fn shift(base: *mut u8, at: usize, d: isize);
+  |
+
+error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and its valid values
+ --> tests/compile-fail/flat_non_flat_field.rs:5:18
+  |
+5 | struct S { name: String }
+  |                  ^^^^^^ not a `Pun` type
+  |
+  = help: the trait `Scalar` is not implemented for `String`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
+  = help: the following other types implement trait `Scalar`:
+            ()
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
+            NonZero<i128>
+            NonZero<i16>
+            NonZero<i32>
+            NonZero<i64>
+          and $N others
+  = note: required for `String` to implement `Pun`
+note: required by a bound in `nearest::Flat::check`
+ --> src/flat.rs
+  |
+  | pub unsafe trait Flat: Pun + Sized + 'static {
+  |                        ^^^ required by this bound in `Flat::check`
+...
+  |   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
+  |
+
+error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and its valid values
+ --> tests/compile-fail/flat_non_flat_field.rs:5:18
+  |
+5 | struct S { name: String }
+  |                  ^^^^^^ not a `Pun` type
+  |
+  = help: the trait `Scalar` is not implemented for `String`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
+  = help: the following other types implement trait `Scalar`:
+            ()
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
+            NonZero<i128>
+            NonZero<i16>
+            NonZero<i32>
+            NonZero<i64>
+          and $N others
+  = note: required for `String` to implement `Pun`
+note: required by a bound in `nearest::Flat::pointers`
+ --> src/flat.rs
+  |
+  | pub unsafe trait Flat: Pun + Sized + 'static {
+  |                        ^^^ required by this bound in `Flat::pointers`
+...
+  |   fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
+  |
+
+error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and its valid values
+ --> tests/compile-fail/flat_non_flat_field.rs:5:18
+  |
+5 | struct S { name: String }
+  |                  ^^^^^^ not a `Pun` type
+  |
+  = help: the trait `Scalar` is not implemented for `String`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
+  = help: the following other types implement trait `Scalar`:
+            ()
+            Near<T, O>
+            Near<[T], O>
+            Near<str, O>
+            NonZero<i128>
+            NonZero<i16>
+            NonZero<i32>
+            NonZero<i64>
           and $N others
   = note: required for `String` to implement `Pun`
 note: required by a bound in `nearest::Flat::reference`

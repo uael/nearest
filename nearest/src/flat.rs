@@ -2,13 +2,14 @@ use core::{
   marker::PhantomData,
   mem::{MaybeUninit, needs_drop},
   num::NonZero,
-  ptr,
+  ptr, slice,
 };
 
 use puns::Pun;
 
 use crate::{
-  Near, Offset, Storage,
+  Error, Near, Offset, Storage,
+  bytes::{self, Check},
   edit::{Handle, ListEdit, OptionEdit, Plain, PlainEdit, Raw, StrEdit},
   near::offset,
 };
@@ -388,10 +389,16 @@ unsafe fn read_len<O: Offset>(buf: *mut Buf, at: usize) -> usize {
 /// # Safety
 ///
 /// `Self` has no drop glue and no pointers other than [`Near`]; its layout as a [`Pun`] type is
-/// its own, whose pointers are those of this crate: values are copied, moved and checked from it
-/// (`puns::copy_in`, `pointers_in`, `validate_in`), as is whether a value is copied as bytes
-/// (`PLAIN`) or not looked at (`ANY`); `REACH` is at most the `REACH` of every field; `edit`
-/// returns the handle of a valid `Self` at `at`.
+/// its own, whose scalars that a pun never makes are the pointers of this crate; `POINTERS` is
+/// true if a field, at any depth, is a pointer. Whether a value is copied as bytes (`PLAIN`) or
+/// not looked at (`ANY`) is read from them. `store` writes every
+/// field of `self` at `at`, with a copy of what each pointer aims at; `shift` re-aims every
+/// pointer of the value at `at` and nothing else; `check` accepts exactly the compact images of
+/// valid values, in the order `store` writes them, and queues every pointer of the value;
+/// `pointers` does what `check` does on a value whose bytes other than its pointers `puns` found
+/// valid.
+/// `REACH` is at most the `REACH` of every field; `edit` returns the handle of a valid `Self` at
+/// `at`.
 pub unsafe trait Flat: Pun + Sized + 'static {
   /// The handle of a place holding a `Self`, during the edit `'e`: what
   /// [`Region::edit`](crate::Region::edit) and field methods return a `&mut` to. See
@@ -411,9 +418,15 @@ pub unsafe trait Flat: Pun + Sized + 'static {
   #[doc(hidden)]
   fn reference<'a, 'e: 'a>(edit: &'a mut Self::Edit<'e>) -> Self::Ref<'a, 'e>;
 
-  /// No pointers and no padding: may be copied as bytes. From the layout, not to be given.
+  /// Holds a pointer by value: a field, at any depth, that is a pointer (`Near`, `Option<Near>`).
+  /// `puns` reads a pointer as initialized bytes, so its layout alone does not tell.
   #[doc(hidden)]
-  const PLAIN: bool = <Self as Pun>::LAYOUT.is_plain();
+  const POINTERS: bool = false;
+
+  /// No pointers and no padding: may be copied as bytes. From the layout and `POINTERS`, not to
+  /// be given.
+  #[doc(hidden)]
+  const PLAIN: bool = <Self as Pun>::LAYOUT.is_plain() && !Self::POINTERS;
 
   /// No pointers, and every bit pattern is a valid value: there is nothing to check, so lists
   /// of such elements are not walked. From the layout, not to be given.
@@ -432,222 +445,64 @@ pub unsafe trait Flat: Pun + Sized + 'static {
   /// the place is only reached through the returned handle for `'a`.
   #[doc(hidden)]
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self::Edit<'e>;
+
+  /// Writes a deep copy of `self` at `at`: each field where it is, and for each pointer a copy of
+  /// its target, allocated depth first in the order of the fields, which is the compact image.
+  /// Padding is not written, so it keeps the bytes that the buffer held there, which are
+  /// initialized.
+  ///
+  /// # Safety
+  /// `at` is allocated in the sink, aligned and sized for `Self`, and `self` is not in the sink's
+  /// buffer.
+  #[doc(hidden)]
+  unsafe fn store(&self, sink: &mut Sink, at: usize);
+
+  /// Re-aims every pointer of the `Self` at `at` in the buffer at `base` by `d` bytes: the value
+  /// moved by `-d`, and what its pointers aim at did not. Nothing else is written.
+  ///
+  /// # Safety
+  /// A valid `Self` is at `at` in the buffer at `base`, its pointers as they were before the move,
+  /// and each new distance is within the region.
+  #[doc(hidden)]
+  unsafe fn shift(base: *mut u8, at: usize, d: isize);
+
+  /// Checks the `Self` at `at` of the image, whose own bytes are in bounds, and queues its
+  /// pointers.
+  #[doc(hidden)]
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
+
+  /// Queues the pointers of the `Self` at `at` of the image, whose other bytes `puns` found valid
+  /// as part of a value that holds it: what `check` does there, without checking those bytes
+  /// again. A pointer that `check` refuses, such as a zero `Near`, is refused the same way.
+  #[doc(hidden)]
+  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
 }
 
 /// A deep copy of `src` at `at`.
 ///
 /// # Safety
-/// `at` is allocated in the sink for a `T`, and `src` is not in the sink's buffer.
+/// As for [`Flat::store`].
 pub unsafe fn write_copy<T: Flat>(src: &T, sink: &mut Sink, at: usize) {
-  // SAFETY: per the caller; a valid value, outside the sink's buffer.
-  unsafe { copy_value::<T>(ptr::from_ref(src).cast(), sink, at) }
+  // SAFETY: forwarded, for one element.
+  unsafe { write_slice(slice::from_ref(src), sink, at) }
 }
 
 /// A deep copy of the elements of `src` at `at`.
 ///
 /// # Safety
-/// As for [`write_copy`], with room for `src.len()` elements.
+/// As for [`Flat::store`], with room for `src.len()` elements.
 unsafe fn write_slice<T: Flat>(src: &[T], sink: &mut Sink, at: usize) {
-  // SAFETY: per the caller; valid values, outside the sink's buffer.
-  unsafe { copy_values::<T>(src.as_ptr().cast(), src.len(), sink, at) }
-}
-
-/// The deep copy of the `n` valid `U`s at `src`, `size_of::<U>()` apart, to `at`: the bytes that
-/// a valid `U` holds initialized (`puns::copy_in`, so that the padding of a value made on the
-/// stack, uninitialized, does not reach the buffer, whose bytes stay the zeros they were), then
-/// each pointer re-made to a copy of its target (`puns::pointers_in`), depth first and in the order
-/// of their positions, which is the order of the fields: the compact image.
-///
-/// What `copy_in` and `pointers_in` rely on of a value is less than what `validate_in` checks:
-/// valid scalars and tags (a valid value of the type, as Rust has it), the bytes of the active
-/// variant initialized, and pointers that aim at valid targets in the same buffer (S3). Not the
-/// rules of `#[pun(..)]` (`assert(..)`, `valid(..)` of a field): a region can hold a value that
-/// breaks one (safe code wrote it, `a_value_that_breaks_a_rule_is_copied_and_moved`), which
-/// `validate_in` refuses and these two walk all the same.
-///
-/// # Safety
-/// `src` holds `n` valid `U`s (in the sense above), not in the sink's buffer, and `at` is
-/// allocated in the sink for them, its bytes initialized (the bytes of the copy that `copy_in`
-/// does not write, padding, keep them).
-unsafe fn copy_values<U: Pun>(src: *const u8, n: usize, sink: &mut Sink, at: usize) {
-  let size = const { U::LAYOUT.size() };
-  // SAFETY: per the caller; each copy writes the bytes of its value only.
+  // SAFETY: plain data is its bytes, all initialized, and the destination is sized for it; other
+  // elements are stored one by one.
   unsafe {
-    if const { U::LAYOUT.is_plain() } {
-      ptr::copy_nonoverlapping(src, (*sink.buf).ptr().add(at), n * size);
-      return;
-    }
-    for i in 0..n {
-      // SAFETY: the element `i`: valid scalars and tags, the bytes of its variant initialized
-      // (rules not needed); its room in the sink, which does not overlap it.
-      puns::copy_in::<U>(src.add(i * size), (*sink.buf).ptr().add(at + i * size));
-    }
-    if const { U::LAYOUT.has_pointers() } {
-      let mut deep = Deep { src, sink, at };
-      // SAFETY: the same values: their tags are read, and their pointers handed to `Deep`.
-      let _ = puns::pointers_elems_in::<U, Deep<'_>>(src, 0, n, &mut deep);
-    }
-  }
-}
-
-/// [`copy_values`] for one value, the most frequent: what a pointer to one value aims at.
-///
-/// # Safety
-/// As [`copy_values`], for one value.
-unsafe fn copy_value<U: Pun>(src: *const u8, sink: &mut Sink, at: usize) {
-  // SAFETY: per the caller: valid scalars and tags, the bytes of the active variant initialized
-  // (rules not needed); `copy_in` writes the room at `at`, and `pointers_in` reads the tags and
-  // hands the pointers to `Deep`.
-  unsafe {
-    puns::copy_in::<U>(src, (*sink.buf).ptr().add(at));
-    if const { U::LAYOUT.has_pointers() } {
-      let _ = puns::pointers_in::<U, Deep<'_>>(src, 0, &mut Deep { src, sink, at });
-    }
-  }
-}
-
-/// Copies what each pointer that `puns` hands over aims at, and aims the copy of the pointer at
-/// the copy: for a value at `src` copied to `at`. What a pointer aims at is read as its
-/// description says (`Pointer`: one value, a sequence after its length, text after its length),
-/// with offsets and lengths read and written as the contract of `Offset` says their bytes are,
-/// two's complement integers of the width and the byte order of the pointer.
-struct Deep<'s> {
-  src: *const u8,
-  sink: &'s mut Sink,
-  at: usize,
-}
-
-impl puns::Visit for Deep<'_> {
-  type Error = puns::Invalid;
-
-  #[inline]
-  fn pointer<P: ?Sized + Pun>(&mut self, pos: usize) -> Result<(), puns::Invalid> {
-    let Some(pointer) = (const { P::LAYOUT.as_pointer() }) else { return Ok(()) };
-    let (w, endian) = (pointer.width(), pointer.endian());
-    let size = const { <puns::Pointee<P> as Pun>::LAYOUT.size() };
-    let align = const { <puns::Pointee<P> as Pun>::LAYOUT.align() };
-    // SAFETY: a pointer of a valid value (`pointers_in`), not null, aims at a valid target of its
-    // kind in the same buffer (S3 of `SelfRelative`), outside the sink's buffer as the value is.
-    // The blocks are allocated before they are written, and every position written is in them.
-    unsafe {
-      let here = self.src.add(pos);
-      let to = here.wrapping_offset(read_int(here, w, endian));
-      let target = match pointer.aim() {
-        puns::layout::Aim::One => {
-          let t = self.sink.alloc(size, align);
-          copy_value::<puns::Pointee<P>>(to, self.sink, t);
-          t
-        }
-        puns::layout::Aim::Sequence { .. } => {
-          let len = read_int(to, w, endian).cast_unsigned();
-          // As `List::new`: `[cap][len]`, then the elements, aligned for them and for the width.
-          let start = (*self.sink.buf).alloc(
-            size.saturating_mul(len).saturating_add(2 * w),
-            align.max(w),
-            2 * w,
-          );
-          let buf = (*self.sink.buf).ptr();
-          write_int(buf.add(start), w, endian, len.cast_signed());
-          write_int(buf.add(start + w), w, endian, len.cast_signed());
-          copy_values::<puns::Pointee<P>>(to.add(w), len, self.sink, start + 2 * w);
-          start + w
-        }
-        puns::layout::Aim::Text => {
-          let len = read_int(to, w, endian).cast_unsigned();
-          // As `copy_str`: the length, then the bytes.
-          let h = self.sink.alloc(len + w, w);
-          let buf = (*self.sink.buf).ptr();
-          write_int(buf.add(h), w, endian, len.cast_signed());
-          ptr::copy_nonoverlapping(to.add(w), buf.add(h + w), len);
-          h
-        }
-      };
-      let from = self.at + pos;
-      write_int((*self.sink.buf).ptr().add(from), w, endian, distance(from, target));
-    }
-    Ok(())
-  }
-}
-
-/// The integer of `width` bytes (2, 4 or 8) in the byte order `endian` at `at`, two's complement.
-///
-/// # Safety
-/// `at` is valid for reads of `width` bytes.
-#[inline]
-unsafe fn read_int(at: *const u8, width: usize, endian: puns::layout::Endian) -> isize {
-  /// # Safety
-  /// As `read_int`.
-  #[inline]
-  unsafe fn read<const N: usize>(at: *const u8, endian: puns::layout::Endian) -> [u8; N] {
-    // SAFETY: per the caller.
-    let mut bytes = unsafe { at.cast::<[u8; N]>().read_unaligned() };
-    if endian != puns::layout::Endian::NATIVE {
-      bytes.reverse();
-    }
-    bytes
-  }
-  // SAFETY: per the caller.
-  #[expect(clippy::cast_possible_truncation, reason = "the integers of a region fit `isize`")]
-  unsafe {
-    match width {
-      2 => i16::from_ne_bytes(read(at, endian)) as isize,
-      4 => i32::from_ne_bytes(read(at, endian)) as isize,
-      _ => i64::from_ne_bytes(read(at, endian)) as isize,
-    }
-  }
-}
-
-/// Writes `n` as an integer of `width` bytes (2, 4 or 8) in the byte order `endian` at `at`.
-///
-/// # Safety
-/// `at` is valid for writes of `width` bytes, and `n` fits them.
-#[inline]
-unsafe fn write_int(at: *mut u8, width: usize, endian: puns::layout::Endian, n: isize) {
-  /// # Safety
-  /// As `write_int`.
-  #[inline]
-  unsafe fn write<const N: usize>(at: *mut u8, endian: puns::layout::Endian, mut bytes: [u8; N]) {
-    if endian != puns::layout::Endian::NATIVE {
-      bytes.reverse();
-    }
-    // SAFETY: per the caller.
-    unsafe { at.cast::<[u8; N]>().write_unaligned(bytes) }
-  }
-  // SAFETY: per the caller.
-  #[expect(clippy::cast_possible_truncation, reason = "`n` fits the width")]
-  unsafe {
-    match width {
-      2 => write(at, endian, (n as i16).to_ne_bytes()),
-      4 => write(at, endian, (n as i32).to_ne_bytes()),
-      _ => write(at, endian, (n as i64).to_ne_bytes()),
-    }
-  }
-}
-
-/// Re-aims every pointer that `puns` hands over by `d` bytes: the value that holds them moved
-/// by `-d`, its targets did not. Each offset is read and written as the contract of `Offset` says
-/// its bytes are, a two's complement integer of its width in its byte order, which the
-/// description of the pointer gives.
-struct Shift {
-  base: *mut u8,
-  d: isize,
-}
-
-impl puns::Visit for Shift {
-  type Error = puns::Invalid;
-
-  #[inline]
-  fn pointer<P: ?Sized + Pun>(&mut self, at: usize) -> Result<(), puns::Invalid> {
-    if let Some(pointer) = const { P::LAYOUT.as_pointer() } {
-      let (w, endian) = (pointer.width(), pointer.endian());
-      // SAFETY: `at` holds the offset of a pointer of a valid value (`pointers_in`), in the buffer
-      // at `base`; the new distance is within the region, so within the `LIMIT` of the offset.
-      unsafe {
-        let here = self.base.add(at);
-        write_int(here, w, endian, read_int(here, w, endian).wrapping_add(self.d));
+    if T::PLAIN {
+      let dst = (*sink.buf).ptr().add(at);
+      ptr::copy_nonoverlapping(src.as_ptr().cast::<u8>(), dst, size_of_val(src));
+    } else {
+      for (i, x) in src.iter().enumerate() {
+        x.store(sink, at + i * size_of::<T>());
       }
     }
-    Ok(())
   }
 }
 
@@ -658,15 +513,16 @@ impl puns::Visit for Shift {
 /// did before the move.
 #[inline]
 unsafe fn shift<T: Flat>(buf: *mut Buf, at: usize, n: usize, d: isize) {
-  if const { !<T as Pun>::LAYOUT.has_pointers() } {
+  if T::PLAIN {
     return;
   }
-  // SAFETY: per the caller, values of the buffer: valid scalars and tags, the bytes of their
-  // variants initialized (rules not needed, see `copy_values`); `puns` reads the tags and the
-  // offsets of nullable pointers, and `Shift` writes only the offsets it is handed.
+  // SAFETY: per the caller, each a valid value of the buffer; the targets did not move, so each
+  // new distance is within the region.
   unsafe {
     let base = (*buf).ptr();
-    let _ = puns::pointers_elems_in::<T, Shift>(base, at, n, &mut Shift { base, d });
+    for i in 0..n {
+      T::shift(base, at + i * size_of::<T>(), d);
+    }
   }
 }
 
@@ -746,6 +602,26 @@ const unsafe fn plain_edit<'a, 'e: 'a, T: Flat + Copy>(
   unsafe { PlainEdit::new(Raw::new(buf, at)) }
 }
 
+/// The items of `Flat` that copy, move and check a value of plain data without padding: it is its
+/// bytes, it holds no pointer, and `puns` checks it.
+macro_rules! data {
+  () => {
+    unsafe fn store(&self, sink: &mut Sink, at: usize) {
+      // SAFETY: the caller allocated `at` for `Self`, whose bytes are all initialized.
+      unsafe { sink.write(at, *self) }
+    }
+    unsafe fn shift(_: *mut u8, _: usize, _: isize) {}
+    #[inline]
+    fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+      ck.value::<Self>(at)
+    }
+    #[inline]
+    fn pointers(_: &mut Check<'_>, _: usize) -> Result<(), Error> {
+      Ok(())
+    }
+  };
+}
+
 macro_rules! plain {
   ($($t:ty),*) => {$(
     // SAFETY: primitive values have no pointers and no padding (their layouts say so).
@@ -760,6 +636,7 @@ macro_rules! plain {
         // SAFETY: forwarded.
         unsafe { plain_edit(buf, at) }
       }
+      data!();
     }
   )*};
 }
@@ -778,7 +655,7 @@ mod num {
     u48be, u48bec, u48le, u48lec, u64be, u64bec, u64le, u64lec, u128be, u128bec, u128le, u128lec,
   };
 
-  use super::{Buf, Flat, plain_edit};
+  use super::{Buf, Check, Error, Flat, Sink, plain_edit};
   use crate::edit::{Plain, PlainEdit};
 
   macro_rules! numbers {
@@ -797,6 +674,7 @@ mod num {
           // SAFETY: forwarded.
           unsafe { plain_edit(buf, at) }
         }
+        data!();
       }
     )+};
   }
@@ -836,6 +714,26 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
     // SAFETY: forwarded.
     unsafe { plain_edit(buf, at) }
   }
+  unsafe fn store(&self, sink: &mut Sink, at: usize) {
+    fits::<Self>();
+    // SAFETY: the caller allocated `at` for the array. Element by element, so that the padding of
+    // an element is not written.
+    unsafe { write_slice(self, sink, at) }
+  }
+  // `Copy` elements hold no pointer.
+  unsafe fn shift(_: *mut u8, _: usize, _: isize) {}
+  #[inline]
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    fits::<Self>();
+    if T::ANY {
+      return Ok(());
+    }
+    (0..N).try_for_each(|i| T::check(ck, at + i * size_of::<T>()))
+  }
+  #[inline]
+  fn pointers(_: &mut Check<'_>, _: usize) -> Result<(), Error> {
+    Ok(())
+  }
 }
 
 // SAFETY: copies the target.
@@ -847,10 +745,34 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<T, O> {
     T::reference(edit)
   }
   const REACH: u64 = O::LIMIT;
+  const POINTERS: bool = true;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut T::Edit<'e> {
     fits_behind::<T, O>();
     // SAFETY: a `Near` at `at` points to a valid `T`, owned by it alone.
     unsafe { T::edit(buf, aim::<O>(buf, at)) }
+  }
+  unsafe fn store(&self, sink: &mut Sink, at: usize) {
+    fits_behind::<T, O>();
+    // SAFETY: the caller allocated `at` for a `Near`; the target is allocated before the source is
+    // read, and the source is not in the sink's buffer, nor is its target.
+    unsafe {
+      let t = sink.alloc(size_of::<T>(), align_of::<T>());
+      write_copy(&**self, sink, t);
+      sink.link::<O>(at, t);
+    }
+  }
+  unsafe fn shift(base: *mut u8, at: usize, d: isize) {
+    // SAFETY: forwarded.
+    unsafe { moved::<O>(base, at, d) }
+  }
+  #[inline]
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    ck.pointer::<O>(at, false, bytes::target::<T, O>)
+  }
+  #[inline]
+  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    // A pointer is all of its bytes, so `puns` checked none of them.
+    Self::check(ck, at)
   }
 }
 
@@ -863,10 +785,28 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<[T], O> {
     edit
   }
   const REACH: u64 = O::LIMIT;
+  const POINTERS: bool = true;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut ListEdit<'e, T, O> {
     fits_behind::<T, O>();
     // SAFETY: forwarded.
     unsafe { ListEdit::new(Raw::new(buf, at)) }
+  }
+  unsafe fn store(&self, sink: &mut Sink, at: usize) {
+    // SAFETY: the caller allocated `at` for a `Near`; the list is copied as `&[T]` builds one.
+    unsafe { Emit::<Self>::emit(&**self, sink, at) }
+  }
+  unsafe fn shift(base: *mut u8, at: usize, d: isize) {
+    // SAFETY: forwarded.
+    unsafe { moved::<O>(base, at, d) }
+  }
+  #[inline]
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    ck.pointer::<O>(at, false, bytes::list::<T, O>)
+  }
+  #[inline]
+  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    // A pointer is all of its bytes, so `puns` checked none of them.
+    Self::check(ck, at)
   }
 }
 
@@ -879,9 +819,27 @@ unsafe impl<O: Offset> Flat for Near<str, O> {
     edit
   }
   const REACH: u64 = O::LIMIT;
+  const POINTERS: bool = true;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut StrEdit<'e, O> {
     // SAFETY: forwarded.
     unsafe { StrEdit::new(Raw::new(buf, at)) }
+  }
+  unsafe fn store(&self, sink: &mut Sink, at: usize) {
+    // SAFETY: the caller allocated `at` for a `Near`.
+    unsafe { copy_str::<O>(sink, at, self) }
+  }
+  unsafe fn shift(base: *mut u8, at: usize, d: isize) {
+    // SAFETY: forwarded.
+    unsafe { moved::<O>(base, at, d) }
+  }
+  #[inline]
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    ck.pointer::<O>(at, false, bytes::text::<O>)
+  }
+  #[inline]
+  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    // A pointer is all of its bytes, so `puns` checked none of them.
+    Self::check(ck, at)
   }
 }
 
@@ -894,10 +852,55 @@ unsafe impl<T: Flat, O: Offset> Flat for Option<Near<T, O>> {
     edit
   }
   const REACH: u64 = O::LIMIT;
+  const POINTERS: bool = true;
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut OptionEdit<'e, T, O> {
     fits_behind::<T, O>();
     // SAFETY: forwarded.
     unsafe { OptionEdit::new(Raw::new(buf, at)) }
+  }
+  unsafe fn store(&self, sink: &mut Sink, at: usize) {
+    offset::<O>();
+    // SAFETY: the caller allocated `at` for a `Near`; `None` is a zero offset.
+    unsafe {
+      match self {
+        Some(near) => near.store(sink, at),
+        None => sink.write(at, O::from_isize(0)),
+      }
+    }
+  }
+  unsafe fn shift(base: *mut u8, at: usize, d: isize) {
+    offset::<O>();
+    // SAFETY: per the caller, an `Option<Near<T, O>>` at `at`: an `O`, zero for `None`, which
+    // aims nowhere and stays zero.
+    unsafe {
+      if base.add(at).cast::<O>().read_unaligned().to_isize() != 0 {
+        moved::<O>(base, at, d);
+      }
+    }
+  }
+  #[inline]
+  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    ck.pointer::<O>(at, true, bytes::target::<T, O>)
+  }
+  #[inline]
+  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+    // A pointer is all of its bytes, so `puns` checked none of them.
+    Self::check(ck, at)
+  }
+}
+
+/// Re-aims the `O` of the pointer at `at` in the buffer at `base` by `d` bytes.
+///
+/// # Safety
+/// A pointer of `O` is at `at` in the buffer at `base`, and its new distance is within the region,
+/// so within the `LIMIT` of `O`.
+unsafe fn moved<O: Offset>(base: *mut u8, at: usize, d: isize) {
+  offset::<O>();
+  // SAFETY: per the caller; offsets are read and written unaligned, as their positions may be
+  // aligned more than their addresses.
+  unsafe {
+    let here = base.add(at).cast::<O>();
+    here.write_unaligned(O::from_isize(here.read_unaligned().to_isize().wrapping_add(d)));
   }
 }
 

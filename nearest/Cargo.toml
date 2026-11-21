@@ -25,9 +25,10 @@ serde = ["alloc", "dep:serde"]
 
 [dependencies]
 nearest-derive = { version = "=0.8.1", path = "../nearest-derive" }
-# The layouts and the validity of values: `Pun` for every stored type, the numbers of a fixed
-# byte order (`puns::num`), and `view_ref`. Re-exported as `nearest::puns`.
-puns = "0.1.5"
+# The layouts and the validity of values: `Pun` for every stored type, its check, and the numbers
+# of a fixed byte order (`puns::num`). Re-exported as `nearest::puns`. Exact, as a beta of `puns`
+# may change its API in the next one.
+puns = "=0.2.0-beta.3"
 serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

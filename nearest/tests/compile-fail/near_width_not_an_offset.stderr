@@ -30,7 +30,7 @@ error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know
   |                     ^^^^^^^^^^^^^^^^^^^^^^ not a `Pun` type
   |
   = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
-  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with `SelfRelative` and `self_relative!`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
 help: the trait `Pun` is conditionally implemented for `Option<T>`
  --> $CARGO/puns-$VERSION/src/std_enums.rs
   |
@@ -103,7 +103,7 @@ error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know
   |                     ^^^^^^^^^^^^^^^^^^^^^^ not a `Pun` type
   |
   = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
-  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with `SelfRelative` and `self_relative!`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
 help: the trait `Pun` is conditionally implemented for `Option<T>`
  --> $CARGO/puns-$VERSION/src/std_enums.rs
   |
@@ -119,7 +119,7 @@ error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know
   |                     ^^^^^^^^^^^^^^^^^^^^^^ not a `Pun` type
   |
   = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
-  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with `SelfRelative` and `self_relative!`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
 help: the trait `Pun` is conditionally implemented for `Option<T>`
  --> $CARGO/puns-$VERSION/src/std_enums.rs
   |
@@ -134,6 +134,147 @@ note: required by a bound in `nearest::Flat::REACH`
   |                        ^^^ required by this bound in `Flat::REACH`
 ...
   |   const REACH: u64 = u64::MAX;
+  |
+
+error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know its layout and its valid values
+ --> tests/compile-fail/near_width_not_an_offset.rs:5:21
+  |
+5 | struct Byte { next: Option<Near<Byte, u8>> }
+  |                     ^^^^^^^^^^^^^^^^^^^^^^ not a `Pun` type
+  |
+  = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
+help: the trait `Pun` is conditionally implemented for `Option<T>`
+ --> $CARGO/puns-$VERSION/src/std_enums.rs
+  |
+  | unsafe impl<T: Pun> Pun for Option<T> {
+  | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
+  |                |
+  |                unsatisfied requirement introduced here: `Near<Byte, u8>: Pun`
+note: required by a bound in `nearest::Flat::POINTERS`
+ --> src/flat.rs
+  |
+  | pub unsafe trait Flat: Pun + Sized + 'static {
+  |                        ^^^ required by this bound in `Flat::POINTERS`
+...
+  |   const POINTERS: bool = false;
+  |
+
+error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know its layout and its valid values
+ --> tests/compile-fail/near_width_not_an_offset.rs:4:1
+  |
+4 | #[flat]
+  | ^^^^^^^ not a `Pun` type
+  |
+  = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
+help: the trait `Pun` is conditionally implemented for `Option<T>`
+ --> $CARGO/puns-$VERSION/src/std_enums.rs
+  |
+  | unsafe impl<T: Pun> Pun for Option<T> {
+  | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
+  |                |
+  |                unsatisfied requirement introduced here: `Near<Byte, u8>: Pun`
+note: required by a bound in `nearest::Flat::store`
+ --> src/flat.rs
+  |
+  | pub unsafe trait Flat: Pun + Sized + 'static {
+  |                        ^^^ required by this bound in `Flat::store`
+...
+  |   unsafe fn store(&self, sink: &mut Sink, at: usize);
+  = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `u8: Offset` is not satisfied
+ --> tests/compile-fail/near_width_not_an_offset.rs:4:1
+  |
+4 | #[flat]
+  | ^^^^^^^ the trait `Offset` is not implemented for `u8`
+  |
+help: the following other types implement trait `Offset`
+ --> src/near.rs
+  |
+  |     unsafe impl Offset for $t {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |     |
+  |     `i16`
+  |     `i32`
+  |     `i64`
+...
+  | offsets!(i16, i32, i64);
+  | ----------------------- in this macro invocation
+  = note: required for `Option<Near<Byte, u8>>` to implement `Flat`
+  = note: this error originates in the attribute macro `flat` which comes from the expansion of the macro `offsets` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know its layout and its valid values
+ --> tests/compile-fail/near_width_not_an_offset.rs:5:21
+  |
+5 | struct Byte { next: Option<Near<Byte, u8>> }
+  |                     ^^^^^^^^^^^^^^^^^^^^^^ not a `Pun` type
+  |
+  = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
+help: the trait `Pun` is conditionally implemented for `Option<T>`
+ --> $CARGO/puns-$VERSION/src/std_enums.rs
+  |
+  | unsafe impl<T: Pun> Pun for Option<T> {
+  | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
+  |                |
+  |                unsatisfied requirement introduced here: `Near<Byte, u8>: Pun`
+note: required by a bound in `nearest::Flat::shift`
+ --> src/flat.rs
+  |
+  | pub unsafe trait Flat: Pun + Sized + 'static {
+  |                        ^^^ required by this bound in `Flat::shift`
+...
+  |   unsafe fn shift(base: *mut u8, at: usize, d: isize);
+  |
+
+error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know its layout and its valid values
+ --> tests/compile-fail/near_width_not_an_offset.rs:5:21
+  |
+5 | struct Byte { next: Option<Near<Byte, u8>> }
+  |                     ^^^^^^^^^^^^^^^^^^^^^^ not a `Pun` type
+  |
+  = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
+help: the trait `Pun` is conditionally implemented for `Option<T>`
+ --> $CARGO/puns-$VERSION/src/std_enums.rs
+  |
+  | unsafe impl<T: Pun> Pun for Option<T> {
+  | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
+  |                |
+  |                unsatisfied requirement introduced here: `Near<Byte, u8>: Pun`
+note: required by a bound in `nearest::Flat::check`
+ --> src/flat.rs
+  |
+  | pub unsafe trait Flat: Pun + Sized + 'static {
+  |                        ^^^ required by this bound in `Flat::check`
+...
+  |   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
+  |
+
+error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know its layout and its valid values
+ --> tests/compile-fail/near_width_not_an_offset.rs:5:21
+  |
+5 | struct Byte { next: Option<Near<Byte, u8>> }
+  |                     ^^^^^^^^^^^^^^^^^^^^^^ not a `Pun` type
+  |
+  = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
+help: the trait `Pun` is conditionally implemented for `Option<T>`
+ --> $CARGO/puns-$VERSION/src/std_enums.rs
+  |
+  | unsafe impl<T: Pun> Pun for Option<T> {
+  | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
+  |                |
+  |                unsatisfied requirement introduced here: `Near<Byte, u8>: Pun`
+note: required by a bound in `nearest::Flat::pointers`
+ --> src/flat.rs
+  |
+  | pub unsafe trait Flat: Pun + Sized + 'static {
+  |                        ^^^ required by this bound in `Flat::pointers`
+...
+  |   fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
   |
 
 error[E0277]: the trait bound `u8: Offset` is not satisfied
@@ -168,7 +309,7 @@ error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know
   |                     ^^^^^^^^^^^^^^^^^^^^^^ not a `Pun` type
   |
   = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
-  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a self-relative pointer with `SelfRelative` and `self_relative!`
+  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
 help: the trait `Pun` is conditionally implemented for `Option<T>`
  --> $CARGO/puns-$VERSION/src/std_enums.rs
   |
@@ -184,27 +325,6 @@ note: required by a bound in `nearest::Flat::reference`
 ...
   |   fn reference<'a, 'e: 'a>(edit: &'a mut Self::Edit<'e>) -> Self::Ref<'a, 'e>;
   |
-
-error[E0277]: the trait bound `u8: Offset` is not satisfied
- --> tests/compile-fail/near_width_not_an_offset.rs:4:1
-  |
-4 | #[flat]
-  | ^^^^^^^ the trait `Offset` is not implemented for `u8`
-  |
-help: the following other types implement trait `Offset`
- --> src/near.rs
-  |
-  |     unsafe impl Offset for $t {
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
-  |     |
-  |     `i16`
-  |     `i32`
-  |     `i64`
-...
-  | offsets!(i16, i32, i64);
-  | ----------------------- in this macro invocation
-  = note: required for `Option<Near<Byte, u8>>` to implement `Flat`
-  = note: this error originates in the attribute macro `flat` which comes from the expansion of the macro `offsets` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `u8: Offset` is not satisfied
  --> tests/compile-fail/near_width_not_an_offset.rs:4:1

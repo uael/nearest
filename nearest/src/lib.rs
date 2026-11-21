@@ -199,18 +199,17 @@
 //! assert_eq!((size_of::<Table<i16>>(), size_of::<Table<i64>>()), (4, 16));
 //! ```
 //!
-//! # One value read as another
+//! # One version read as another
 //!
 //! Every `#[flat]` type is also a [`puns::Pun`] type: its layout and its valid values are known
-//! at compile time, and [`Near`] is declared to `puns` as a self-relative pointer
-//! ([`puns::SelfRelative`]). So a value of a region can be read as another type, with
-//! everything it points to, when every value of the first is a value of the second:
-//! [`puns::view_ref`] proves it at compile time and costs nothing at run time, and
-//! [`puns::try_view_ref`] checks what could not be proven of the value itself. Bytes saved by one
-//! version of a program are read by the next, without converting them:
+//! at compile time. [`Near`] is a scalar that a pun never makes ([`puns::layout::Spec::never`]):
+//! `puns` reads a value that holds one as plain data, and never makes one, since where a pointer
+//! aims is not a property of its bytes. The loaders check everything but the pointers with
+//! `puns`, and the pointers themselves. So the bytes saved by one version of a program load as
+//! the next, in place, when they are a value of it:
 //!
 //! ```
-//! use nearest::{Near, Region, flat, puns};
+//! use nearest::{Error, Near, Region, flat};
 //!
 //! #[flat]
 //! enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
@@ -229,26 +228,17 @@
 //! }
 //!
 //! let old = Region::new(Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2))));
-//! // Every `Expr`, and what it points to, is a `NewExpr`: nothing is checked, nothing is copied.
-//! let new: &NewExpr = puns::view_ref(&*old);
+//! // Checked, not copied: the address of the bytes.
+//! let new: &NewExpr = nearest::view(old.as_bytes().unwrap()).unwrap();
 //! assert_eq!(eval(new), -1);
-//! ```
-//!
-//! The other way does not compile: a `NewExpr` may be a `Mul`, behind a pointer, where nothing
-//! can be checked.
-//!
-//! ```compile_fail
-//! # use nearest::{Near, Region, flat, puns};
-//! # #[flat] enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
-//! # #[flat] enum NewExpr { Lit(i64), Neg(Near<NewExpr>), Add(Near<NewExpr>, Near<NewExpr>), Mul(Near<NewExpr>, Near<NewExpr>) }
-//! fn back(new: &NewExpr) -> &Expr {
-//!   puns::view_ref(new)
-//! }
-//! # let _: fn(&NewExpr) -> &Expr = back;
+//! // The other way, a `Mul` is no `Expr`: refused where its tag is.
+//! let mul = Region::new(NewExpr::mul(NewExpr::Lit(2), NewExpr::Lit(3)));
+//! assert_eq!(nearest::view::<Expr>(mul.as_bytes().unwrap()).err(), Some(Error::Invalid(0)));
 //! ```
 //!
 //! What `#[pun(..)]` says of a type, `valid(..)` of a field and `assert(..)` of a struct, are
-//! requirements: the loaders check them, and `puns` where it does not prove them. A region does
+//! requirements: the loaders check them, and refuse a value that breaks one where the field is,
+//! or where the value is. A region does
 //! not check them when it builds or edits a value: like a field of a struct that safe code can
 //! write, a value of a region may not meet them, and nothing relies on it; such a value is saved
 //! by [`Region::as_bytes`] and refused when loaded.
@@ -365,9 +355,7 @@
 //!   provenance.
 //!
 //! What [`puns`] makes of a value that holds a `Near` keeps all of this: it reads such a value
-//! as plain data, makes one only by [`puns::view_ref`] and [`puns::try_view_ref`] from a value
-//! that holds, at the same place, a pointer whose target it proves to be one, and never gives a
-//! `&mut` to one.
+//! as plain data, and never makes one.
 //!
 //! Stored types must be no more aligned than a `u64` (the words of a region's memory: 8 bytes on
 //! x86-64, 4 on `i686`), and have a non-zero size and no drop glue (checked at compile time). A region holds at most what the pointers of its root reach (2 GiB with the
@@ -397,7 +385,7 @@ pub use near::{Near, Offset};
 /// It implements [`Flat`] and adds `#[repr(C)]` to structs (unless they are already `C` or
 /// `transparent`) and `#[repr(u8)]` to enums. It derives [`puns::Pun`], so that `#[pun(..)]`
 /// options (`valid(..)` on a field, `assert(..)` on a struct, `bound(..)`) can be written on the
-/// type (see [One value read as another](crate#one-value-read-as-another)); a type must not
+/// type (see [One version read as another](crate#one-version-read-as-another)); a type must not
 /// derive it again, and the types of the fields of a `pub` type must be as visible as it is. It
 /// generates:
 ///
@@ -479,7 +467,7 @@ pub use near::{Near, Offset};
 /// ```
 pub use nearest_derive::flat;
 /// The crate whose layouts `nearest` declares its pointers with: re-exported, so that the
-/// numbers of a fixed byte order ([`puns::num`]) and [`puns::view_ref`] are those of the
+/// numbers of a fixed byte order ([`puns::num`]) and the `Pun` of `#[pun(..)]` are those of the
 /// version that `nearest` uses.
 pub use puns;
 pub use region::Region;
@@ -522,6 +510,7 @@ pub type Edit<'e, T> = <T as Flat>::Edit<'e>;
 pub mod __private {
   use crate::{Emit, Flat, Near, Offset};
   pub use crate::{
+    bytes::Check,
     edit::Raw,
     flat::{Buf, Sink, fits, make},
     near::Packed,

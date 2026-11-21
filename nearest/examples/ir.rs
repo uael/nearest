@@ -38,7 +38,7 @@
 //!   nothing more. `view` takes bytes aligned as a region is, wherever they come from.
 //! - Editing a region in place (pushing a block, replacing an instruction): see `passes.rs`.
 //! - Reading the file of an older version of the IR as the new one, without converting it, is
-//!   `puns::view_ref`: see the documentation of the crate.
+//!   `view` too: see the documentation of the crate.
 
 use std::{
   fmt::Write as _,

@@ -5,8 +5,7 @@
 //! ```
 //!
 //! and look for their names in the `codegen.s` that it writes under `target/release` (`find target
-//! -name codegen.s`). A view of a value as another type is the address it is given; the check of
-//! a region is what `#[flat]` writes for the type.
+//! -name codegen.s`). The check of a region is what `#[flat]` writes for the type.
 #![expect(
   clippy::no_mangle_with_rust_abi,
   reason = "the code of the Rust ABI is what is measured; `no_mangle` only names it in the assembly"
@@ -14,26 +13,15 @@
 
 use nearest::{
   Near, Pending, flat,
-  puns::{
-    self,
-    num::{i32le, u16le, u32le},
-  },
+  puns::num::{i32le, u16le, u32le},
 };
 
-/// An expression, and the next version of it: a `bool` read as a `u8`, one more variant.
+/// An expression: a tag, then pointers to its parts.
 #[flat]
-pub enum Old {
+pub enum Expr {
   Leaf(bool),
-  Neg(Near<Old, i32le>),
-  Call(Near<str, i32le>, Near<[Old], i32le>),
-}
-
-#[flat]
-pub enum New {
-  Leaf(u8),
-  Neg(Near<New, i32le>),
-  Call(Near<str, i32le>, Near<[New], i32le>),
-  Pair(Near<New, i32le>, Near<New, i32le>),
+  Neg(Near<Expr, i32le>),
+  Call(Near<str, i32le>, Near<[Expr], i32le>),
 }
 
 /// A table: a name, rows that hold a pointer and a `bool`, and numbers.
@@ -58,15 +46,10 @@ pub struct Numbers {
   pub values: Near<[u32le], i32le>,
 }
 
-// Proven, pointers followed through a recursive type: nothing is compiled.
+// The check of a recursive enum: a tag, then the parts of its variant.
 #[unsafe(no_mangle)]
-pub fn view_new(old: &Old) -> &New {
-  puns::view_ref(old)
-}
-
-#[unsafe(no_mangle)]
-pub fn view_slice(old: &[Old]) -> &[New] {
-  puns::view_ref(old)
+pub fn load_expr<'b>(bytes: &'b [u8], scratch: &mut [Pending]) -> Option<&'b Expr> {
+  nearest::view_with(bytes, scratch).ok()
 }
 
 // The check of a region, with the memory of the caller.
