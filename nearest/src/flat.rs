@@ -603,6 +603,7 @@ macro_rules! data {
       unsafe { sink.write(at, *self) }
     }
     unsafe fn shift(_: *mut u8, _: usize, _: isize) {}
+    #[inline]
     fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
       ck.value::<Self>(at)
     }
@@ -709,6 +710,7 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
   }
   // `Copy` elements hold no pointer.
   unsafe fn shift(_: *mut u8, _: usize, _: isize) {}
+  #[inline]
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     fits::<Self>();
     if T::ANY {
@@ -747,6 +749,7 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<T, O> {
     // SAFETY: forwarded.
     unsafe { moved::<O>(base, at, d) }
   }
+  #[inline]
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     ck.pointer::<O>(at, false, bytes::target::<T, O>)
   }
@@ -775,6 +778,7 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<[T], O> {
     // SAFETY: forwarded.
     unsafe { moved::<O>(base, at, d) }
   }
+  #[inline]
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     ck.pointer::<O>(at, false, bytes::list::<T, O>)
   }
@@ -802,6 +806,7 @@ unsafe impl<O: Offset> Flat for Near<str, O> {
     // SAFETY: forwarded.
     unsafe { moved::<O>(base, at, d) }
   }
+  #[inline]
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     ck.pointer::<O>(at, false, bytes::text::<O>)
   }
@@ -842,6 +847,7 @@ unsafe impl<T: Flat, O: Offset> Flat for Option<Near<T, O>> {
       }
     }
   }
+  #[inline]
   fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
     ck.pointer::<O>(at, true, bytes::target::<T, O>)
   }

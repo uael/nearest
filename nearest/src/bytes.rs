@@ -169,7 +169,7 @@ impl Check<'_> {
     if T::ANY {
       return Ok(());
     }
-    let bytes = self.bytes.get(at..at.saturating_add(size_of::<T>())).ok_or(Error::Invalid(at))?;
+    let bytes = self.span(at, size_of::<T>())?;
     puns::validate_but_never::<T>(bytes).map_err(|_| Error::Invalid(at))
   }
 
@@ -180,7 +180,7 @@ impl Check<'_> {
   /// If a rule does not hold.
   #[inline]
   pub fn rules<T: Flat>(&self, at: usize) -> Result<(), Error> {
-    let bytes = self.bytes.get(at..at.saturating_add(size_of::<T>())).ok_or(Error::Invalid(at))?;
+    let bytes = self.span(at, size_of::<T>())?;
     puns::validate_but_never::<T>(bytes).map_err(|_| Error::Invalid(at))
   }
 
@@ -192,8 +192,15 @@ impl Check<'_> {
   /// If a rule does not hold.
   #[inline]
   pub fn valid<W: puns::Pun>(&self, at: usize) -> Result<(), Error> {
-    let bytes = self.bytes.get(at..at.saturating_add(size_of::<W>())).ok_or(Error::Invalid(at))?;
+    let bytes = self.span(at, size_of::<W>())?;
     puns::validate_but_never::<W>(bytes).map_err(|_| Error::Invalid(at))
+  }
+
+  /// The `size` bytes at `at`. The slice is made from a checked end, so its length is known to be
+  /// `size`, and the size check of `puns` on it folds away.
+  #[inline]
+  fn span(&self, at: usize, size: usize) -> Result<&[u8], Error> {
+    at.checked_add(size).and_then(|end| self.bytes.get(at..end)).ok_or(Error::Invalid(at))
   }
 
   /// The tag of an enum of `count` variants at `at`.
@@ -219,8 +226,13 @@ impl Check<'_> {
     step: Step,
   ) -> Result<(), Error> {
     offset::<O>();
-    let bytes = self.bytes.get(at..at.saturating_add(size_of::<O>())).ok_or(Error::Invalid(at))?;
-    if bytes.iter().all(|&b| b == 0) {
+    // One read of the width of `O`, which is 2, 4 or 8 bytes (`offset`): zero in any byte order.
+    let zero = match size_of::<O>() {
+      2 => self.get::<2>(at, Endian::NATIVE)? == [0; 2],
+      4 => self.get::<4>(at, Endian::NATIVE)? == [0; 4],
+      _ => self.get::<8>(at, Endian::NATIVE)? == [0; 8],
+    };
+    if zero {
       return if nullable { Ok(()) } else { Err(Error::Invalid(at)) };
     }
     self.push(at, 0, step)

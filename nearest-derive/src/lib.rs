@@ -630,6 +630,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         unsafe fn shift(#base: *mut u8, #at: usize, #d: isize) {
           unsafe { #shift }
         }
+        #[inline]
         fn check(
           #ck: &mut #np::Check<'_>,
           #at: usize,
