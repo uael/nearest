@@ -1,6 +1,6 @@
 [package]
 name = "nearest"
-version = "0.8.1"
+version = "0.9.0"
 edition.workspace = true
 rust-version = "1.99"
 license = "Apache-2.0 OR MIT"
@@ -24,7 +24,7 @@ alloc = []
 serde = ["alloc", "dep:serde"]
 
 [dependencies]
-nearest-derive = { version = "=0.8.1", path = "../nearest-derive" }
+nearest-derive = { version = "=0.9.0", path = "../nearest-derive" }
 # The layouts and the validity of values: `Pun` for every stored type, its check, and the numbers
 # of a fixed byte order (`puns::num`). Re-exported as `nearest::puns`. Exact, as a beta of `puns`
 # may change its API in the next one.
