@@ -8,7 +8,8 @@ use std::{
 };
 
 use nearest::{
-  Edit, Error, Heap, Inline, Near, Offset, Pending, Region, flat, puns::layout::Endian,
+  Edit, Error, Heap, Inline, Near, Offset, Region, flat,
+  puns::{Pun, layout::Endian},
 };
 
 #[flat]
@@ -231,11 +232,15 @@ fn layout<O: Offset>() {
   let w = size_of::<O>();
   let list = Region::<Near<[u64], O>>::new(Near::from_iter([7u64]));
   let bytes = list.as_bytes().unwrap();
-  // Elements at a position aligned to `max(w, align_of::<u64>())`, after the header.
-  let elems = (3 * w).next_multiple_of(w.max(align_of::<u64>()));
+  // Elements at a position aligned to `max(w, align_of::<u64>())`, after the header: the
+  // capacity and the length, then the padding that aligns the elements, as in a `repr(C)` struct
+  // (4 bytes with `i16` and 8-aligned elements).
+  let header = (2 * w).next_multiple_of(align_of::<u64>());
+  let elems = (w + header).next_multiple_of(w.max(align_of::<u64>()));
   assert_eq!(bytes.len(), elems + 8);
-  assert_eq!(pos::<O>(bytes, 0), elems - w); // to the length
-  assert_eq!((pos::<O>(bytes, elems - 2 * w), pos::<O>(bytes, elems - w)), (1, 1));
+  let (cap, len) = (elems - header, elems - header + w);
+  assert_eq!(pos::<O>(bytes, 0), len); // to the length
+  assert_eq!((pos::<O>(bytes, cap), pos::<O>(bytes, len)), (1, 1));
   assert_eq!(bytes[elems..], 7u64.to_ne_bytes());
   let text = Region::<Near<str, O>>::new("hi");
   let bytes = text.as_bytes().unwrap();
@@ -252,27 +257,24 @@ fn bytes<O: Offset>() {
   let image = compact.as_bytes().unwrap();
   assert_eq!(Region::<Tree<O>>::from_bytes(image), Ok(Region::new(&*r)));
   assert_eq!(nearest::view::<Tree<O>>(image), Ok(&*r));
-  let mut scratch = vec![Pending::default(); image.len() / size_of::<O>().min(4)];
-  assert_eq!(nearest::view_with::<Tree<O>>(image, &mut scratch), Ok(&*r));
-  assert_eq!(Region::<Tree<O>>::from_bytes_with(image, &mut []).err(), Some(Error::ScratchFull));
   // Cut, padded, or a pointer one byte off.
   let cut = &image[..image.len() - 1];
-  assert!(matches!(Region::<Tree<O>>::from_bytes(cut), Err(Error::Invalid(_))));
+  assert!(matches!(Region::<Tree<O>>::from_bytes(cut), Err(Error::Invalid)));
   let mut long = image.to_vec();
   long.push(0);
-  assert_eq!(Region::<Tree<O>>::from_bytes(&long).err(), Some(Error::Invalid(image.len())));
+  assert_eq!(Region::<Tree<O>>::from_bytes(&long).err(), Some(Error::Invalid));
   let name = std::mem::offset_of!(Tree<O>, name);
   for n in [1, -1] {
     let mut bad = image.to_vec();
     put::<O>(&mut bad, name, int::<O>(image, name) + n);
-    assert_eq!(Region::<Tree<O>>::from_bytes(&bad).err(), Some(Error::Invalid(name)));
+    assert_eq!(Region::<Tree<O>>::from_bytes(&bad).err(), Some(Error::Invalid));
   }
   // A negative length is as bad as one too long.
   let text = Region::<Near<str, O>>::new("hi");
   let mut bad = text.as_bytes().unwrap().to_vec();
   let w = size_of::<O>();
   put::<O>(&mut bad, w, -1);
-  assert_eq!(Region::<Near<str, O>>::from_bytes(&bad).err(), Some(Error::Invalid(w)));
+  assert_eq!(Region::<Near<str, O>>::from_bytes(&bad).err(), Some(Error::Invalid));
 }
 
 /// Each test with each offset. Under Miri, the tests that build and check regions run with seven
@@ -316,7 +318,8 @@ macro_rules! offsets {
     #[repr(transparent)]
     struct $name($int);
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Pun)]
+    #[pun(crate = nearest::puns)]
     #[repr(transparent)]
     struct $non_zero(NonZero<$int>);
 
@@ -423,7 +426,7 @@ fn bytes_past_the_size_limit_are_invalid() {
   let mut long = r.as_bytes().unwrap().to_vec();
   assert_eq!(Region::<Small>::from_bytes(&long).map(|r| r.to_vec()), Ok(vec![1, 2]));
   long.resize(LIMIT + 8, 0);
-  assert_eq!(Region::<Small>::from_bytes(&long).err(), Some(Error::Invalid(0)));
+  assert_eq!(Region::<Small>::from_bytes(&long).err(), Some(Error::Invalid));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -509,8 +512,8 @@ fn integers_wider_than_isize_are_invalid() {
   let bytes = r.as_bytes().unwrap();
   assert_eq!(bytes, [&8i64.to_ne_bytes()[..], &[7]].concat());
   let far = with_i64(bytes, 0, HIGH + 8);
-  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&far).err(), Some(Error::Invalid(0)));
-  assert_eq!(view_in_words::<Near<u8, i64>>(&far), Err(Error::Invalid(0)));
+  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&far).err(), Some(Error::Invalid));
+  assert_eq!(view_in_words::<Near<u8, i64>>(&far), Err(Error::Invalid));
   assert_eq!(view_in_words::<Near<u8, i64>>(bytes), Ok(()));
   // The length and the capacity of a list, and the length of a text.
   let list = Region::<Near<[u8], i64>>::new(Near::from_iter([1u8, 2]));
@@ -519,17 +522,17 @@ fn integers_wider_than_isize_are_invalid() {
   assert_eq!(Region::<Near<[u8], i64>>::from_bytes(bytes).map(|r| r.len()), Ok(2));
   for at in [len, len - 8] {
     let bad = with_i64(bytes, at, HIGH + 2);
-    assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&bad), Err(Error::Invalid(_))), "{at}");
+    assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&bad), Err(Error::Invalid)), "{at}");
   }
   let both = with_i64(&with_i64(bytes, len, HIGH + 2), len - 8, HIGH + 2);
-  assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&both), Err(Error::Invalid(_))));
+  assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&both), Err(Error::Invalid)));
   let text = Region::<Near<str, i64>>::new("hi");
   let bytes = text.as_bytes().unwrap();
   let bad = with_i64(bytes, 8, HIGH + 2);
-  assert_eq!(Region::<Near<str, i64>>::from_bytes(&bad).err(), Some(Error::Invalid(8)));
+  assert_eq!(Region::<Near<str, i64>>::from_bytes(&bad).err(), Some(Error::Invalid));
   // Nor any `i64` that is not what `from_isize` makes: the most negative one.
   let low = with_i64(r.as_bytes().unwrap(), 0, i64::MIN);
-  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&low).err(), Some(Error::Invalid(0)));
+  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&low).err(), Some(Error::Invalid));
 }
 
 /// `nearest::view` of `bytes`, copied to words: an address aligned as a region is.
@@ -550,7 +553,8 @@ fn view_in_words<T: nearest::Flat>(bytes: &[u8]) -> Result<(), Error> {
 #[repr(transparent)]
 struct Lenient(i32);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Pun)]
+#[pun(crate = nearest::puns)]
 #[repr(transparent)]
 struct NonZeroLenient(NonZero<i32>);
 
@@ -582,7 +586,7 @@ fn offsets_that_from_isize_does_not_make_are_invalid() {
   assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(bytes).map(|r| **r), Ok(7));
   let mut far = bytes.to_vec();
   far[..4].copy_from_slice(&((1 << 20) + 4i32).to_ne_bytes()); // past `LIMIT`
-  assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(&far).err(), Some(Error::Invalid(0)));
+  assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(&far).err(), Some(Error::Invalid));
 }
 
 // ---------------------------------------------------------------------------------------------

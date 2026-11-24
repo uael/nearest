@@ -86,8 +86,8 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | Item | |
 |---|---|
 | `#[flat]` | makes a struct or enum storable; generates constructors and the handle |
-| `Region<T, S = Heap>` | the buffer, in a storage: `new`, `new_in`, `edit`, `as_bytes`, `from_bytes`, `from_bytes_with`, `byte_len`; `unsafe` `from_bytes_unchecked` |
-| `view`, `view_with` | functions: the value whose image is a slice aligned as a `u64`, checked and read in place; `unsafe` `view_unchecked` |
+| `Region<T, S = Heap>` | the buffer, in a storage: `new`, `new_in`, `edit`, `as_bytes`, `from_bytes`, `byte_len`; `unsafe` `from_bytes_unchecked` |
+| `view` | a function: the value whose image is a slice aligned as a `u64`, checked and read in place; `unsafe` `view_unchecked` |
 | `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap (`Heap::with_capacity`), `N` bytes inside the region |
 | `Near<T, O = i32>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
 | `Offset` | the integer a `Near` keeps its distance in: `i16`, `i32`, `i64`, `i32le`.. of `puns::num`, or a type of yours (an `unsafe` trait) |
@@ -97,8 +97,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `replace`, `update` |
 | `StrEdit<'e>` | the handle of a `Near<str>`: `set`, `replace`, `update` |
 | `Old<'e, T>` | a value that left its place: write it anywhere to move it there |
-| `Error` | the error of every loader: `Invalid(offset)`, `ScratchFull`, `StorageFull` |
-| `Pending` | an entry of the memory that `from_bytes_with` and `view_with` check bytes with |
+| `Error` | the error of every loader: `Invalid`, `Limit`, `StorageFull` |
 | `Flat`, `Emit<T>` | "may live in a region", "can be written as a `T`" |
 
 Anything that can be written as a `T` is accepted wherever a `T` is built: a value, a copy
@@ -186,11 +185,11 @@ struct Table { name: Near<str, i32le>, rows: Near<[u16le], i32le> }
 
 ## One version read as another
 
-Every `#[flat]` type is a [`puns`](https://docs.rs/puns) type too, and `Near` is a scalar that
-`puns` never makes: it reads a value that holds one as plain data, since where a pointer aims is
-not a property of its bytes. The loaders check everything but the pointers with `puns`, and the
-pointers themselves. So the bytes saved by a program load in its next version, in place, when
-they are a value of it:
+Every `#[flat]` type is a [`puns`](https://docs.rs/puns) type too, and a `Near` is an eager aim
+of `puns`: its offset, and its target at the address of the pointer plus the offset, which
+`puns` checks with the value that holds the pointer. The loaders check every value with `puns`,
+and then that the image is compact. So the bytes saved by a program load in its next version, in
+place, when they are a value of it:
 
 ```rust
 #[flat]
@@ -203,7 +202,7 @@ let old = Region::new(Expr::neg(Expr::Lit(2)));
 let new: &NewExpr = nearest::view(old.as_bytes().unwrap())?;      // checked, the same bytes
 ```
 
-The other way, an `Abs` is refused where its tag is. `#[pun(valid(..))]` and
+The other way, an `Abs` is refused. `#[pun(valid(..))]` and
 `#[pun(assert(..))]` can be written on a `#[flat]` type: requirements that the loaders check
 (regions do not check them when they build or edit a value: one that breaks a rule is saved,
 and refused when loaded).
@@ -214,15 +213,15 @@ and refused when loaded).
 region is compact until it is edited, and a copy, `Region::new(&*r)`, always is. `from_bytes`
 checks bytes and copies them into a new region; `nearest::view` checks a slice aligned as
 a region is (as a `u64`: 8 bytes on x86-64, 4 on `i686`), such as a memory-mapped file, and reads
-it in place. Checking accepts exactly the compact images of valid
-values, in one pass, in safe code, without recursion or panics: each value as its layout says
-(`puns`), its rules included. Every loader returns
-`Result<_, Error>`: `Error::Invalid(offset)` says where the bytes went wrong, and
-`Error::StorageFull` that a valid image is larger than the storage of `from_bytes`. Checking
-keeps the pointers still to visit in memory that grows with the nesting of the data;
-`from_bytes_with` and `view_with` take it from the caller, as `&mut [Pending]`, and return
-`Error::ScratchFull` if it runs out: `bytes.len() / 4` entries are always enough (`/ 2` with
-2-byte pointers). For bytes you
+it in place. Checking accepts exactly the compact images of valid values, without panics, and
+takes no memory but the stack: `puns` checks each value as its layout says, its rules included,
+and follows every pointer to its target; then a walk requires each target where a deep copy puts
+it, so that the value is a tree, as a region is. `puns` follows pointers at most 64 deep
+(`puns::AIM_DEPTH`), one behind another, and recurses once for each. Every loader returns
+`Result<_, Error>`: `Error::Invalid` says that the bytes are not the image of a valid value (not
+where), `Error::Limit` that they nest pointers deeper than `puns` follows, which says nothing
+of them, and `Error::StorageFull` that they are larger than the storage of `from_bytes`. For
+bytes you
 trust, or check yourself, `from_bytes_unchecked` and `view_unchecked` skip the check and are
 `unsafe`. An offset or a length is valid only as its
 `Offset` writes it: an `i64` that does not fit `isize` on a 32-bit target is invalid. The bytes
@@ -269,17 +268,16 @@ the pointers of its root reach (2 GiB by default), or what its storage gives. Th
 ## Getting started
 
 Stable Rust (1.99 or later, as `puns`), `#![no_std]`, no dependencies besides the macro and
-[`puns`](https://docs.rs/puns).
+[`puns`](https://docs.rs/puns), here at a commit of its repository, whose aims are not released
+yet.
 
 ```sh
 cargo add nearest
 ```
 
 The default feature `alloc` provides the heap. Without it (`default-features = false`) the
-crate needs no allocator: regions live in other storage, and `Heap` (so `Region<T>`),
-`from_bytes` and `view` are not available. `as_bytes` is, and so are `from_bytes_with` and
-`view_with`, which check loaded bytes with memory from the caller: a slice of `Pending`, of
-which `bytes.len() / 4` entries are always enough (`/ 2` with 2-byte pointers).
+crate needs no allocator: regions live in other storage, and `Heap` (so `Region<T>`) is not
+available. Everything else is, loading included, which takes no memory.
 
 The opt-in feature `serde` (with `alloc`) makes a `Region` `Serialize` and `Deserialize` as its
 bytes, checked when loaded, like `as_bytes` and `from_bytes`.

@@ -1,6 +1,7 @@
 //! What `nearest` takes from the layouts of `puns`: numbers of a fixed byte order in a region, a
-//! value that holds pointers read as plain data, optional pointers, generic types, the alignment
-//! of the elements of a list, and the rules of `#[pun(..)]`, checked at load.
+//! value that holds pointers read as plain data, and from bytes once `puns` checked its targets,
+//! optional pointers, generic types, the alignment of the elements of a list, and the rules of
+//! `#[pun(..)]`, checked at load.
 
 use nearest::{
   Flat, Near, Region, flat,
@@ -50,12 +51,11 @@ fn generic_types() {
   let flags = Region::new(Boxed::<bool>::new(1, true, [false, true]));
   let bytes: &Boxed<u8> = nearest::view(flags.as_bytes().unwrap()).unwrap();
   assert_eq!((bytes.id, *bytes.value, &bytes.more[..]), (1, 1, &[0, 1][..]));
-  // A `u8` of 2 is no `bool`: refused where it is.
+  // A `u8` of 2 is no `bool`: refused.
   let two = Region::new(Boxed::<u8>::new(1, 2, [0]));
-  let at = (&raw const *two.value).addr() - two.as_bytes().unwrap().as_ptr().addr();
   assert_eq!(
     nearest::view::<Boxed<bool>>(two.as_bytes().unwrap()).err(),
-    Some(nearest::Error::Invalid(at))
+    Some(nearest::Error::Invalid)
   );
 }
 
@@ -88,7 +88,7 @@ fn numbers_of_a_byte_order_in_a_region() {
   t.rows().push(u16le::new(0xffff));
   let sum = r.rows.iter().map(|row| u32::from(row.get())).sum::<u32>();
   assert_eq!((r.count.get(), sum), (3, 0x0102 + 3 + 0xffff));
-  const { assert!(<u32le as Flat>::PLAIN && <u32le as Flat>::ANY && <i16be as Flat>::ANY) };
+  const { assert!(<u32le as Flat>::PLAIN && <i16be as Flat>::PLAIN) };
 }
 
 /// A value that holds pointers is read as plain data: an offset is initialized bytes.
@@ -99,6 +99,51 @@ fn pointers_are_read_as_bytes() {
   assert_eq!(puns::head_ref::<Table, u8>(&r), &1);
   assert_eq!(puns::tail_ref::<Table, i32le>(&r).get(), 11);
   assert_eq!(puns::try_pun_ref::<Table, Flagged>(&r).map(|f| f.set), Ok(true));
+}
+
+/// Two pointers, which `puns` reads from bytes once it checked their targets.
+#[flat]
+#[derive(Debug, PartialEq, Eq)]
+struct Two {
+  a: Near<u32, i32le>,
+  b: Near<u32, i32le>,
+}
+
+/// `puns` reads a value that holds pointers from bytes as it reads any value, once it checked
+/// every target (`Deref` then reads them). It does not require the image to be compact: two
+/// pointers may share a target, which a region refuses, since an edit of one target through a
+/// `&mut` would be seen through the other pointer.
+#[test]
+fn puns_reads_pointers_from_bytes_once_it_checked_their_targets() {
+  let r = Region::new(Two::new(7, 9));
+  let image = r.as_bytes().unwrap();
+  let (two, _) = puns::from_head::<Two>(image).unwrap();
+  assert_eq!((*two.a, *two.b), (7, 9));
+  // In words: an address aligned as a region is, for the targets.
+  let in_words = |bytes: &[u8], f: &dyn Fn(&[u8])| {
+    let mut words = vec![0u64; bytes.len().div_ceil(8)];
+    // SAFETY: the words hold at least `bytes.len()` bytes, all initialized.
+    let at =
+      unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), bytes.len()) };
+    at.copy_from_slice(bytes);
+    f(at);
+  };
+  // `b` aims at the target of `a`: valid for `puns`, not a region.
+  let at = core::mem::offset_of!(Two, b);
+  let a_target = i32::from_le_bytes(image[..4].try_into().unwrap());
+  let b = a_target - i32::try_from(at).unwrap();
+  let shared = [&image[..at], &b.to_le_bytes(), &image[at + 4..]].concat();
+  in_words(&shared, &|bytes| {
+    let (two, _) = puns::from_head::<Two>(bytes).unwrap();
+    assert_eq!((*two.a, *two.b), (7, 7));
+    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid));
+  });
+  // `b` aims past the bytes: invalid for both.
+  let far = [&image[..at], &1000i32.to_le_bytes(), &image[at + 4..]].concat();
+  in_words(&far, &|bytes| {
+    assert_eq!(puns::from_head::<Two>(bytes).err(), Some(puns::Error::Validity));
+    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid));
+  });
 }
 
 /// A flag, then any bytes.
@@ -141,11 +186,11 @@ fn optional_pointers() {
   let named = nearest::view::<Named>(owned.as_bytes().unwrap()).unwrap();
   assert_eq!((named.level, *named.owner, named.more[0].level), (1, 7, 9));
   assert_eq!(named.more[0].owner, None);
-  // One that is null is not: refused where the pointer is.
+  // One that is null is not.
   let anonymous = Region::new(Maybe::new(2, None, ()));
   assert_eq!(
     nearest::view::<Named>(anonymous.as_bytes().unwrap()).err(),
-    Some(nearest::Error::Invalid(core::mem::offset_of!(Named, owner)))
+    Some(nearest::Error::Invalid)
   );
 }
 
@@ -262,7 +307,7 @@ struct Book {
 }
 
 /// A value that breaks a rule of its type, and holds pointers, is copied and moved as any
-/// other (`Flat::store` and `shift` do not read its rules, which `check` asks `puns` about):
+/// other (`Flat::store` and `shift` do not read its rules, which `puns` checks at load):
 /// compacted, moved in its list (`insert`, `swap`, `retain`, `replace` and `set`), copied into
 /// another region, and still the value it was (under Miri on every target of CI).
 #[test]
@@ -305,11 +350,10 @@ fn a_value_that_breaks_a_rule_is_saved_not_loaded() {
   // Built and edited without a check: the rules are requirements, not guarantees.
   let mut bad = Region::new(Spans::new([span(1, 2), span(5, 3)]));
   let image = bad.as_bytes().unwrap().to_vec();
-  let at = (&raw const bad.spans[1]).addr() - bad.as_bytes().unwrap().as_ptr().addr();
-  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(at)));
+  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid));
   *bad.edit().spans().at(1).hi() = u16le::new(1000);
   *bad.edit().spans().at(1).lo() = u16le::new(0);
   let image = Region::new(&*bad).as_bytes().unwrap().to_vec();
-  // `valid(..1000)` of `hi`: where it is.
-  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(at + 2)));
+  // `valid(..1000)` of `hi`.
+  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid));
 }

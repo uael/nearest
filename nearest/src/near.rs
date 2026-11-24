@@ -11,14 +11,15 @@ use core::{
 };
 
 use puns::{
-  Scalar,
+  Pun, Scalar,
   layout::{Endian, Spec},
   num::{i16be, i16le, i32be, i32le, i64be, i64le},
 };
 
 use crate::{
   Emit, Flat,
-  flat::{New, Seq, fits_behind},
+  aim::{ListBlock, TextBlock},
+  flat::{New, Seq},
 };
 
 /// A pointer to a `T` in the same [`Region`](crate::Region), stored as the distance from its
@@ -100,12 +101,16 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// ```
 ///
 /// An `Offset` of yours is an integer in two's complement of a byte order that it tells
-/// ([`ENDIAN`](Offset::ENDIAN)), in which the loaders read it.
+/// ([`ENDIAN`](Offset::ENDIAN)), in which the loaders read it. Its [`NonZero`](Offset::NonZero) is
+/// a [`Pun`] type, which `puns` checks the offset of a `Near` as.
 ///
 /// ```
 /// use std::num::NonZero;
 ///
-/// use nearest::{Near, Offset, Region, flat, puns::layout::Endian};
+/// use nearest::{
+///   Near, Offset, Region, flat,
+///   puns::{Pun, layout::Endian},
+/// };
 ///
 /// /// An `i32` stored little-endian, whatever the target.
 /// #[flat]
@@ -114,7 +119,8 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// struct I32Le(i32);
 ///
 /// /// An `I32Le` that is not zero.
-/// #[derive(Clone, Copy)]
+/// #[derive(Clone, Copy, Pun)]
+/// #[pun(crate = nearest::puns)]
 /// #[repr(transparent)]
 /// struct NonZeroI32Le(NonZero<i32>);
 ///
@@ -179,8 +185,9 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// bytes, `NonZero` and `Option<NonZero>` have its size, `NonZero` has its alignment, and
 /// [`LIMIT`](Offset::LIMIT) is a multiple of 8 that the integers of `Self` reach.
 pub unsafe trait Offset: Flat + Copy + fmt::Debug + Eq + Ord + Hash {
-  /// The stored form: a `Self` that is not zero.
-  type NonZero: Copy + Into<Self> + Send + Sync + UnwindSafe + RefUnwindSafe;
+  /// The stored form: a `Self` that is not zero, whose layout as a [`Pun`] type is what `puns`
+  /// checks of the offset of a `Near`.
+  type NonZero: Copy + Pun + Into<Self> + Send + Sync + UnwindSafe + RefUnwindSafe;
   /// The largest region whose distances and lengths fit, a multiple of 8, whatever the target.
   /// By default, the largest multiple of 8 that a signed integer of the size of `Self` holds.
   const LIMIT: u64 = (1 << (8 * size_of::<Self>() - 1)) - 8;
@@ -238,12 +245,39 @@ macro_rules! offsets {
 offsets!(i16, i32, i64);
 
 /// A `T` of alignment 1: the [`NonZero`](Offset::NonZero) of the offsets of a fixed byte order
-/// of [`puns::num`], which are byte arrays. Packing keeps the niche of a [`core::num::NonZero`],
-/// so `Option` of it has its size, `None` being zero. It has no use of its own.
+/// of [`puns::num`], which are byte arrays, and the capacity and the length of a list or a text as
+/// `puns` reads them (`aim::Block`). Packing keeps the niche of a [`core::num::NonZero`], so
+/// `Option` of it has its size, `None` being zero. It has no use of its own.
 #[doc(hidden)]
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
 pub struct Packed<T: Copy>(T);
+
+// SAFETY: a packed `O`: its size, initialized bytes (an `Offset` has no padding, and every bit
+// pattern is one), all of which `SPEC` accepts. It holds no `UnsafeCell`.
+unsafe impl<O: Offset> Scalar for Packed<O> {
+  const SPEC: Spec = Spec::any::<Self>();
+}
+
+macro_rules! packed {
+  ($($raw:ident $bits:ident;)+) => {$(
+    // SAFETY: a packed `NonZero<$raw>`: its size, initialized bytes that are never all zero, which
+    // `SPEC` accepts, every bit pattern but zeros (a set that the byte order does not change). It
+    // holds no `UnsafeCell`. Its bytes are a `NonZero<$raw>` (`stored_as`), whose niche is the one
+    // of `Option` of it: `None` is zero, which `puns` assumes and checks when compiling, since
+    // `core` does not document the niche of a packed struct.
+    unsafe impl Scalar for Packed<NonZero<$raw>> {
+      const SPEC: Spec = Spec::ranges::<Self>(Endian::Little, &[(1, $bits::MAX as u128)])
+        .stored_as::<NonZero<$raw>>();
+    }
+  )+};
+}
+
+packed! {
+  i16 u16;
+  i32 u32;
+  i64 u64;
+}
 
 macro_rules! fixed {
   ($($name:ident: $raw:ident $endian:ident;)+) => {$(
@@ -291,35 +325,6 @@ fixed! {
   i64be: i64 Big;
 }
 
-// SAFETY: (the `# Safety` of `Scalar`) a `Near<T, O>` is `#[repr(transparent)]` over
-// `O::NonZero`, which has the size of `O` (asserted by `offset`, which `fits_behind` calls) and,
-// by the contract of `Offset`, no padding and no `UnsafeCell`: every byte of every value is
-// initialized, as `Spec::never` says, which accepts no value. So `puns` reads a pointer as
-// initialized bytes and makes none: a region makes every `Near` and checks every one it loads.
-// `Option<Near<T, O>>` is then such a scalar too: `None` is zero, the niche of `O::NonZero`.
-unsafe impl<T: Flat, O: Offset> Scalar for Near<T, O> {
-  const SPEC: Spec = {
-    fits_behind::<T, O>();
-    Spec::never::<Self>()
-  };
-}
-
-// SAFETY: as for `Near<T, O>`.
-unsafe impl<T: Flat, O: Offset> Scalar for Near<[T], O> {
-  const SPEC: Spec = {
-    fits_behind::<T, O>();
-    Spec::never::<Self>()
-  };
-}
-
-// SAFETY: as for `Near<T, O>`.
-unsafe impl<O: Offset> Scalar for Near<str, O> {
-  const SPEC: Spec = {
-    offset::<O>();
-    Spec::never::<Self>()
-  };
-}
-
 impl<T: ?Sized, O: Offset> Near<T, O> {
   /// The address of the target, derived from `self` so that it keeps the provenance of the
   /// region.
@@ -336,16 +341,18 @@ impl<T: ?Sized, O: Offset> Near<T, O> {
     ptr::from_mut(self).cast::<u8>().wrapping_offset(off.to_isize())
   }
 
-  /// A list's length and elements.
+  /// A list's length and elements, `skip` bytes after the length.
   ///
   /// # Safety
-  /// `self` is a `Near<[_], O>` or a `Near<str, O>` in a region.
-  unsafe fn list<E>(&self) -> &[E] {
+  /// `self` is a `Near<[E], O>` whose target is valid (as `Deref` requires) and `skip` is
+  /// [`ListBlock::SKIP`], or `self` is such a `Near<str, O>`, `E` is `u8`, and `skip` is
+  /// [`TextBlock::SKIP`].
+  unsafe fn list<E>(&self, skip: usize) -> &[E] {
     let p = self.target();
-    // SAFETY: the target is a length, an `O`, followed by the elements.
+    // SAFETY: the target is a length, an `O`, followed `skip` bytes after it by the elements.
     unsafe {
       let len = p.cast::<O>().read_unaligned().to_isize().cast_unsigned();
-      slice::from_raw_parts(p.add(size_of::<O>()).cast::<E>(), len)
+      slice::from_raw_parts(p.add(skip).cast::<E>(), len)
     }
   }
 
@@ -353,12 +360,12 @@ impl<T: ?Sized, O: Offset> Near<T, O> {
   ///
   /// # Safety
   /// As for [`list`](Self::list); the elements are reached only through the result.
-  unsafe fn list_mut<E>(&mut self) -> &mut [E] {
+  unsafe fn list_mut<E>(&mut self, skip: usize) -> &mut [E] {
     let p = self.target_mut();
     // SAFETY: as for `list`.
     unsafe {
       let len = p.cast::<O>().read_unaligned().to_isize().cast_unsigned();
-      slice::from_raw_parts_mut(p.add(size_of::<O>()).cast::<E>(), len)
+      slice::from_raw_parts_mut(p.add(skip).cast::<E>(), len)
     }
   }
 }
@@ -446,7 +453,7 @@ impl<T: Flat, O: Offset> Near<[T], O> {
   pub fn iter_pin_mut(self: Pin<&mut Self>) -> impl ExactSizeIterator<Item = Pin<&mut T>> {
     // SAFETY: as for `Near::as_pin_mut`; the elements are disjoint and stay where they are.
     unsafe {
-      (Pin::get_unchecked_mut(self).list_mut::<T>().iter_mut())
+      (Pin::get_unchecked_mut(self).list_mut::<T>(ListBlock::<T, O>::SKIP).iter_mut())
         .map(|element| Pin::new_unchecked(element))
     }
   }
@@ -455,7 +462,8 @@ impl<T: Flat, O: Offset> Near<[T], O> {
 impl<T, O: Offset> Deref for Near<T, O> {
   type Target = T;
   fn deref(&self) -> &T {
-    // SAFETY: a `&Near` only exists inside a region, which holds the target at the offset.
+    // SAFETY: a `&Near` only exists inside a region, which holds the target at the offset, or
+    // in bytes that `puns` checked with its target (`aim`), aligned, and borrowed with it.
     unsafe { &*self.target().cast::<T>() }
   }
 }
@@ -464,7 +472,7 @@ impl<T, O: Offset> Deref for Near<[T], O> {
   type Target = [T];
   fn deref(&self) -> &[T] {
     // SAFETY: as above; the target is a list.
-    unsafe { self.list() }
+    unsafe { self.list(ListBlock::<T, O>::SKIP) }
   }
 }
 
@@ -472,7 +480,7 @@ impl<O: Offset> Deref for Near<str, O> {
   type Target = str;
   fn deref(&self) -> &str {
     // SAFETY: as above; the target is a length and UTF-8 bytes.
-    unsafe { str::from_utf8_unchecked(self.list()) }
+    unsafe { str::from_utf8_unchecked(self.list(TextBlock::<O>::SKIP)) }
   }
 }
 

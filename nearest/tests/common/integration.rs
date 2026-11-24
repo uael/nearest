@@ -1377,12 +1377,12 @@ fn malformed_images_are_rejected() {
 
   // The error.
   let err = Region::<Expr>::from_bytes(&[9]).err().unwrap();
-  assert_eq!(err, nearest::Error::Invalid(0));
-  assert_eq!(err.to_string(), "invalid region bytes at offset 0");
+  assert_eq!(err, nearest::Error::Invalid);
+  assert_eq!(err.to_string(), "invalid region bytes");
   let _: &dyn std::error::Error = &err;
-  assert_eq!(format!("{err:?}"), "Invalid(0)");
+  assert_eq!(format!("{err:?}"), "Invalid");
   for (e, shown) in [
-    (nearest::Error::ScratchFull, "scratch too small to check region bytes"),
+    (nearest::Error::Limit, "region bytes nested too deep to check"),
     (nearest::Error::StorageFull, "region bytes larger than the storage"),
   ] {
     assert_eq!(e.to_string(), shown);
@@ -1406,35 +1406,35 @@ fn noise_is_rejected_without_panicking() {
   assert!(cfg!(miri) || accepted > 0);
 }
 
+/// `puns` follows pointers at most `AIM_DEPTH` deep, one behind another: the block `k` of a chain
+/// is `k` pointers deep, its list of instructions one more, and their arguments two more. So a
+/// chain of `AIM_DEPTH - 1` blocks loads, and one more block is `Error::Limit`, which says nothing
+/// of the bytes. The check recurses once for each level, and the deepest one fits in 1 MiB of
+/// stack, in a build without optimizations too.
 #[test]
-#[cfg_attr(miri, ignore = "too slow under Miri")]
-fn a_very_deep_value_is_checked_without_recursion() {
-  const N: u32 = 300_000;
-  // Built in a loop; copying it out recurses, so that part gets a large stack. Several MiB:
-  // always on the heap.
-  let image = std::thread::Builder::new()
-    .stack_size(1 << 30)
-    .spawn(|| {
-      let mut r = nearest::Region::new(Block::new(0, (), None));
-      let mut cur = r.edit();
-      for id in 1..N {
-        cur = cur.next().insert(Block::new(id, [Inst::new(id as u8, [id])], None));
-      }
-      nearest::Region::new(&*r).as_bytes().unwrap().to_vec()
-    })
-    .unwrap()
-    .join()
-    .unwrap();
+#[cfg_attr(miri, ignore = "the limit is safe code; the unsafe code is that of every image")]
+fn values_nested_deeper_than_puns_follows_are_a_limit() {
+  let chain = |n: u32| {
+    let mut r = nearest::Region::new(Block::new(0, [Inst::new(0, [0])], None));
+    let mut cur = r.edit();
+    for id in 1..n {
+      cur = cur.next().insert(Block::new(id, [Inst::new(id as u8, [id])], None));
+    }
+    nearest::Region::new(&*r).as_bytes().unwrap().to_vec()
+  };
+  let depth = u32::try_from(puns::AIM_DEPTH).unwrap();
+  let (deepest, deeper) = (chain(depth - 1), chain(depth));
   std::thread::Builder::new()
-    .stack_size(64 << 10)
+    .stack_size(1 << 20)
     .spawn(move || {
-      let r = nearest::Region::<Block>::from_bytes(&image).unwrap();
+      let r = nearest::Region::<Block>::from_bytes(&deepest).unwrap();
       let (mut b, mut n) = (&*r, 1);
       while let Some(next) = &b.next {
         b = next;
         n += 1;
       }
-      assert_eq!((n, b.id, b.insts[0].args[0]), (N, N - 1, N - 1));
+      assert_eq!((n, b.id, b.insts[0].args[0]), (depth - 1, depth - 2, depth - 2));
+      assert_eq!(nearest::Region::<Block>::from_bytes(&deeper).err(), Some(nearest::Error::Limit));
     })
     .unwrap()
     .join()

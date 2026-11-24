@@ -21,15 +21,45 @@ note: erroneous constant encountered
   | |___^
 
 note: erroneous constant encountered
- --> $CARGO/puns-$VERSION/src/lib.rs
+ --> src/aim.rs
   |
-  |     let layout = Layout::scalar::<T>(T::SPEC).identified(T::ID);
-  |                                      ^^^^^^^
+  |                 Start::Stored(const { &start::<O>($lead) }),
+  |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  | / pointers! {
+  | |   [T: Flat, O: Offset] T => T, { fits_behind::<T, O>(); 0 };
+  | |   [T: Flat, O: Offset] [T] => ListBlock<T, O>, { fits_behind::<T, O>(); ListBlock::<T, O>::LEN };
+  | |   [O: Offset] str => TextBlock<O>, TextBlock::<O>::LEN;
+  | | }
+  | |_- in this macro invocation
+  |
+  = note: this note originates in the macro `pointers` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 note: erroneous constant encountered
-  --> tests/compile-fail/offset_of_three_bytes.rs:27:1
+ --> src/aim.rs
+  |
+  | /           const {
+  | |             &[Rule::Aim(Aim::new::<$target>(
+  | |               Start::Stored(const { &start::<O>($lead) }),
+  | |               Metadata::Thin,
+  | |               Check::Eager,
+  | |             ))]
+  | |           },
+  | |___________^
+...
+  | / pointers! {
+  | |   [T: Flat, O: Offset] T => T, { fits_behind::<T, O>(); 0 };
+  | |   [T: Flat, O: Offset] [T] => ListBlock<T, O>, { fits_behind::<T, O>(); ListBlock::<T, O>::LEN };
+  | |   [O: Offset] str => TextBlock<O>, TextBlock::<O>::LEN;
+  | | }
+  | |_- in this macro invocation
+  |
+  = note: this note originates in the macro `pointers` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+note: erroneous constant encountered
+  --> tests/compile-fail/offset_of_three_bytes.rs:28:1
    |
-27 | #[flat]
+28 | #[flat]
    | ^^^^^^^
    |
    = note: this note originates in the derive macro `::nearest::puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -16,10 +16,11 @@ optional). Aliasing, lifetimes, moves and the tree shape are enforced by types; 
 for the rest.
 
 `puns` (type punning proven at compile time, same owner) knows the layout and the valid values of
-every stored type: `#[flat]` derives `puns::Pun`, and `Near` is a scalar that a pun never makes
-(see Pointers and `puns`). So the loaders check every value with `puns` but the pointers, which
-they check themselves, and the numbers of a fixed byte order of `puns::num` make the bytes of a
-region the same on every machine.
+every stored type: `#[flat]` derives `puns::Pun`, and `Near` is an eager aim of `puns`, which
+checks its target with the value that holds it (see Pointers and `puns`). So the loaders check
+every value and every target with `puns`, then that the image is compact, which `puns` does not
+require; and the numbers of a fixed byte order of `puns::num` make the bytes of a region the same
+on every machine. `puns` is a git dependency, pinned to a commit: aims are not released.
 
 ## Public surface
 
@@ -37,14 +38,14 @@ region the same on every machine.
   `iter_pin_mut`.
 - `unsafe trait Offset`: the integer of a `Near`, implemented for `i16`, `i32`, `i64`, for
   `puns::num::{i16le, i32le, i64le, i16be, i32be, i64be}`, and open to the user's: `type
-  NonZero`, `LIMIT` (defaulted from the size), `ENDIAN` (a `puns::layout::Endian`, required),
-  `from_isize`, `to_isize`; its `# Safety` is the contract (see Offsets). Its
+  NonZero` (a `puns::Pun` type, which `puns` checks the offset of a `Near` as), `LIMIT`
+  (defaulted from the size), `ENDIAN` (a `puns::layout::Endian`, required), `from_isize`,
+  `to_isize`; its `# Safety` is the contract (see Offsets). Its
   supertraits `Flat + Copy + Debug + Eq + Ord + Hash` let a type generic over the width be
   `#[flat]` (which bounds every type parameter by `Flat`) and derive the usual traits.
 - `Region<T, S: Storage = Heap>`: `new`, `new_in`, `edit`, `as_bytes`, `from_bytes`,
-  `from_bytes_with`, `byte_len`; `unsafe` `from_bytes_unchecked`.
-- Functions `view::<T>(bytes)`, `view_with::<T>(bytes, scratch)`; `unsafe`
-  `view_unchecked::<T>(bytes)`.
+  `byte_len`; `unsafe` `from_bytes_unchecked`.
+- Functions `view::<T>(bytes)`; `unsafe` `view_unchecked::<T>(bytes)`.
 - `unsafe trait Storage`: `memory`, `memory_mut(words)`, where a region keeps its bytes.
   Storages: `Heap` (the default; `with_capacity(bytes)`), `Inline<N>` (`N` bytes inside the
   region).
@@ -57,31 +58,31 @@ region the same on every machine.
   `update`; the handle of plain data), and `Plain<'a, 'e, T>` (the same by value: `edit` gives
   the `&mut PlainEdit`).
 - `Old<'e, T>`: no methods; a value that left its place, which can only be written somewhere.
-- `enum Error`: `Invalid(usize)`, `ScratchFull`, `StorageFull`; the error of every loader.
-- `Pending`: no methods; an entry of the scratch that `from_bytes_with` and `view_with` take.
+- `enum Error`: `Invalid`, `Limit`, `StorageFull`; the error of every loader.
 
 Trait impls: `Region`: `Deref`, `Clone` (`S: Default`), `Debug`, `Display`, `PartialEq`, `Eq`;
 with `serde`, `Serialize` and `Deserialize` (`S: Default`). `Near`: `Deref`, `Debug`,
 `Display`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, and
 `IntoIterator` for `&Near<[T]>`; `Debug`, `Display` and the comparisons forward to the value or
 the target. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, `Display`,
-`core::error::Error`, `Clone`, `Copy`, `PartialEq`, `Eq`. `Pending`: `Default`, `Clone`, `Copy`,
-`Debug`.
+`core::error::Error`, `Clone`, `Copy`, `PartialEq`, `Eq`.
 
-Hidden: `nearest::__private::{Raw, Buf, Sink, Check, fits, make, Variant, Pointer}`, the plumbing
-of the macro; `__private::Packed<T>`, the `NonZero` of the offsets of `puns::num`, an associated
-type that must be public; the hidden items of `Flat` (`POINTERS`, `PLAIN`, `ANY`, `REACH`, `edit`,
-`store`, `shift`, `check`; `PLAIN` and `ANY` are not given: `PLAIN` is `Pun::LAYOUT.is_plain()`
-and no `POINTERS`, `ANY` is `is_free()`) and `Emit` (`emit`, `plain`).
+Hidden: `nearest::__private::{Raw, Buf, Sink, Compact, fits, make, Variant, Pointer}`, the
+plumbing of the macro; `__private::Packed<T>`, the `NonZero` of the offsets of `puns::num`, an
+associated type that must be public, and the length and capacity of a block as `puns` reads them;
+`__private::{Block, BlockHead, BlockLen, BlockData, NearOff}`, the target of a pointer to a list
+or a text and the field lists of the hand-written `Pun`s (see Pointers and `puns`), which public
+associated types name; the hidden items of `Flat` (`POINTERS`, `PLAIN`, `REACH`, `edit`, `store`,
+`shift`, `compact`; `PLAIN` is not given: it is `Pun::LAYOUT.is_plain()` and no `POINTERS`) and
+`Emit` (`emit`, `plain`).
 Nothing else is public; do not add public items.
 
 Features:
 
-- `alloc` (default) gives `Heap`, the default `S = Heap` (so `Region<T>` and `Region::new`; a
-  `#[cfg]` on the generic parameter), and `from_bytes` and `view`, whose check takes memory from
-  the heap. Without it nothing allocates: a region names its storage, and `as_bytes`,
-  `from_bytes_with`, `view_with` and the unchecked loaders remain. The feature is additive: code
-  that builds without it names every storage, so it builds with it.
+- `alloc` (default) gives `Heap` and the default `S = Heap` (so `Region<T>` and `Region::new`; a
+  `#[cfg]` on the generic parameter). Without it nothing allocates: a region names its storage,
+  and everything else remains, the loaders included, whose check takes no memory. The feature is
+  additive: code that builds without it names every storage, so it builds with it.
 - `serde` (implies `alloc`; the optional `serde` dependency, without its `std`) makes a `Region`
   `Serialize` and `Deserialize` as its bytes (see Bytes). It adds no public item.
 
@@ -118,13 +119,17 @@ so it is safe to hand out as `&mut T`.
   and written unaligned (`read_unaligned`, `Sink::write`).
 - `Near<T, O>`: `NonZero<O>`, target address minus own address. Below, `w` is `size_of::<O>()`.
 - `Near<str, O>` points at an `O` length, `w`-aligned; the bytes follow.
-- `Near<[T], O>` points at an `O` length; the elements follow at `+w`, an `O` capacity sits at
-  `-w`. The elements are aligned to `max(w, align_of::<T>())` and the header `[cap][len]` takes
-  the `2w` bytes before them (`Buf::alloc` places a block by its byte `inset = 2w`). With `i32`
-  and `i64` the block itself starts so aligned; with `i16`, before 8-aligned elements, it starts
-  4 bytes past a multiple of 8. On a target where a `u64` is 4-aligned, a block of `i64` lengths
-  is still at a position that is a multiple of 8, at an address that may not be: its lengths are
-  read unaligned, and its elements need no more than `ALIGN`.
+- `Near<[T], O>` points at an `O` length, after an `O` capacity; the elements follow, aligned to
+  `max(w, align_of::<T>())`. The block is a `repr(C)` struct of the capacity and the length, `O`s
+  of alignment 1, then the elements (`aim::ListBlock`): its header is `2w` bytes rounded up to
+  `align_of::<T>()`, so `2w` but for elements aligned more than twice the width (8-aligned
+  elements behind `i16`), after which 4 bytes of padding follow the length. `Buf::alloc` places a
+  block by its byte `inset` = the header. With `i32` and `i64` the block itself starts so
+  aligned; with `i16`, before 4-aligned elements, it starts 2 bytes past a multiple of 4. On a
+  target where a `u64` is 4-aligned, a block of `i64` lengths is still at a position that is a
+  multiple of 8, at an address that may not be: its lengths are read unaligned, and its elements
+  need no more than `ALIGN`. 0.8 put the header of 8-aligned elements behind `i16` right before
+  them; a `puns` target is a Rust type, whose data is aligned from its start.
 - `#[flat]` adds `#[repr(C)]` to structs (unless already `C` or `transparent`) and `#[repr(u8)]`
   to enums: the layout does not depend on the compiler's field order. Variant field offsets
   come from hidden `#[repr(C)]` mirror structs `(u8, fields..)`.
@@ -184,14 +189,14 @@ fixed order is a choice of the type, made where its bytes leave the machine.
 **Valid offsets.** A region holds only the `O`s that `from_isize` makes: `o` is valid when
 `from_isize(o.to_isize())` has the very bytes of `o` (and `|o.to_isize()| <= LIMIT`). By the
 contract, that is the two's complement integer of the width and the byte order of the offset,
-which the checker reads from `size_of::<O>()` and `O::ENDIAN` (`Check::offset`): it refuses one
-past the default `LIMIT` of the width (`iN::MAX & !7`, every offset of this crate) where it is,
-and one that does not fit `isize`; one past the smaller `LIMIT` of a user's offset is refused at
-the block that it cannot reach (no distance or length past `LIMIT` is in bounds: the bytes are at
-most the limit of the root, at most the `LIMIT` of every pointer, `fits_behind`). So an integer
-that
-does not fit `isize` (an `i64` of 2^32 + 8 on a 32-bit target), which `to_isize` truncates, is
-invalid: in 0.7.1 it was read as the truncated value (2^32 + 8 as 8); so is one past `LIMIT`.
+which `puns` reads from `size_of::<O>()` and `O::ENDIAN` as an `i128` (`aim::start` for an
+offset, `aim::len` for a length, never the layout of `O`, which for an offset of the user's may
+be a struct of a native integer), and the walk of a compact image the same way
+(`Compact::integer`). No distance or length past `LIMIT` is in bounds: the bytes are at most the
+limit of the root, at most the `LIMIT` of every pointer (`fits_behind`), so `puns` refuses it,
+the target or the elements not within the bytes. So an integer that does not fit `isize` (an
+`i64` of 2^32 + 8 on a 32-bit target), which `to_isize` truncates, is invalid: in 0.7.1 it was
+read as the truncated value (2^32 + 8 as 8); so is one past `LIMIT`.
 Truncation cannot be reached otherwise: a dereference, an edit and a copy read only offsets the
 region wrote (`from_isize` of a distance or a length within `LIMIT`) or that a loader checked;
 the unchecked loaders ask for bytes that the checker would accept.
@@ -200,48 +205,79 @@ the unchecked loaders ask for bytes that the checker would accept.
 bytes, so at most `GRAIN`; `NonZero` and `Option<NonZero>` of that size, `NonZero` of that alignment; `LIMIT` a
 multiple of 8 that the integers of that size reach). Every function that reads or writes the
 bytes of an `O` calls it: `fits_behind`, `aim`, `read_len`, `Sink::link`, `Sink::write_len`,
-`Near::target`, `Near::target_mut`, `moved`, the `None` of `Option<Near>`, and the `SPEC` of a
-`Near` (through `fits_behind`), which every layout that holds one evaluates. `LIMIT` defaults to `2^(8 * size - 1) - 8`, the largest multiple
+`Near::target`, `Near::target_mut`, `moved`, the `None` of `Option<Near>`, `Compact::integer`,
+and the operations of the aim of a `Near` (`aim::load`), which every layout that holds one
+evaluates. `LIMIT` defaults to `2^(8 * size - 1) - 8`, the largest multiple
 of 8 of a signed integer of that size (`iN::MAX & !7` for the three integers).
 
 ## Pointers and `puns`
 
-`near.rs` implements `puns::Scalar` for the three pointers, `Near<T, O>`, `Near<[T], O>` and
-`Near<str, O>`, with `Spec::never::<Self>()`: a scalar that a pun never makes, since where a
-pointer aims is not a property of its bytes. Its `SPEC` evaluates `fits_behind::<T, O>()` (and so
-`fits::<T>()` and `offset::<O>()`; `offset::<O>()` for text): every layout that holds a pointer
-refuses at compile time a target that a region cannot hold. `#[flat]` derives `Pun` for the rest
-(see Generated code). `Option<Near<..>>` is the `Option` of a scalar that a pun never makes, which
-`puns` lays out as one: it requires the size of the `Near` (`O::NonZero` has its niche at zero,
-asserted by `offset`), and reads the bytes of `None` at compile time, so they are initialized.
+`aim.rs` implements `puns::Pun` by hand for the three pointers, `Near<T, O>`, `Near<[T], O>` and
+`Near<str, O>`: a struct of one field, the offset (`O::NonZero`, so zero is not a `Near`), whose
+one rule is an eager, thin aim (`puns::layout::Aim`, `Check::Eager`, `Metadata::Thin`) at the
+target, at the address of the pointer plus the offset (`Start::Stored`), sign-extended from the
+width and the byte order of `O`, minus the bytes of the target before the place where the pointer
+aims. Its `LAYOUT` evaluates `fits_behind::<T, O>()` (and so `fits::<T>()` and `offset::<O>()`;
+`offset::<O>()` for text): every layout that holds a pointer refuses at compile time a target that
+a region cannot hold. The targets:
+
+| Pointer | Target (`aim::Block`) | Before the place it aims at |
+|---|---|---|
+| `Near<T, O>` | `T` | nothing |
+| `Near<[T], O>` | `ListBlock<T, O>`: capacity, length (`Packed<O>`), `[T]` | the capacity, `w` |
+| `Near<str, O>` | `TextBlock<O>`: length (`Packed<O>`), `str` | nothing |
+
+A target holds its own metadata (the aim is thin): a block holds the length of its data, and its
+`len` rule reads it in `O::ENDIAN`, its highest bit clear. Its capacity and its length are `O`s of
+alignment 1, so a block is aligned as its data and ends where its data ends: `puns` requires a
+target to end within the bytes at `size_of_val`, which would otherwise include padding after the
+last text or list of an image. The offsets of a block are those of `Shape`, a sized `repr(C)`
+mirror whose data is `[E; 0]` (`offset_of!`, no `Pun` bound: `Deref` of `Near<[T]>` has none). Its
+`Pun` is written by hand too: its fields, its `len` rule, the identity of its type.
+
+`#[flat]` derives `Pun` for the rest (see Generated code). `Option<Near<..>>` is the `Option` of
+the pointer, which `puns` lays out: as the `NonZero` of a native offset (`Pun::NULL_OPTIMIZED`,
+which `core` documents), and as the `Packed<NonZero<iN>>` of an offset of `puns::num`, whose
+`Scalar` says that its bytes are a `NonZero<iN>` (`Spec::stored_as`), which `puns` assumes and
+checks when compiling, without the `unstable` feature.
 
 What `puns` does with a value that holds a pointer:
 
 - It reads it as plain data: a pointer is initialized bytes (`as_bytes`, `head_ref`, a pun to a
   type without pointers: `pointers_are_read_as_bytes`, `tests/layouts.rs`).
-- It never makes one: every function whose target holds a scalar that a pun never makes is
-  refused at compile time, from bytes or from another value (`tests/compile-fail/`
-  `puns_bytes_as_pointer.rs`, `puns_mut_bytes_as_pointer.rs`). A `Near` is not `Copy`, so no
-  function by value takes or makes one.
-- `puns::validate_but_never` checks the bytes of a value, at any address, for everything but
-  those scalars, which it requires only to be initialized: its scalars, tags and rules. It makes
-  no value. The loaders use it (see Bytes).
+- It checks it with its target, and the targets of the target, in the bytes that it checks,
+  wherever they are: `from_bytes`, `from_head`, `from_tail` make a reference to a value that
+  holds a pointer only once every target is a valid value within the bytes, aligned for it. So
+  a `&Near` from `puns` is one whose target `Deref` may read without a check
+  (`puns_reads_pointers_from_bytes_once_it_checked_their_targets`, `tests/layouts.rs`). It
+  follows pointers at most `puns::AIM_DEPTH` (64) deep, one behind another, recursing once for
+  each, and returns `Error::Limit` deeper.
+- It makes no value that holds one (`pun`, `try_pun`, `zeroed` do not compile; a `Near` is not
+  `Copy` either), and no `&mut` to or from one (`pun_mut`, `from_bytes_mut`:
+  `tests/compile-fail/puns_mut_bytes_as_pointer.rs`).
+- It does not require the image to be compact: targets may be shared, overlap other values, sit
+  before their pointer or leave gaps. A region cannot hold such bytes: an edit writes plain data
+  through a `&mut` and a pointer through its handle, and a pointer whose bytes are also plain
+  data of another value would be written by safe code. So the loaders check the placement of
+  every target themselves (`Compact`, see Bytes).
 
-So with `puns` in the build, I1 to I9 hold: `puns` makes no pointer (I1, I4), is never handed a
-`&mut` to a value that holds one (no safe API gives it, I2), makes no handle and takes nothing
-mutably from a region (I3), writes nothing to a region and never reaches its `Buf` (I5 to I8,
-Buffer), and makes only `&T` of plain data (I9).
+So with `puns` in the build, I1 to I9 hold: `puns` makes no pointer by value (I1, I4) and gives a
+reference to one only where its target is checked, is never handed a `&mut` to a value that holds
+one (no safe API gives it, I2), makes no handle and takes nothing mutably from a region (I3),
+writes nothing to a region and never reaches its `Buf` (I5 to I8, Buffer), and makes no `&mut`
+(I9).
 
 Whether a type holds a pointer is `Flat::POINTERS`, which `#[flat]` writes from its fields and the
-pointers set: the layout reads a pointer as initialized bytes, so it does not tell. `PLAIN` (copied
-as bytes) is a layout without padding (`Layout::is_plain`) and no pointer; `ANY` (not checked) is
-a layout of which every bit pattern is a value (`Layout::is_free`), which a pointer is not.
+pointers set (`puns` knows of a layout whether it holds an eager aim, but does not say so
+publicly). `PLAIN` (copied as bytes) is a layout without padding (`Layout::is_plain`) and no
+pointer.
 
 **The alignment of the elements of a list.** The position of the first element of a list is
 aligned to `max(align_of::<T>(), w)` (`List::new`), its address to that but at most to `ALIGN`,
 the alignment of the buffer (an `i64` list on `i686`: positions of 8, addresses of 4), and `T` is
 never more aligned than `ALIGN` (`fits`). Every way a list block comes to exist is `List::new`
-(builders, a push past the capacity, a deep copy, so compaction) or a loader's `claim`, both at a
+(builders, a push past the capacity, a deep copy, so compaction) or a loader's `Compact::claim`,
+both at a
 position aligned to `max(align_of::<T>(), w)`; `insert`, `remove`, `swap`, `retain`, `truncate`
 move elements inside a block, and a move of a list (an `Old`, `set`) re-aims its pointer, not the
 block; `clone` and loading copy the image to another buffer aligned to `ALIGN`, at the same
@@ -250,16 +286,15 @@ positions. `the_elements_of_a_list_are_aligned_as_declared` (`tests/layouts.rs`,
 the positions of their elements.
 
 **Rules.** `#[pun(valid(..))]` on a field and `#[pun(assert(..))]` on a struct (and the other
-rules of the derive) are requirements of the type, in `puns`'s terms (`DESIGN.md` section 5),
-never relied upon for soundness, since safe code can write any value to a field. `nearest` treats
-them so: builders, edits (`&mut` to plain data, `set`, the pinned view) and moves do not check
+rules of the derive) are requirements of the type, in `puns`'s terms (its crate docs,
+"Guarantees and requirements"), never relied upon for soundness, since safe code can write any
+value to a field. `nearest` treats them so: builders, edits (`&mut` to plain data, `set`, the pinned view) and moves do not check
 them, so a region can hold a value that breaks a rule of its type, as a struct of safe code can.
 Checking at construction would not make them a guarantee: an edit can break one right after,
 through a `&mut u8`. Copies and moves do not need them: `store` and `shift` read valid tags and
 the fields of the active variant, not rules (`a_value_that_breaks_a_rule_is_copied_and_moved`,
-under Miri). The loaders check them (see Bytes): a value that breaks a rule is saved by
-`as_bytes` and refused when loaded (`a_value_that_breaks_a_rule_is_saved_not_loaded`), where the
-field is for a rule of a field, where the value is for a rule of the type.
+under Miri). The loaders check them (`puns` does, see Bytes): a value that breaks a rule is saved
+by `as_bytes` and refused when loaded (`a_value_that_breaks_a_rule_is_saved_not_loaded`).
 
 ## Runtime checks
 
@@ -268,7 +303,7 @@ Only what cannot be known before:
 - **Size.** Growing past the limit (2 GiB with `i32` at the root), or past what the storage
   gives, panics before anything changes (the capacity overflow of `Vec`); it is only looked at
   when the zeroed capacity is used up. `from_bytes*` return `Error::StorageFull` instead (and
-  `Error::Invalid(0)` for bytes longer than the limit). The growth is `max(end, 2 * cap, 64)` capped at the limit (not `clamp`, which
+  `Error::Invalid` for bytes longer than the limit). The growth is `max(end, 2 * cap, 64)` capped at the limit (not `clamp`, which
   panicked on a limit below 64, possible with an `Offset` of the user's).
 - **Indices.** `at`, `insert`, `remove`, `swap` panic out of bounds; `try_at` returns `None`.
 - **Loaded bytes.** The loaders check bytes from outside (see Bytes). A region built or edited
@@ -340,11 +375,11 @@ Miri: assertions carry it. The assumptions, and what holds each:
 | A word is 8 bytes (`Buf::attach`, `room`, `Heap::with_capacity`, `Inline<N>`) | `WORD = size_of::<u64>()`, asserted 8 |
 | The memory of `Inline<N>` is aligned as a `u64` (`Inline::memory*`) | `#[repr(C, align(8))]`, `const` assertion against `align_of::<u64>()` |
 | An offset is 2, 4 or 8 bytes, so its block is at most `GRAIN`-aligned (`List::new`, `list`) | `near::offset` (`const`) |
-| Offsets and lengths may sit at addresses less aligned than their positions (`i64` lengths on `i686`) | read and written unaligned only (`near::read`, `aim`, `read_len`, `Near::list`, `Sink::write`); Miri on `i686` |
-| The integer of an offset fits `isize` (`Near::target`, `aim`, `read_len`, `Near::list`) | Valid offsets: `near::read` refuses an `O` that does not round-trip, for every `Offset`; `integers_wider_than_isize_are_invalid` (Miri on `i686`), `offsets_that_from_isize_does_not_make_are_invalid` (every target); 16 bits: the same code, not run |
+| Offsets and lengths may sit at addresses less aligned than their positions (`i64` lengths on `i686`) | read and written unaligned only (`aim`, `read_len`, `Near::list`, `Sink::write`), and by the loaders as bytes (`puns`, `Compact`); Miri on `i686` |
+| The integer of an offset fits `isize` (`Near::target`, `aim`, `read_len`, `Near::list`) | Valid offsets: `puns` refuses an `O` whose target is not within the bytes, which one that does not round-trip is not, for every `Offset`; `integers_wider_than_isize_are_invalid` (Miri on `i686`), `offsets_that_from_isize_does_not_make_are_invalid` (every target); 16 bits: the same code, not run |
 | A region is at most `isize::MAX` bytes, so a distance fits `isize` (`distance`, `wrapping_offset`) | `limit` caps at `isize::MAX & !7`, from `isize::MAX` of the target |
-| `usize` is at least 16 bits (`limit`, positions) | Rust supports no narrower `usize`; built for `msp430` (and `puns`, whose assumptions of `usize` are in its `DESIGN.md`) |
-| The bytes of an offset are a two's complement integer in `O::ENDIAN`, which `to_isize` reads (the checker reads it so: `Check::offset`) | the contract of `Offset` (`unsafe`); `Endian::NATIVE`, from the target, for `i16`, `i32`, `i64`; `contract` (`tests/width.rs`) for every offset of the tests, Miri on `i686` and `s390x` |
+| `usize` is at least 16 bits (`limit`, positions) | Rust supports no narrower `usize`; built for `msp430` (and `puns`, whose assumptions of `usize` are in its crate docs, "Portability") |
+| The bytes of an offset are a two's complement integer in `O::ENDIAN`, which `to_isize` reads (the loaders read it so: `aim::start`, `aim::len`, `Compact::integer`) | the contract of `Offset` (`unsafe`); `Endian::NATIVE`, from the target, for `i16`, `i32`, `i64`; `contract` (`tests/width.rs`) for every offset of the tests, Miri on `i686` and `s390x` |
 | The first element of a list is at a position that is a multiple of `max(align_of::<T>(), w)` (the slice of `Near::list`, aligned for `T`) | `List::new` and `claim`; `tests/layouts.rs` under Miri on `i686` |
 | An image written with the offsets and the numbers of a fixed byte order is the same on every machine (`examples/ir.rs`, `ir.image`) | `tests/ir.rs` under Miri on `s390x` compares it byte for byte |
 | The byte order of `i16`, `i32`, `i64` and of stored numbers is the target's (`plain!`'s `from_ne_bytes`, the images) | no `unsafe` code depends on it; Miri on `s390x` runs the tests of the library, of offsets and of every storage big-endian; the tests write expected bytes with `to_ne_bytes` |
@@ -424,9 +459,8 @@ did: a loader already made any value whose fields are valid from bytes.
 
 For a type `X`, `#[flat]` emits, inside `const _: () = { .. }`, the `Flat` impl (`Edit<'e>`,
 `REACH` (the least of the fields', left at the default without fields), `POINTERS` (any of the
-fields'), `edit`, calling `fits`, and `store`, `shift` and `check`: see Mechanics and Bytes), for
-each field with a `#[pun(..)]` a hidden `#[repr(C)]` struct of that field alone with the same
-attributes, whose `Pun` checks its rules (`Check::valid`), the constructors, the handle
+fields'), `edit`, calling `fits`, and `store`, `shift` and `compact`: see Mechanics and Bytes),
+the constructors, the handle
 `__NearestEdit<'e, ..>` (`set`, `replace`, `update`, `pin`, `Handle`, a method per struct field
 returning the field's `Ref`, `as_mut`
 for enums, `Deref`, `DerefMut` under `for<'a> X: Copy`), the mirror structs, and `X::project`;
@@ -643,11 +677,9 @@ target. Builders write the same image.
 
 ```rust
 pub fn as_bytes(&self) -> Option<&[u8]>                                      // Region
-pub fn from_bytes(bytes: &[u8]) -> Result<Region<T, S>, Error>               // S: Default; alloc
-pub fn from_bytes_with(bytes: &[u8], scratch: &mut [Pending]) -> Result<Region<T, S>, Error>
+pub fn from_bytes(bytes: &[u8]) -> Result<Region<T, S>, Error>               // S: Default
 pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Region<T, S>              // panics if full
-pub fn view<T: Flat>(bytes: &[u8]) -> Result<&T, Error>                       // crate root; alloc
-pub fn view_with<'b, T: Flat>(bytes: &'b [u8], scratch: &mut [Pending]) -> Result<&'b T, Error>
+pub fn view<T: Flat>(bytes: &[u8]) -> Result<&T, Error>                       // crate root
 pub const unsafe fn view_unchecked<T: Flat>(bytes: &[u8]) -> &T
 ```
 
@@ -657,72 +689,63 @@ pub const unsafe fn view_unchecked<T: Flat>(bytes: &[u8]) -> &T
   hint (`List::finish` with `cap != len`, or a builder list that had to grow). A deep copy never
   clears it: it writes every list with `cap == len` and grows none, so `Region::new(&*r)` is
   always compact and is how any region is saved.
-- `from_bytes` checks the bytes (any alignment) and copies them into a new region in any storage
-  with `Default`. A valid image the storage cannot hold is `Error::StorageFull`, not a panic.
+- `from_bytes` copies the bytes (any alignment) into a new region in any storage with `Default`,
+  then checks them there, at an address aligned as a region is, which `puns` needs. Bytes the
+  storage cannot hold are `Error::StorageFull`, not a panic, and are not checked; bytes longer
+  than the limit are `Error::Invalid`, and are not copied.
 - `view` checks a slice aligned as a region is, to `ALIGN` (a mapped file, a region's own buffer,
   on every target), and reads it in place;
-  a `&T` needs nothing else, since `Near` resolves relative to itself. It is a function, not a
-  method: it makes no region and has no storage.
-- The `_with` forms check with the caller's scratch; `Error::ScratchFull` says it ran out before
-  the check finished, which says nothing about the bytes.
+  a `&T` needs nothing else, since `Near` resolves relative to itself: the `&T` is the one that
+  `puns` made. It is a function, not a method: it makes no region and has no storage.
 - The unchecked forms are `unsafe`: the checked form would accept the bytes, in this build (for
   `view_unchecked`, at an address aligned to `ALIGN`, and the compact image of a valid `T`; for
   the loaders, the image at any address). That is what `as_bytes` returned for the same `T` in a
   build with the same layout, and what a check of the caller's that accepts no more (a crate
   that checks images itself) accepted. Loading is then one `memcpy`, and viewing reads nothing.
   `from_bytes_unchecked` panics if the storage is full.
-- `Error` (exhaustive): `Invalid(at)`, where the bytes stop being the image of a valid value (0
-  for a slice not aligned to `ALIGN` in `view*`, or bytes shorter than a `T` or longer than its
-  limit);
-  `ScratchFull`; `StorageFull`.
+- `Error` (exhaustive): `Invalid`, the bytes are not the compact image of a valid value (also a
+  slice not aligned to `ALIGN` in `view`, or bytes shorter than a `T` or longer than its limit);
+  `Limit`, the check stopped at the depth of `puns` (`AIM_DEPTH`, 64 pointers one behind another,
+  or targets of more than twice the bytes in all, which no compact image has), which says
+  nothing of the bytes; `StorageFull`. It says not where: `puns` does not. 0.8 said where
+  (`Invalid(at)`), and had `ScratchFull` for the `_with` forms, which took the memory of the
+  check from the caller; the check takes none now.
 
-Checking (`bytes.rs`) accepts exactly the compact images of valid values. It walks the image
-once, in the order the copy wrote it, and requires every pointer to aim at the very position
-where the copy put its target: that one rule gives bounds, alignment, no sharing, no cycles and
-no gaps. Values are checked on the way by the `check` of their type (`Flat::check`), which
-`#[flat]` writes: each field at its offset, the tag of an enum then the fields of its variant, a
-pointer queued (`Check::pointer`; one whose bytes are zero is refused where it is, as no `Near`
-is, and is `None` for an `Option<Near>`). What is not a pointer is checked by
-`puns::validate_but_never` (`Check::value` for a leaf; `items` for the elements of a list without
-pointers, all at once, one by one only to tell where the first invalid one is): `bool`, `char`,
-`NonZero`, the numbers of given values of `puns::num`. A type with rules, of a field
-(`valid(..)`) or of the type (`assert(..)`), is checked whole by `puns` (`Check::whole`), which
-reads each byte but the pointers once, and then only its pointers are queued (`Flat::pointers`).
-Only if `puns` refuses it are its fields checked one by one, to tell where: a rule of a field
-after the field, as `puns` checks a hidden struct of that field alone with the same rules
-(`Check::valid`), refused where the field is; a rule of the type where the value is. The steps
-(`target`, `list`, `text`) place the target, check UTF-8 and `cap == len`, and check what is
-there. A negative length is as out of bounds as one too long, and an offset or a length that
-`from_isize` does not make (see Valid offsets) is invalid. Padding is not looked at.
+Checking (`bytes.rs`, `check`) accepts exactly the compact images of valid values, in two steps.
+
+- `puns::from_head::<T>` checks the root, every value, rules included, and every target, in the
+  bytes: each pointer of a value is an eager aim, whose target `puns` checks with the value (see
+  Pointers and `puns`). A zero `Near` is refused (its `NonZero`), and is `None` for an
+  `Option<Near>`; a negative length is refused by the `len` rule of the block, and one too long
+  as any target that does not end within the bytes; text is UTF-8. Padding is not looked at.
+- `Compact` then walks the image in the order the copy wrote it, and requires every pointer to
+  aim at the very position where the copy put its target (`claim`, after the end of the target
+  before it, aligned for this one), lists to have `cap == len`, and nothing to follow the last
+  target: that rule gives no sharing, no overlap, no cycle and no gap, which `puns` does not
+  require, and which a region needs (see Pointers and `puns`). It reads only what `puns` checked:
+  tags (`Compact::tag`, through the `compact` that `#[flat]` writes: each field at its offset, the
+  tag of an enum then the fields of its variant), offsets and lengths, in the width and the byte
+  order of their `Offset` (`Compact::integer`). Elements without pointers are not walked.
 
 After `Ok`, every value is in bounds and valid, every pointer aims at its target, and the
-address: the slice is aligned to `ALIGN` (`view`), every position aligned for what is there
-(`claim`), and no stored type more aligned than `ALIGN`. That is what the cast relies on.
+address: the slice is aligned to `ALIGN` (`view`, `from_bytes`'s storage), every target aligned
+for what is there (`puns`, at its address; `claim`, at its position), and no stored type more
+aligned than `ALIGN`. That is what the `&T` and the region rely on.
 
-The results are those of 0.7 (`tests/corpus.rs`: images and every corruption, against digests that
-0.7 gave), but where an image is invalid in two places that 0.7 met in the other order: a pointer
-of zero bytes is refused where it is, while the value that holds it is checked, where 0.7 first
-followed the pointers before it (listed in the test). And types with rules refuse what breaks
-them, which 0.7 did not know.
+The results (`tests/corpus.rs`: images and every corruption) are those of 0.8.1, which were those
+of 0.7, but that an error says not where, and that the images of lists of 8-aligned elements
+behind `i16` are laid out otherwise (see Layout). Types with rules refuse what breaks them.
 
 - It is safe code that never panics (checked arithmetic, `get` instead of indexing; `puns`
-  promises as much of `validate_but_never` for any input). The only unsafe step of a loader is the cast
-  of checked bytes to `&T`.
-- It does not recurse. Pointers and rests of lists wait on a stack (`Stack`), a pointer of a list
-  element before the remaining elements; time is linear in the bytes. The stack grows with the
-  nesting of the data (no fixed size suffices; nothing points back): a `Vec` for `from_bytes`
-  and `view`, the caller's `&mut [Pending]` for the `_with` forms (`Check::push` returns
-  `Error::ScratchFull` when it is full, and the walk ends).
-- `bytes.len() / 4` entries always suffice (`/ 2` with `i16` pointers): each waits for its own
-  bytes of the image, at least as many as a pointer has (a pointer inside a value already
-  checked, or the start of the next element of a list, whose type holds a pointer); checked
-  values are disjoint, each pointer is queued once, a list has at most one rest waiting. So an
-  image fitting `Inline<N>` needs at most `N / 4`; most data needs about as many as the pointers
-  waiting along the deepest path. An entry (`Pending(usize, usize, Step)`, as positions may pass
-  4 GiB) is 24 bytes on 64-bit targets, 12 on 32-bit.
-- Elements of which every value is valid (`ANY`, from `Layout::is_free`: no pointers, no rules,
-  every bit pattern a value: lists and arrays of numbers) are not walked, so checking costs pointers, text and values that can be invalid, not bulk
-  numbers: a large mapped table is ready at once.
+  promises as much of its checks for any input). The unsafe step of `from_bytes` is the slice of
+  the bytes it copied; `view` has none, its `&T` is `puns`'s.
+- It takes no memory but the stack, and recurses: `puns` once for each pointer behind another,
+  at most `AIM_DEPTH` (64), each level a frame of the size of the check of the value there (the
+  measurements of `puns` are in the docs of `AIM_DEPTH`); a chain of the deepest blocks of the
+  integration tests is checked in a thread of 1 MiB, in a build without optimizations
+  (`values_nested_deeper_than_puns_follows_are_a_limit`, `tests/common/integration.rs`).
+  `Compact` recurses once for each pointer behind another, which `puns` bounded first. Time is linear in the bytes of a compact image: `puns` follows each target once, at
+  most twice the bytes in all, and a list of elements without pointers is checked at once.
 - The bytes hold the layout of the target, its values in the byte order of their types, and
   distances and lengths as their `Offset` writes them (native-endian for `i16`, `i32`, `i64`);
   no header, no version in the bytes. A build with the same layout reads back what `as_bytes`
@@ -731,8 +754,7 @@ them, which 0.7 did not know.
   compact copy, `Region::new(&*r)`, if it was edited), and deserializes through `from_bytes`
   (any storage with `Default`); its `Error` becomes `de::Error::custom`. The visitor takes bytes
   borrowed or owned, or a sequence of `u8` (as JSON writes them), whose size hint it trusts up
-  to 64 KiB. It needs `alloc`: `from_bytes` checks with the heap, and a sequence is collected
-  into a `Vec`.
+  to 64 KiB. It needs `alloc`: a sequence is collected into a `Vec`.
 
 ## Internals
 
@@ -741,19 +763,22 @@ Files of `src/`:
 - `lib.rs`: crate docs, exports, `Edit<'e, T>`, `__private`.
 - `flat.rs`: `ALIGN`, `WORD`, `GRAIN` (see Target assumptions), `limit`, `aligned`, `fits`,
   `fits_behind`, `Buf` (`attach`, `alloc`, `grow`, `room`, `load`), `Sink` (`link`,
-  `write_len`), `aim`, `Flat` and `Emit` with their impls (`data!` for numbers; `mod num`: the
+  `write_len`), `aim` (the position a pointer aims at), `Flat` and `Emit` with their impls
+  (`data!` for numbers; `mod num`: the
   numbers of `puns::num`; `moved` for pointers), the deep copy (`write_copy`, `write_slice`),
   moves (`relocate`, `detach`, `move_elems`, `stash`, `unstash`, `shift`), the list block
   `List<O>`, `make`.
 - `edit.rs`: `Raw` (the core of every handle: `set`, `replace`, `update`, `swap_in`, `pin`),
   `Old`, `ListEdit`, `OptionEdit`, `StrEdit`.
-- `bytes.rs`: `Error`, `Pending`, `Stack`, the checker `Check` (`value`, `valid`, `whole`, `tag`,
-  `pointer`, `offset`, `len`, `claim`, `extend`) and its steps (`target`, `list`, `text`, `items`),
-  `check`, `view`, `view_with`, `view_unchecked`.
+- `aim.rs`: a pointer as `puns` sees it: the operations of its aim (`load`, `start`, `len`), the
+  targets `Block`, `ListBlock`, `TextBlock` with their offsets (`Shape`) and their `Pun`, and the
+  `Pun` of the three pointers (see Pointers and `puns`).
+- `bytes.rs`: `Error`, the walk of a compact image `Compact` (`tag`, `integer`, `claim`,
+  `extend`, `len`, `null`, and its steps `target`, `list`, `text`), `check`, `view`,
+  `view_unchecked`.
 - `near.rs`: `Near<T, O>`: `Deref` for `T`, `[T]` and `str`, builders, trait impls; `Offset`,
   its impls (`offsets!` for the integers of the target, `fixed!` for those of `puns::num`, with
-  `Packed`), `offset` (its layout, checked) and `read` (valid offsets only); the `Scalar` impls
-  (see Pointers and `puns`).
+  `Packed` and its `Scalar`s), `offset` (its layout, checked).
 - `region.rs`: `Region<T, S>`: `attach`, `base`, `copy_of`, constructors, `edit`, `as_bytes`,
   `from_bytes*`, trait impls, `serde` impls.
 - `storage.rs`: `Storage` and its contract, `Heap`, `Inline<N>`.
@@ -762,7 +787,8 @@ Mechanics:
 
 - `Sink`: a `*mut Buf` (`alloc`, `write`, `link`, `loose` clears the compact mark), never a
   `&mut Buf`.
-- Copies, moves and checks are the hidden methods of `Flat`, which `#[flat]` writes per type and
+- Copies, moves and the walk of a compact image are the hidden methods of `Flat`, which `#[flat]`
+  writes per type and
   `flat.rs` for numbers and pointers. A deep copy (`write_copy`) copies `PLAIN` values as bytes
   and calls `store` on others: each field at its offset (the tag of an enum, then the fields of
   its variant), and for a pointer, the target allocated as the pointer says (one value, a list
@@ -784,13 +810,13 @@ Mechanics:
   limit (reached cheaply with `i16`), mixed widths, and `a_region_past_2_gib` (`#[ignore]`d;
   CI runs it in release), offsets that do not round-trip, the contract of every offset, and the
   same tests with the offsets of `puns::num`; `layouts` covers what `nearest` takes from `puns`:
-  generic types, numbers of a fixed byte order, pointers as bytes, optional pointers, the
-  alignment of the elements of a list, and rules; `ir` runs
+  generic types, numbers of a fixed byte order, pointers as bytes and read by `puns` from bytes,
+  optional pointers, the alignment of the elements of a list, and rules; `ir` runs
   `examples/ir.rs` (an image the same on every machine, `-Zmiri-disable-isolation` under Miri:
-  it writes a file); `corpus` compares the loaders with the results of 0.7 (`corpus.expected`)
-  and checks the rules at load; `no_alloc` also
-  without `alloc`; `serde` with that feature; `compile_fail` (trybuild) holds the compile-time
-  guarantees (`puns_*.rs`: what `puns` refuses of the pointers of a region). Miri runs `--lib`
+  it writes a file); `corpus` compares the loaders with a record (`corpus.expected`) and checks
+  the rules at load; `no_alloc` also without `alloc`, loading included; `serde` with that
+  feature; `compile_fail` (trybuild) holds the compile-time guarantees
+  (`puns_mut_bytes_as_pointer.rs`: `puns` gives no `&mut` to a pointer). Miri runs `--lib`
   and the tests above (not `serde`, `compile_fail`) on x86-64, and
   on `i686` and `s390x` what the target can change (the `miri` job of `ci.yml`): the tests assume nothing of the target (sizes and alignments are
   written from `size_of`, `align_of` and `to_ne_bytes`).
@@ -821,14 +847,19 @@ Mechanics:
   compacts any other; a method fusing the two needs a `Cow` and exists only with `alloc`.
 - No views on `Region`: viewing builds no region and needs no storage. As methods of
   `Region<T>` (the heap) they only served inference, and kept `Heap` alive without `alloc`.
-- No `from_bytes` or `view` without `alloc`, and no fixed bound on checking: a check that never
-  rejects a valid image needs memory that grows with the data. Without a heap the caller gives
-  it (`_with` forms); a missing method is better than a bound that rejects valid images.
+- No loading of values nested deeper than `puns` follows pointers (`AIM_DEPTH`, 64): `puns`
+  checks a target with the value that points at it, recursing once for each level, and stops
+  deeper with `Error::Limit`. A linked list of more than 64 elements (`Option<Near<Node>>`
+  chains) is built, edited and copied, and not loaded; a list (`Near<[T]>`) is one level for
+  all its elements. 0.8 checked with a stack in memory (the heap, or the caller's for the
+  `_with` forms), at any depth; the check of `puns` takes no memory but the stack, so the loaders
+  are the same with `alloc` and without.
+- No position in `Error::Invalid`: `puns` says that bytes are not a value, not where.
 - No `#[non_exhaustive]` on `Error`: its three cases are every way a loader fails (the bytes,
-  the scratch, the storage), and an exhaustive match lets callers handle each one, checked by
-  the compiler. A new case would be a breaking release anyway.
+  the depth of the check, the storage), and an exhaustive match lets callers handle each one,
+  checked by the compiler. A new case would be a breaking release anyway.
 - Copies recurse once per level of nesting (`Region::new(&*region)`, so saving an edited
-  region), like `Clone` for a `Box`. Checking bytes does not.
+  region), like `Clone` for a `Box`. Checking bytes recurses too, at most `AIM_DEPTH` levels.
 - No check of the rules at construction: an edit can break one right after (a `&mut u8`), so it
   would not make a rule a guarantee; nothing relies on one (see Rules).
 - No `isize` or `usize` width: the bytes would change with the target, for no reach that a

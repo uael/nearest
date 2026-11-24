@@ -8,7 +8,8 @@ use nearest::{Near, Offset, Region, flat, puns::layout::Endian};
 #[repr(C)]
 struct Three([u8; 3]);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, nearest::puns::Pun)]
+#[pun(crate = nearest::puns)]
 #[repr(C)]
 struct NonZeroThree(NonZero<u8>, [u8; 2]);
 

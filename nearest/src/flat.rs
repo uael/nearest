@@ -9,7 +9,8 @@ use puns::Pun;
 
 use crate::{
   Error, Near, Offset, Storage,
-  bytes::{self, Check},
+  aim::{ListBlock, TextBlock},
+  bytes::Compact,
   edit::{Handle, ListEdit, OptionEdit, Plain, PlainEdit, Raw, StrEdit},
   near::offset,
 };
@@ -389,14 +390,12 @@ unsafe fn read_len<O: Offset>(buf: *mut Buf, at: usize) -> usize {
 /// # Safety
 ///
 /// `Self` has no drop glue and no pointers other than [`Near`]; its layout as a [`Pun`] type is
-/// its own, whose scalars that a pun never makes are the pointers of this crate; `POINTERS` is
-/// true if a field, at any depth, is a pointer. Whether a value is copied as bytes (`PLAIN`) or
-/// not looked at (`ANY`) is read from them. `store` writes every
-/// field of `self` at `at`, with a copy of what each pointer aims at; `shift` re-aims every
-/// pointer of the value at `at` and nothing else; `check` accepts exactly the compact images of
-/// valid values, in the order `store` writes them, and queues every pointer of the value;
-/// `pointers` does what `check` does on a value whose bytes other than its pointers `puns` found
-/// valid.
+/// its own, whose eager aims are the pointers of this crate; `POINTERS` is true if a field, at any
+/// depth, is a pointer. Whether a value is copied as bytes (`PLAIN`) is read from them. `store`
+/// writes every field of `self` at `at`, with a copy of what each pointer aims at; `shift`
+/// re-aims every pointer of the value at `at` and nothing else; `compact` follows every pointer
+/// of the value, in the order `store` writes their targets, and accepts exactly the values whose
+/// targets are where `store` writes them.
 /// `REACH` is at most the `REACH` of every field; `edit` returns the handle of a valid `Self` at
 /// `at`.
 pub unsafe trait Flat: Pun + Sized + 'static {
@@ -419,7 +418,6 @@ pub unsafe trait Flat: Pun + Sized + 'static {
   fn reference<'a, 'e: 'a>(edit: &'a mut Self::Edit<'e>) -> Self::Ref<'a, 'e>;
 
   /// Holds a pointer by value: a field, at any depth, that is a pointer (`Near`, `Option<Near>`).
-  /// `puns` reads a pointer as initialized bytes, so its layout alone does not tell.
   #[doc(hidden)]
   const POINTERS: bool = false;
 
@@ -427,11 +425,6 @@ pub unsafe trait Flat: Pun + Sized + 'static {
   /// be given.
   #[doc(hidden)]
   const PLAIN: bool = <Self as Pun>::LAYOUT.is_plain() && !Self::POINTERS;
-
-  /// No pointers, and every bit pattern is a valid value: there is nothing to check, so lists
-  /// of such elements are not walked. From the layout, not to be given.
-  #[doc(hidden)]
-  const ANY: bool = <Self as Pun>::LAYOUT.is_free();
 
   /// What the narrowest pointer held by value (not through a pointer) reaches: the largest
   /// region with a `Self` at its root (see [`Offset`]).
@@ -466,16 +459,11 @@ pub unsafe trait Flat: Pun + Sized + 'static {
   #[doc(hidden)]
   unsafe fn shift(base: *mut u8, at: usize, d: isize);
 
-  /// Checks the `Self` at `at` of the image, whose own bytes are in bounds, and queues its
-  /// pointers.
+  /// Follows the pointers of the `Self` at `at` of an image that `puns` found valid, in the order
+  /// `store` writes their targets, requiring each target where `store` writes it (see
+  /// [`Compact`]).
   #[doc(hidden)]
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
-
-  /// Queues the pointers of the `Self` at `at` of the image, whose other bytes `puns` found valid
-  /// as part of a value that holds it: what `check` does there, without checking those bytes
-  /// again. A pointer that `check` refuses, such as a zero `Near`, is refused the same way.
-  #[doc(hidden)]
-  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error>;
+  fn compact(ck: &mut Compact<'_>, at: usize) -> Result<(), Error>;
 }
 
 /// A deep copy of `src` at `at`.
@@ -603,7 +591,7 @@ const unsafe fn plain_edit<'a, 'e: 'a, T: Flat + Copy>(
 }
 
 /// The items of `Flat` that copy, move and check a value of plain data without padding: it is its
-/// bytes, it holds no pointer, and `puns` checks it.
+/// bytes, and it holds no pointer.
 macro_rules! data {
   () => {
     unsafe fn store(&self, sink: &mut Sink, at: usize) {
@@ -612,11 +600,7 @@ macro_rules! data {
     }
     unsafe fn shift(_: *mut u8, _: usize, _: isize) {}
     #[inline]
-    fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-      ck.value::<Self>(at)
-    }
-    #[inline]
-    fn pointers(_: &mut Check<'_>, _: usize) -> Result<(), Error> {
+    fn compact(_: &mut Compact<'_>, _: usize) -> Result<(), Error> {
       Ok(())
     }
   };
@@ -655,7 +639,7 @@ mod num {
     u48be, u48bec, u48le, u48lec, u64be, u64bec, u64le, u64lec, u128be, u128bec, u128le, u128lec,
   };
 
-  use super::{Buf, Check, Error, Flat, Sink, plain_edit};
+  use super::{Buf, Compact, Error, Flat, Sink, plain_edit};
   use crate::edit::{Plain, PlainEdit};
 
   macro_rules! numbers {
@@ -723,15 +707,8 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
   // `Copy` elements hold no pointer.
   unsafe fn shift(_: *mut u8, _: usize, _: isize) {}
   #[inline]
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
+  fn compact(_: &mut Compact<'_>, _: usize) -> Result<(), Error> {
     fits::<Self>();
-    if T::ANY {
-      return Ok(());
-    }
-    (0..N).try_for_each(|i| T::check(ck, at + i * size_of::<T>()))
-  }
-  #[inline]
-  fn pointers(_: &mut Check<'_>, _: usize) -> Result<(), Error> {
     Ok(())
   }
 }
@@ -766,13 +743,9 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<T, O> {
     unsafe { moved::<O>(base, at, d) }
   }
   #[inline]
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    ck.pointer::<O>(at, false, bytes::target::<T, O>)
-  }
-  #[inline]
-  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    // A pointer is all of its bytes, so `puns` checked none of them.
-    Self::check(ck, at)
+  fn compact(ck: &mut Compact<'_>, at: usize) -> Result<(), Error> {
+    fits_behind::<T, O>();
+    ck.target::<T, O>(at)
   }
 }
 
@@ -800,13 +773,9 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<[T], O> {
     unsafe { moved::<O>(base, at, d) }
   }
   #[inline]
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    ck.pointer::<O>(at, false, bytes::list::<T, O>)
-  }
-  #[inline]
-  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    // A pointer is all of its bytes, so `puns` checked none of them.
-    Self::check(ck, at)
+  fn compact(ck: &mut Compact<'_>, at: usize) -> Result<(), Error> {
+    fits_behind::<T, O>();
+    ck.list::<T, O>(at)
   }
 }
 
@@ -833,13 +802,8 @@ unsafe impl<O: Offset> Flat for Near<str, O> {
     unsafe { moved::<O>(base, at, d) }
   }
   #[inline]
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    ck.pointer::<O>(at, false, bytes::text::<O>)
-  }
-  #[inline]
-  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    // A pointer is all of its bytes, so `puns` checked none of them.
-    Self::check(ck, at)
+  fn compact(ck: &mut Compact<'_>, at: usize) -> Result<(), Error> {
+    ck.text::<O>(at)
   }
 }
 
@@ -879,13 +843,9 @@ unsafe impl<T: Flat, O: Offset> Flat for Option<Near<T, O>> {
     }
   }
   #[inline]
-  fn check(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    ck.pointer::<O>(at, true, bytes::target::<T, O>)
-  }
-  #[inline]
-  fn pointers(ck: &mut Check<'_>, at: usize) -> Result<(), Error> {
-    // A pointer is all of its bytes, so `puns` checked none of them.
-    Self::check(ck, at)
+  fn compact(ck: &mut Compact<'_>, at: usize) -> Result<(), Error> {
+    fits_behind::<T, O>();
+    if ck.null::<O>(at)? { Ok(()) } else { ck.target::<T, O>(at) }
   }
 }
 
@@ -909,13 +869,13 @@ unsafe fn moved<O: Offset>(base: *mut u8, at: usize, d: isize) {
 /// # Safety
 /// `at` holds a `Near<str, O>` in the sink.
 unsafe fn copy_str<O: Offset>(sink: &mut Sink, at: usize, s: &str) {
-  let w = size_of::<O>();
-  let h = sink.alloc(s.len().saturating_add(w), w);
-  // SAFETY: `h` was just allocated for the length and the bytes.
+  let (len, data) = (TextBlock::<O>::LEN, TextBlock::<O>::DATA);
+  let h = sink.alloc(s.len().saturating_add(data), size_of::<O>());
+  // SAFETY: `h` was just allocated for the block: the length and the bytes.
   unsafe {
-    sink.write_len::<O>(h, s.len());
-    ptr::copy_nonoverlapping(s.as_ptr(), (*sink.buf).ptr().add(h + w), s.len());
-    sink.link::<O>(at, h);
+    sink.write_len::<O>(h + len, s.len());
+    ptr::copy_nonoverlapping(s.as_ptr(), (*sink.buf).ptr().add(h + data), s.len());
+    sink.link::<O>(at, h + len);
   }
 }
 
@@ -1028,7 +988,7 @@ unsafe impl<T: Flat, O: Offset> Emit<Near<[T], O>> for &[T] {
     unsafe {
       write_slice(self, sink, list.elem::<T>(0));
       list.len = self.len();
-      list.finish(sink, at);
+      list.finish::<T>(sink, at);
     }
   }
 }
@@ -1044,7 +1004,7 @@ unsafe impl<T: Flat, O: Offset, I: IntoIterator<Item: Emit<T>>> Emit<Near<[T], O
     // SAFETY: a new block, filled by `extend`.
     unsafe {
       list.extend(sink, items);
-      list.finish(sink, at);
+      list.finish::<T>(sink, at);
     }
   }
 }
@@ -1068,7 +1028,7 @@ macro_rules! tuples {
         // SAFETY: a new block, filled by `push`.
         unsafe {
           $(list.push(sink, $x);)*
-          list.finish(sink, at);
+          list.finish::<T>(sink, at);
         }
       }
     }
@@ -1079,9 +1039,9 @@ macro_rules! tuples {
 }
 tuples!(A a B b C c D d E e F f G g H h I i J j K k L l);
 
-/// A list block `[cap][len][elements]` in a buffer, its lengths `O`s: `head` is the position
-/// of `len`, and `len` and `cap` are the values in use (the builder writes them to the header in
-/// `finish`).
+/// A list block in a buffer, a [`ListBlock`]: `[cap][len]`, `O`s, then the elements, aligned for
+/// them and for the width of `O`. `head` is the position of `len`, where the pointer aims, and
+/// `len` and `cap` are the values in use (the builder writes them to the header in `finish`).
 pub struct List<O> {
   pub head: usize,
   pub len: usize,
@@ -1091,39 +1051,41 @@ pub struct List<O> {
 
 impl<O: Offset> List<O> {
   /// A new block with room for `cap` elements, its header `[cap][0]`. The elements are aligned
-  /// for `T` and for `O`, and the header takes the two `O`s before them.
+  /// for `T` and for the width of `O`, and the header takes the bytes of the block before them
+  /// (two `O`s, then the padding that the alignment of `T` needs past twice the width of `O`).
   pub fn new<T: Flat>(sink: &mut Sink, cap: usize) -> Self {
     fits_behind::<T, O>();
-    let header = 2 * size_of::<O>();
-    let bytes = size_of::<T>().saturating_mul(cap).saturating_add(header);
+    let (len, data) = (ListBlock::<T, O>::LEN, ListBlock::<T, O>::DATA);
+    let bytes = size_of::<T>().saturating_mul(cap).saturating_add(data);
     let align = align_of::<T>().max(size_of::<O>());
     // SAFETY: the sink's buffer is live and attached (`Sink::new`), and this reborrow ends with
     // the statement; then the header was just allocated, and `cap` fits an `O` because the
     // block is within the region.
     let start = unsafe {
-      let start = (*sink.buf).alloc(bytes, align, header);
+      let start = (*sink.buf).alloc(bytes, align, data);
       sink.write_len::<O>(start, cap);
       start
     };
-    Self { head: start + size_of::<O>(), len: 0, cap, _o: PhantomData }
+    Self { head: start + len, len: 0, cap, _o: PhantomData }
   }
 
   /// The list the pointer at `at` points to.
   ///
   /// # Safety
   /// `at` holds a `Near<[T], O>` in `buf`.
-  pub unsafe fn read(buf: *mut Buf, at: usize) -> Self {
-    // SAFETY: the pointer leads to a list header.
+  pub unsafe fn read<T: Flat>(buf: *mut Buf, at: usize) -> Self {
+    // SAFETY: the pointer leads to the length of a list block, whose capacity is at its start.
     unsafe {
       let head = aim::<O>(buf, at);
-      let (len, cap) = (read_len::<O>(buf, head), read_len::<O>(buf, head - size_of::<O>()));
+      let start = head - ListBlock::<T, O>::LEN;
+      let (len, cap) = (read_len::<O>(buf, head), read_len::<O>(buf, start));
       Self { head, len, cap, _o: PhantomData }
     }
   }
 
   /// Position of element `i`.
-  pub const fn elem<T>(&self, i: usize) -> usize {
-    self.head + size_of::<O>() + i * size_of::<T>()
+  pub const fn elem<T: Flat>(&self, i: usize) -> usize {
+    self.head + ListBlock::<T, O>::SKIP + i * size_of::<T>()
   }
 
   /// Makes room for one more element. A full list moves to a new block of twice the capacity
@@ -1205,13 +1167,13 @@ impl<O: Offset> List<O> {
   /// # Safety
   /// `self` is a block of `T`s in the sink's buffer whose first `len` elements are valid, and
   /// `at` holds a `Near<[T], O>` there.
-  pub unsafe fn finish(&self, sink: &mut Sink, at: usize) {
+  pub unsafe fn finish<T: Flat>(&self, sink: &mut Sink, at: usize) {
     if self.cap != self.len {
       sink.loose();
     }
     // SAFETY: per the caller.
     unsafe {
-      sink.write_len::<O>(self.head - size_of::<O>(), self.cap);
+      sink.write_len::<O>(self.head - ListBlock::<T, O>::LEN, self.cap);
       sink.write_len::<O>(self.head, self.len);
       sink.link::<O>(at, self.head);
     }
