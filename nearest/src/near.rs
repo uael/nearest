@@ -8,7 +8,7 @@ use core::{
   ops::Deref,
   panic::{RefUnwindSafe, UnwindSafe},
   pin::Pin,
-  ptr, slice, str,
+  slice,
 };
 
 use puns::{
@@ -19,7 +19,7 @@ use puns::{
 
 use crate::{
   Emit, Flat,
-  aim::{ListBlock, Pointee, TextBlock},
+  aim::Pointee,
   flat::{New, Seq},
 };
 
@@ -50,9 +50,10 @@ use crate::{
 pub struct Near<T: ?Sized, O: Offset = i32> {
   /// The distance from the pointer to the place of its target where it aims, an eager aim of
   /// `puns` at the target, which starts the lead of the target before that place (`aim`). An
-  /// `InPlace`, so that a `Near` has no constructor.
+  /// `InPlace`, so that a `Near` has no constructor. `puns` reads the target (`target`,
+  /// `target_mut`).
   #[pun(aim(
-    <T as Pointee<O>>::Target =
+    target: <T as Pointee<O>>::Target =
       signed(offset_of!(Self, off), size_of::<O>(), O::ENDIAN) - <T as Pointee<O>>::LEAD
   ))]
   pub(crate) off: InPlace<O::NonZero>,
@@ -335,51 +336,6 @@ fixed! {
   i64be: i64 Big;
 }
 
-impl<T: ?Sized, O: Offset> Near<T, O> {
-  /// The address of the target, derived from `self` so that it keeps the provenance of the
-  /// region.
-  fn target(&self) -> *const u8 {
-    offset::<O>();
-    let off: O = self.off.get().into();
-    ptr::from_ref(self).cast::<u8>().wrapping_offset(off.to_isize())
-  }
-
-  /// The same, for writing.
-  fn target_mut(&mut self) -> *mut u8 {
-    offset::<O>();
-    let off: O = self.off.get().into();
-    ptr::from_mut(self).cast::<u8>().wrapping_offset(off.to_isize())
-  }
-
-  /// A list's length and elements, `skip` bytes after the length.
-  ///
-  /// # Safety
-  /// `self` is a `Near<[E], O>` whose target is valid (as `Deref` requires) and `skip` is
-  /// [`ListBlock::SKIP`], or `self` is such a `Near<str, O>`, `E` is `u8`, and `skip` is
-  /// [`TextBlock::SKIP`].
-  unsafe fn list<E>(&self, skip: usize) -> &[E] {
-    let p = self.target();
-    // SAFETY: the target is a length, an `O`, followed `skip` bytes after it by the elements.
-    unsafe {
-      let len = p.cast::<O>().read_unaligned().to_isize().cast_unsigned();
-      slice::from_raw_parts(p.add(skip).cast::<E>(), len)
-    }
-  }
-
-  /// The same, for writing.
-  ///
-  /// # Safety
-  /// As for [`list`](Self::list); the elements are reached only through the result.
-  unsafe fn list_mut<E>(&mut self, skip: usize) -> &mut [E] {
-    let p = self.target_mut();
-    // SAFETY: as for `list`.
-    unsafe {
-      let len = p.cast::<O>().read_unaligned().to_isize().cast_unsigned();
-      slice::from_raw_parts_mut(p.add(skip).cast::<E>(), len)
-    }
-  }
-}
-
 impl<T: Flat, O: Offset> Near<T, O> {
   /// Builder of a pointer to a new `T` written from `value`; also accepted where an
   /// `Option<Near<T>>` is expected.
@@ -419,10 +375,15 @@ impl<T: Flat, O: Offset> Near<T, O> {
   /// assert_eq!(*r.left, 3);
   /// ```
   #[must_use]
-  pub fn as_pin_mut(self: Pin<&mut Self>) -> Pin<&mut T> {
-    // SAFETY: the target is not moved while the pointer is pinned: a pinned view borrows the
-    // handle it comes from, so nothing can grow the buffer; and a `Near` owns its target alone.
-    unsafe { Pin::new_unchecked(&mut *Pin::get_unchecked_mut(self).target_mut().cast::<T>()) }
+  pub const fn as_pin_mut(self: Pin<&mut Self>) -> Pin<&mut T> {
+    offset::<O>();
+    // SAFETY: A `Near` is in a region, which holds its target at its offset, in the buffer that
+    // the `&mut` comes from, so it has its provenance under tree borrows, as `target_mut`
+    // requires ("Reading a target" in `aim`). A `Near` owns its target alone, and a pinned view
+    // borrows the handle that it comes from, so the target is reached only through the result,
+    // and nothing grows the buffer, which would move it, while the pin lives. The pointer is not
+    // moved out of the pin.
+    unsafe { Pin::new_unchecked(Self::target_mut(Pin::get_unchecked_mut(self))) }
   }
 }
 
@@ -461,36 +422,43 @@ impl<T: Flat, O: Offset> Near<[T], O> {
   /// ```
   #[must_use = "the iterator does nothing unless it is used"]
   pub fn iter_pin_mut(self: Pin<&mut Self>) -> impl ExactSizeIterator<Item = Pin<&mut T>> {
-    // SAFETY: as for `Near::as_pin_mut`; the elements are disjoint and stay where they are.
+    offset::<O>();
+    // SAFETY: As for `Near::as_pin_mut`, the target is a `ListBlock`; the elements are disjoint
+    // and stay where they are.
     unsafe {
-      (Pin::get_unchecked_mut(self).list_mut::<T>(ListBlock::<T, O>::SKIP).iter_mut())
+      (Self::target_mut(Pin::get_unchecked_mut(self)).data.iter_mut())
         .map(|element| Pin::new_unchecked(element))
     }
   }
 }
 
-impl<T, O: Offset> Deref for Near<T, O> {
+impl<T: Flat, O: Offset> Deref for Near<T, O> {
   type Target = T;
   fn deref(&self) -> &T {
-    // SAFETY: a `&Near` only exists inside a region, which holds the target at the offset, or
-    // in bytes that `puns` checked with its target (`aim`), aligned, and borrowed with it.
-    unsafe { &*self.target().cast::<T>() }
+    offset::<O>();
+    // SAFETY: A `&Near` exists only inside a region, which holds its target at its offset, or in
+    // bytes that `puns` checked with its target, and borrowed with it, so its target is valid and
+    // not written while the `&Near` lives, and the reference has the provenance of the buffer
+    // under tree borrows, as `target` requires ("Reading a target" in `aim`).
+    unsafe { Self::target(self) }
   }
 }
 
-impl<T, O: Offset> Deref for Near<[T], O> {
+impl<T: Flat, O: Offset> Deref for Near<[T], O> {
   type Target = [T];
   fn deref(&self) -> &[T] {
-    // SAFETY: as above; the target is a list.
-    unsafe { self.list(ListBlock::<T, O>::SKIP) }
+    offset::<O>();
+    // SAFETY: As above; the target is a `ListBlock`.
+    unsafe { &Self::target(self).data }
   }
 }
 
 impl<O: Offset> Deref for Near<str, O> {
   type Target = str;
   fn deref(&self) -> &str {
-    // SAFETY: as above; the target is a length and UTF-8 bytes.
-    unsafe { str::from_utf8_unchecked(self.list(TextBlock::<O>::SKIP)) }
+    offset::<O>();
+    // SAFETY: As above; the target is a `TextBlock`, whose data a `str` is.
+    unsafe { &Self::target(self).data }
   }
 }
 
@@ -507,7 +475,7 @@ impl<O: Offset> Deref for Near<str, O> {
 /// for x in &r.items { n += u32::from(*x) }
 /// assert_eq!(n, 294);
 /// ```
-impl<'a, T, O: Offset> IntoIterator for &'a Near<[T], O> {
+impl<'a, T: Flat, O: Offset> IntoIterator for &'a Near<[T], O> {
   type Item = &'a T;
   type IntoIter = slice::Iter<'a, T>;
   fn into_iter(self) -> Self::IntoIter {

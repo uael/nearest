@@ -203,7 +203,7 @@ the unchecked loaders ask for bytes that the checker would accept.
 bytes, so at most `GRAIN`; `NonZero` and `Option<NonZero>` of that size, `NonZero` of that alignment; `LIMIT` a
 multiple of 8 that the integers of that size reach). Every function that reads or writes the
 bytes of an `O` calls it: `fits_behind`, `aim`, `read_len`, `Sink::link`, `Sink::write_len`,
-`Near::target`, `Near::target_mut`, `moved`, the `None` of `Option<Near>`, `Compact::integer`,
+`Near::deref`, `Near::as_pin_mut`, `Near::iter_pin_mut`, `moved`, the `None` of `Option<Near>`, `Compact::integer`,
 and the lead of the target of a `Near` (`aim::Pointee::LEAD`, through `fits_behind` for a list),
 which every layout that holds one evaluates. `LIMIT` defaults to `2^(8 * size - 1) - 8`, the largest multiple
 of 8 of a signed integer of that size (`iN::MAX & !7` for the three integers).
@@ -232,8 +232,19 @@ that a negative length fails. Its capacity and its length are `O`s of alignment 
 aligned as its data and ends where its data ends: `puns` requires a target to end within the
 bytes at `size_of_val`, which would otherwise include padding after the last text or list of an
 image. The offset of the data of a block is that of an empty array of its elements in the same
-block (`offset_of!`, which does not take an unsized field; no `Pun` bound: `Deref` of `Near<[T]>`
-has none).
+block (`offset_of!`, which does not take an unsized field).
+
+`puns` also reads the target: the aim is named (`#[pun(aim(target: ..))]`), so the derive writes
+`Near::target` and `Near::target_mut`, `unsafe`, which compute the address, read the length of a
+block from its sized fields, and make the `&T`, the `&ListBlock` or the `&TextBlock`. `Deref` returns
+the target or the `data` of the block, and the pinned view (`as_pin_mut`, `iter_pin_mut`) the
+same through `target_mut`: one `unsafe` block each, whose `// SAFETY:` is the contract of
+"Reading a target" in `aim.rs` (a region holds each target at its offset, the reference has the
+provenance of the buffer under Tree Borrows, a `Near` owns its target alone). So `Deref` of
+`Near<T>` and `Near<[T]>` requires `T: Flat` (`Pointee`), and a generic type that derives `Debug`
+or `PartialEq` over a `Near<T>` bounds `T: Flat` itself (`Pair`, `Lst`, `Tree` in
+`tests/common/integration.rs`, `Boxed` in `tests/layouts.rs`); `#[flat]` adds the bound only to a
+parameter that has none, read by its last name (`has_flat`), so that it is not written twice.
 
 `#[flat]` derives `Pun` for the rest (see Generated code). `Option<Near<..>>` is the `Option` of
 the pointer, which `puns` lays out: as the `NonZero` of a native offset (`Pun::NULL_OPTIMIZED`,
@@ -370,17 +381,17 @@ Miri: assertions carry it. The assumptions, and what holds each:
 
 | Assumption (where) | Held by |
 |---|---|
-| The alignment of a region is that of a `u64`: `ALIGN = align_of::<u64>()`, not 8 (`flat.rs`; `Region::deref`, `Raw::get`/`place`, `relocate`, `plain_edit`, `set`'s `Restore`, `insert`, `swap`, `retain`, `Old::emit`, `ListEdit::deref_mut`, `Near::deref`/`list`/`as_pin_mut`/`iter_pin_mut`, `view_unchecked`) | a constant of the target; `fits` refuses a type more aligned (`aligned`, unit test on each Miri target; trybuild for 16); `view` checks the address against `ALIGN`; Miri on `i686`; `a_region_is_aligned_as_its_words` in every storage |
+| The alignment of a region is that of a `u64`: `ALIGN = align_of::<u64>()`, not 8 (`flat.rs`; `Region::deref`, `Raw::get`/`place`, `relocate`, `plain_edit`, `set`'s `Restore`, `insert`, `swap`, `retain`, `Old::emit`, `ListEdit::deref_mut`, `Near::deref`/`as_pin_mut`/`iter_pin_mut`, `view_unchecked`) | a constant of the target; `fits` refuses a type more aligned (`aligned`, unit test on each Miri target; trybuild for 16); `view` checks the address against `ALIGN`; Miri on `i686`; `a_region_is_aligned_as_its_words` in every storage |
 | `ALIGN` is a power of two, at most `GRAIN` = 8, the largest alignment of a position (`limit`, `Buf::alloc`) | `const` assertion in `flat.rs` |
 | A word is 8 bytes (`Buf::attach`, `room`, `Heap::with_capacity`, `Inline<N>`) | `WORD = size_of::<u64>()`, asserted 8 |
 | The memory of `Inline<N>` is aligned as a `u64` (`Inline::memory*`) | `#[repr(C, align(8))]`, `const` assertion against `align_of::<u64>()` |
 | An offset is 2, 4 or 8 bytes, so its block is at most `GRAIN`-aligned (`List::new`, `list`) | `near::offset` (`const`) |
-| Offsets and lengths may sit at addresses less aligned than their positions (`i64` lengths on `i686`) | read and written unaligned only (`aim`, `read_len`, `Near::list`, `Sink::write`), and by the loaders as bytes (`puns`, `Compact`); Miri on `i686` |
-| The integer of an offset fits `isize` (`Near::target`, `aim`, `read_len`, `Near::list`) | Valid offsets: `puns` refuses an `O` whose target is not within the bytes, which one that does not round-trip is not, for every `Offset`; `integers_wider_than_isize_are_invalid` (Miri on `i686`), `offsets_that_from_isize_does_not_make_are_invalid` (every target); 16 bits: the same code, not run |
+| Offsets and lengths may sit at addresses less aligned than their positions (`i64` lengths on `i686`) | read and written unaligned only (`aim`, `read_len`, `Sink::write`, and `puns`, which reads the length of a block for `Deref` with `signed(..)`, a load of bytes), and by the loaders as bytes (`puns`, `Compact`); Miri on `i686` |
+| The integer of an offset fits `isize` (`Near::target` of `puns`, `aim`, `read_len`) | Valid offsets: `puns` refuses an `O` whose target is not within the bytes, which one that does not round-trip is not, for every `Offset`; `integers_wider_than_isize_are_invalid` (Miri on `i686`), `offsets_that_from_isize_does_not_make_are_invalid` (every target); 16 bits: the same code, not run |
 | A region is at most `isize::MAX` bytes, so a distance fits `isize` (`distance`, `wrapping_offset`) | `limit` caps at `isize::MAX & !7`, from `isize::MAX` of the target |
 | `usize` is at least 16 bits (`limit`, positions) | Rust supports no narrower `usize`; built for `msp430` (and `puns`, whose assumptions of `usize` are in its crate docs, "Portability") |
 | The bytes of an offset are a two's complement integer in `O::ENDIAN`, which `to_isize` reads (the loaders read it so: the rules of `Near` and `aim::Block`, `Compact::integer`) | the contract of `Offset` (`unsafe`); `Endian::NATIVE`, from the target, for `i16`, `i32`, `i64`; `contract` (`tests/width.rs`) for every offset of the tests, Miri on `i686` and `s390x` |
-| The first element of a list is at a position that is a multiple of `max(align_of::<T>(), w)` (the slice of `Near::list`, aligned for `T`) | `List::new` and `claim`; `tests/layouts.rs` under Miri on `i686` |
+| The first element of a list is at a position that is a multiple of `max(align_of::<T>(), w)` (the `data` of the `ListBlock` that `Deref` of `Near<[T]>` returns, aligned for `T`) | `List::new` and `claim`; `tests/layouts.rs` under Miri on `i686` |
 | An image written with the offsets and the numbers of a fixed byte order is the same on every machine (`examples/ir.rs`, `ir.image`) | `tests/ir.rs` under Miri on `s390x` compares it byte for byte |
 | The byte order of `i16`, `i32`, `i64` and of stored numbers is the target's (`plain!`'s `from_ne_bytes`, the images) | no `unsafe` code depends on it; Miri on `s390x` runs the tests of the library, of offsets and of every storage big-endian; the tests write expected bytes with `to_ne_bytes` |
 
@@ -772,11 +783,12 @@ Files of `src/`:
   `Old`, `ListEdit`, `OptionEdit`, `StrEdit`.
 - `aim.rs`: what a pointer points at as `puns` sees it: `Pointee`, the target of each pointer and
   the bytes before the place where it aims, and the targets `Block`, `ListBlock`, `TextBlock`,
-  which derive `Pun`, with their offsets (see Pointers and `puns`).
+  which derive `Pun`, with their offsets, and the contract of the reads of targets (see Pointers
+  and `puns`).
 - `bytes.rs`: `Error`, the walk of a compact image `Compact` (`tag`, `integer`, `claim`,
   `extend`, `len`, `null`, and its steps `target`, `list`, `text`), `check`, `view`,
   `view_unchecked`.
-- `near.rs`: `Near<T, O>`, which derives `Pun` with its aim: `Deref` for `T`, `[T]` and `str`,
+- `near.rs`: `Near<T, O>`, which derives `Pun` with its aim, read by `puns`: `Deref` for `T`, `[T]` and `str`,
   builders, trait impls; `Offset`,
   its impls (`offsets!` for the integers of the target, `fixed!` for those of `puns::num`, with
   `Packed` and its `Scalar`s), `offset` (its layout, checked).

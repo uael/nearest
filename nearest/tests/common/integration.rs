@@ -114,20 +114,20 @@ enum Stmt {
 
 #[flat]
 #[derive(Debug, PartialEq)]
-struct Pair<A, B> {
+struct Pair<A, B: Flat> {
   first: A,
   second: Near<B>,
 }
 
 #[flat]
 #[derive(Debug, PartialEq)]
-struct Lst<T> {
+struct Lst<T: Flat> {
   items: Near<[T]>,
 }
 
 #[flat]
 #[derive(Debug, PartialEq)]
-enum Tree<T> {
+enum Tree<T: Flat> {
   Leaf(T),
   Node(Near<Tree<T>>, Near<Tree<T>>),
 }

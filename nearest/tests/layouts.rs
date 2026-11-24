@@ -34,10 +34,11 @@ enum Pong<O: nearest::Offset> {
 }
 
 /// A generic type whose parameter is what it holds: the derive finds its bounds (and `#[flat]`
-/// its own: the parameter is `Flat`).
+/// its own: the parameter is `Flat`). `Debug` and `PartialEq` read the targets, whose `Deref`
+/// requires the parameter to be `Flat`, so it is written, and `#[flat]` does not add it again.
 #[flat]
 #[derive(Debug, PartialEq, Eq)]
-struct Boxed<T> {
+struct Boxed<T: nearest::Flat> {
   id: u8,
   value: Near<T, i32le>,
   more: Near<[T], i32le>,

@@ -19,6 +19,27 @@
 //! The integers of the offset and of the length are read in the byte order of the `Offset`
 //! ([`Offset::ENDIAN`]), which is what `to_isize` reads, and not as the layout of `O` says: an
 //! `Offset` of the user's may be a struct whose layout is that of a native integer.
+//!
+//! # Reading a target
+//!
+//! `puns` reads the target of a pointer, with the methods `Near::target` and `Near::target_mut`
+//! that its derive writes, which are `unsafe`. `Deref` and the pinned view call them, and uphold
+//! their requirements so:
+//!
+//! - **Read.** A `&Near` exists only inside a region, whose writers put the target of each pointer
+//!   at its offset, a valid value whose block holds its length, or inside bytes that `puns`
+//!   checked with its targets (`view`), or that the caller of `view_unchecked` vouches `view`
+//!   would accept. The `&Near` is made from the buffer that holds both, so it
+//!   has its provenance under tree borrows, which Miri runs. Under stacked borrows, a reference to
+//!   a `Near` gives access to its own bytes only, and the read is undefined behavior: `nearest`
+//!   relies on tree borrows here, as everywhere it resolves a pointer from `&self`. The region or
+//!   the bytes are borrowed with the `&Near`, so the target is not written while it lives.
+//! - **Write.** A `Pin<&mut Near>` comes from a pinned view, which borrows the handle of the region
+//!   mutably, and a `Near` owns its target alone, so the target is reached only through the
+//!   result while it lives. The other requirements are those of a read.
+//!
+//! The rules of a target other than its length, such as an `assert`, are not needed, and a region
+//! may hold a value that breaks one, as safe code can write it.
 
 use core::mem::offset_of;
 
@@ -71,8 +92,9 @@ impl<O: Offset> Pointee<O> for str {
 pub struct Block<H, D: ?Sized, O: Copy> {
   head: H,
   len: Packed<O>,
+  /// The elements or the bytes, which `Deref` returns.
   #[pun(len = signed(offset_of!(Self, len), size_of::<O>(), O::ENDIAN))]
-  data: D,
+  pub(crate) data: D,
 }
 
 /// The block of a list of `T`: its capacity, its length, then the elements.

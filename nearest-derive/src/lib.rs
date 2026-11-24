@@ -85,8 +85,16 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let name = &input.ident;
   let vis = &input.vis;
   let mut generics = input.generics.clone();
-  for p in input.generics.type_params() {
-    let id = &p.ident;
+  // Every type parameter is `Flat`, as the user wrote it or as added here: a parameter that a
+  // value points at is bounded by the user for the impls of `core` that a derive writes, such as
+  // `Debug`, since `Deref` of a pointer requires it, and a second bound would repeat it.
+  let flat_params: Vec<_> = input
+    .generics
+    .type_params()
+    .map(|p| &p.ident)
+    .filter(|id| !has_flat(&input.generics, id))
+    .collect();
+  for id in &flat_params {
     generics.make_where_clause().predicates.push(parse_quote!(#id: ::nearest::Flat));
   }
   let (impl_g, ty_g, where_c) = generics.split_for_impl();
@@ -504,9 +512,12 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // other would go round in a circle.
   // `puns` takes `bound` only where there are bounds to write: an enum without fields has no
   // type parameter.
-  let flat_params: Vec<_> = input.generics.type_params().map(|p| &p.ident).collect();
-  let bound =
-    (!flat_params.is_empty()).then(|| quote!(, bound(#(#flat_params: ::nearest::Flat),*)));
+  let bound = input
+    .generics
+    .type_params()
+    .next()
+    .is_some()
+    .then(|| quote!(, bound(#(#flat_params: ::nearest::Flat),*)));
   input.attrs.insert(0, parse_quote!(#[pun(crate = ::nearest::puns #bound)]));
   input.attrs.insert(0, parse_quote!(#[derive(::nearest::puns::Pun)]));
   // A pinned value must keep its pointers, so the type is `Unpin` exactly when its fields are.
@@ -784,4 +795,23 @@ fn snake(variant: &Ident) -> Ident {
     _ if s == "gen" || syn::parse_str::<Ident>(&s).is_err() => Ident::new_raw(&s, variant.span()),
     _ => Ident::new(&s, variant.span()),
   }
+}
+
+/// Returns whether `generics` bound the type parameter `id` by `Flat`, as `<T: Flat>` or
+/// `where T: Flat`. The bound is read by its last name, as written: `Flat` or `nearest::Flat`.
+fn has_flat(generics: &syn::Generics, id: &Ident) -> bool {
+  let flat = |bounds: &syn::punctuated::Punctuated<syn::TypeParamBound, syn::Token![+]>| {
+    bounds.iter().any(|bound| {
+      matches!(bound, syn::TypeParamBound::Trait(bound)
+        if bound.path.segments.last().is_some_and(|segment| segment.ident == "Flat"))
+    })
+  };
+  generics.type_params().any(|param| param.ident == *id && flat(&param.bounds))
+    || generics.where_clause.as_ref().is_some_and(|clause| {
+      clause.predicates.iter().any(|predicate| {
+        matches!(predicate, syn::WherePredicate::Type(predicate)
+          if matches!(&predicate.bounded_ty, syn::Type::Path(ty) if ty.path.is_ident(id))
+            && flat(&predicate.bounds))
+      })
+    })
 }
