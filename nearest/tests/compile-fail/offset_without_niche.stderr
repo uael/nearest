@@ -60,10 +60,34 @@ note: erroneous constant encountered
   = note: this note originates in the macro `pointers` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 note: erroneous constant encountered
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/1c23d04/puns/src/std_enums.rs:290:29
+   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/10eaa60/puns/src/std_enums.rs:105:46
     |
-290 |   const LAYOUT: Layout = if T::LAYOUT.is_never() {
-    |                             ^^^^^^^^^
+105 |   const SAMPLES: [MaybeUninit<Self>; 2] = if T::LAYOUT.is_inhabited() {
+    |                                              ^^^^^^^^^
+
+note: erroneous constant encountered
+   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/10eaa60/puns/src/std_enums.rs:141:43
+    |
+141 |     crate::discover::discover::<Self, 2>(&<Self as Found>::SAMPLES, &<Self as Found>::FIELDS)
+    |                                           ^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/10eaa60/puns/src/std_enums.rs:147:5
+    |
+147 |     <Self as Found>::DESC.tag_offset(),
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/10eaa60/puns/src/std_enums.rs:232:55
+    |
+232 |     let layout = Layout::enumeration::<Self>(const { &<Self as Found>::ENUM }).identified(Self::ID);
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^
+
+note: erroneous constant encountered
+   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/10eaa60/puns/src/std_enums.rs:232:46
+    |
+232 |     let layout = Layout::enumeration::<Self>(const { &<Self as Found>::ENUM }).identified(Self::ID);
+    |                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: erroneous constant encountered
   --> tests/compile-fail/offset_without_niche.rs:18:1
