@@ -2,14 +2,24 @@
 //!
 //! Every image of a deterministic corpus (structs, enums, lists, text, optional pointers, numbers
 //! of given values, each offset width and byte order), then every byte of it changed by a few
-//! masks, every truncation, a few extensions and an address that is not aligned: what `view` and
-//! `from_bytes` (at an odd address) say of each is folded into a digest per image.
-//! `corpus.expected` holds the digests of this checker, `puns` then the walk of a compact image,
-//! written with `NEAREST_CORPUS_WRITE=1`. It accepts and refuses what the checker of `nearest`
-//! 0.8.1 (its own walk, which gave the results of 0.7) accepted and refused, on every image whose
-//! bytes are the same in both: all but the expressions behind `i16` offsets whose lists hold
-//! 8-aligned elements, whose header now pads them as a `repr(C)` struct does. An error no longer
-//! says where. `NEAREST_CORPUS_DUMP` writes the records, to compare two versions.
+//! masks, every truncation, a few extensions and an address that is not aligned: what `view`,
+//! `from_bytes` (at an odd address) and `view_with` (the least scratch that suffices) say of each
+//! is folded into a digest per image. `corpus.expected` holds the digests of the check of `puns`
+//! (`puns::check`), written with `NEAREST_CORPUS_WRITE=1`. The images are those of 0.8.1, byte for
+//! byte, and so are the records, but in two ways (`NEAREST_CORPUS_DUMP` writes them, to compare
+//! two versions):
+//!
+//! - The least scratch. `puns` checks in place a pointee that holds no pointer, when nothing waits
+//!   before it, and keeps each other pointer that waits, where 0.8.1 kept the rest of a list in
+//!   one entry: most images need fewer entries, and some invalid ones more, since `puns` finds
+//!   where bytes fail with every pointee waiting. In both, an entry waits for a pointer of its own
+//!   (see `Pending`).
+//! - The length of a list that is negative, within the `LIMIT` of its offset, is refused where the
+//!   length is, where 0.8.1 refused it where the list starts, at its capacity, as it refused a
+//!   length that does not fit.
+//!
+//! 0.8.1 gave the results of 0.7 (the code that `#[flat]` generated, before the one validator of
+//! `puns`), but for four errors at the second pointer of a `Call`, refused where it is.
 //!
 //! Under Miri, a fraction of the corpus runs, for the unsafe code that it reaches; the digests
 //! are compared natively.
@@ -17,7 +27,7 @@
 use std::{fmt::Write as _, hash::Hasher};
 
 use nearest::{
-  Error, Flat, Near, Offset, Region, flat,
+  Error, Flat, Near, Offset, Pending, Region, flat,
   puns::num::{i16be, i32le, i64le, u8c, u8in, u16bec, u16le, u32le, u64lec},
 };
 
@@ -195,12 +205,21 @@ fn verdict<T: Flat>(bytes: &[u8], out: &mut String) {
   let _ = write!(out, "{};", shown(viewed));
 }
 
-/// What `from_bytes` says at an odd address.
+/// What `from_bytes` says at an odd address, and the least scratch with which `view_with`
+/// finishes (with what it says then).
 fn loaded<T: Flat>(bytes: &[u8], out: &mut String) {
   let mut odd = vec![0u8; bytes.len() + 1];
   odd[1..].copy_from_slice(bytes);
   let from = Region::<T>::from_bytes(&odd[1..]).map(|_| ());
   let _ = write!(out, "from {from:?};");
+  for size in 0.. {
+    let mut scratch = vec![Pending::default(); size];
+    let result = nearest::view_with::<T>(bytes, &mut scratch).map(|_| ());
+    if result != Err(Error::ScratchFull) {
+      let _ = write!(out, "scratch {size} {result:?};");
+      break;
+    }
+  }
 }
 
 /// The record of an image and its corruptions.
@@ -352,7 +371,8 @@ struct Checked {
   next: Option<Near<Checked, i32le>>,
 }
 
-/// Each rule refused, behind pointers too.
+/// Each rule refused where its value is, behind pointers too: the results of `puns::nearest` (the
+/// loaders of `puns` with the feature `nearest`, at `e5875f5`), which checked them.
 #[test]
 fn rules_are_checked_at_load() {
   let span = |lo, hi| Span::new(u16le::new(lo), u16le::new(hi));
@@ -368,16 +388,16 @@ fn rules_are_checked_at_load() {
   let base = r.as_bytes().unwrap().as_ptr().addr();
   let spans = (&raw const r.spans[0]).addr() - base;
   let next = (&raw const **r.next.as_ref().unwrap()).addr() - base;
-  for (at, value) in [
-    (0, 4),         // `level`, out of its valid values
-    (1, 5),         // `count == 2 * pairs`, of the root
-    (spans + 2, 0), // `lo <= hi`, of the first span
-    (spans + 4, 4),
-    (next, 0),     // `level`, behind a pointer
-    (next + 1, 1), // `count == 2 * pairs`, behind a pointer
+  for (at, value, error) in [
+    (0, 4, 0),             // `level`, out of its valid values
+    (1, 5, 0),             // `count == 2 * pairs`, of the root
+    (spans + 2, 0, spans), // `lo <= hi`, of the first span
+    (spans + 4, 4, spans + 4),
+    (next, 0, next),     // `level`, behind a pointer
+    (next + 1, 1, next), // `count == 2 * pairs`, behind a pointer
   ] {
     let mut bad = image.clone();
     bad[at] = value;
-    assert_eq!(Region::<Checked>::from_bytes(&bad).err(), Some(Error::Invalid), "at {at}");
+    assert_eq!(Region::<Checked>::from_bytes(&bad).err(), Some(Error::Invalid(error)), "at {at}");
   }
 }

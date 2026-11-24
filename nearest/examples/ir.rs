@@ -319,7 +319,7 @@ pub fn main() {
   let owned = Region::<Function>::from_bytes(&unaligned[1..]).unwrap();
   assert_eq!(*owned, *loaded);
 
-  // Bytes that are not a function are refused.
+  // Bytes that are not a function are refused, where they stop being one.
   let invalid = |at: usize, value: u8| {
     let mut bad = bytes.to_vec();
     bad[at] = value;
@@ -327,23 +327,23 @@ pub fn main() {
   };
   let place = |part: &u8| (&raw const *part).addr() - bytes.as_ptr().addr();
   // The magic number, the version, and the rule of the function.
-  assert_eq!(invalid(0, b'Q'), Some(Error::Invalid));
-  assert_eq!(invalid(4, 2), Some(Error::Invalid));
-  assert_eq!(invalid(6, 5), Some(Error::Invalid));
+  assert_eq!(invalid(0, b'Q'), Some(Error::Invalid(0)));
+  assert_eq!(invalid(4, 2), Some(Error::Invalid(4)));
+  assert_eq!(invalid(6, 5), Some(Error::Invalid(0)));
   // A pointer that aims elsewhere: the name, one byte further.
-  assert_eq!(invalid(10, bytes[10] + 1), Some(Error::Invalid));
+  assert_eq!(invalid(10, bytes[10] + 1), Some(Error::Invalid(10)));
   // A tag that is not one: the end of the first block, an operation of the second.
   let end = place(puns::head_ref::<End, u8>(&loaded.blocks[0].end));
-  assert_eq!(invalid(end, 3), Some(Error::Invalid));
+  assert_eq!(invalid(end, 3), Some(Error::Invalid(end)));
   let Inst::Bin(_, op, ..) = &loaded.blocks[1].body[0] else { panic!("not what was written") };
   let op = place(puns::pun_ref::<Op, u8>(op));
-  assert_eq!(invalid(op, 4), Some(Error::Invalid));
-  // A label that is not UTF-8.
+  assert_eq!(invalid(op, 4), Some(Error::Invalid(op)));
+  // A label that is not UTF-8: the error is at its length.
   let label = place(&loaded.blocks[3].label.as_bytes()[0]);
-  assert_eq!(invalid(label, 0xff), Some(Error::Invalid));
+  assert_eq!(invalid(label, 0xff), Some(Error::Invalid(label - size_of::<Off>())));
   // Cut short, or with something after it.
   assert!(Region::<Function>::from_bytes(&bytes[..size - 1]).is_err());
-  assert_eq!(invalid_extended(bytes), Some(Error::Invalid));
+  assert_eq!(invalid_extended(bytes), Some(Error::Invalid(size)));
 
   // What a loaded function names by number is checked where it is used.
   let mut wild = bytes.to_vec();

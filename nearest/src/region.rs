@@ -4,8 +4,10 @@ use core::{fmt, marker::PhantomData, ops::Deref, slice};
 
 #[cfg(feature = "alloc")]
 use crate::Heap;
+#[cfg(feature = "alloc")]
+use crate::bytes::Stack;
 use crate::{
-  Emit, Error, Flat, Storage,
+  Emit, Error, Flat, Pending, Storage,
   bytes::check,
   flat::{Buf, Sink, fits, limit},
 };
@@ -186,9 +188,11 @@ impl<T: Flat, S: Storage> Region<T, S> {
   }
 
   /// The region whose image is `bytes`, which may have any alignment, in a new storage. The
-  /// bytes are copied, then checked where they are: they must be exactly what
-  /// [`as_bytes`](Self::as_bytes) returns for a `T`. For a storage that has no `Default`, copy
-  /// from a view instead: `Region::new_in(storage, nearest::view::<T>(bytes)?)`.
+  /// bytes are checked, then copied: they must be exactly what [`as_bytes`](Self::as_bytes)
+  /// returns for a `T`. For a storage that has no `Default`, copy from a view instead:
+  /// `Region::new_in(storage, nearest::view::<T>(bytes)?)`. It needs `alloc`: checking takes
+  /// memory that grows with the nesting of the data, which
+  /// [`from_bytes_with`](Self::from_bytes_with) takes from the caller.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -205,25 +209,58 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// ```
   ///
   /// # Errors
-  /// [`Error::Invalid`] if the bytes are not the compact image of a valid `T`, [`Error::Limit`]
-  /// if they nest pointers too deep to check, and [`Error::StorageFull`] if they are larger than
-  /// the storage gives.
+  /// [`Error::Invalid`] if the bytes are not the compact image of a valid `T`, and
+  /// [`Error::StorageFull`] if they are one, larger than the storage gives.
+  #[cfg(feature = "alloc")]
   pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error>
   where
     S: Default,
   {
-    fits::<T>();
-    if bytes.len() > limit::<T>() {
-      return Err(Error::Invalid);
-    }
-    // `puns` checks a value at an address aligned for it, so the bytes are checked in the
-    // storage, aligned as a region is.
+    Self::load(bytes, &mut Stack::new())
+  }
+
+  /// [`from_bytes`](Self::from_bytes), checking with `scratch` for memory.
+  /// `bytes.len() / 4` entries are always enough (`/ 2` with 2-byte pointers; see [`Pending`]).
+  /// It needs no `alloc`.
+  ///
+  /// ```
+  /// use nearest::{Inline, Near, Pending, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Msg { id: u8, body: Near<str> }
+  ///
+  /// type Small = Region<Msg, Inline<64>>;
+  ///
+  /// let r = Small::new_in(Inline::default(), Msg::new(1, "hi"));
+  /// let bytes = r.as_bytes().unwrap();
+  /// let mut scratch = [Pending::default(); 64 / 4]; // enough for anything `Inline<64>` holds
+  /// let back = Small::from_bytes_with(bytes, &mut scratch)?;
+  /// assert_eq!((back.id, &*back.body), (1, "hi"));
+  /// assert!(Small::from_bytes_with(&bytes[1..], &mut scratch).is_err());
+  /// # Ok::<(), nearest::Error>(())
+  /// ```
+  ///
+  /// # Errors
+  /// As [`from_bytes`](Self::from_bytes), and [`Error::ScratchFull`] if `scratch` ran out before
+  /// the check finished, which says nothing about the bytes.
+  pub fn from_bytes_with(bytes: &[u8], scratch: &mut [Pending]) -> Result<Self, Error>
+  where
+    S: Default,
+  {
+    Self::load(bytes, scratch)
+  }
+
+  /// `from_bytes`, checking with `todo`.
+  fn load<W: puns::Worklist + ?Sized>(bytes: &[u8], todo: &mut W) -> Result<Self, Error>
+  where
+    S: Default,
+  {
+    // The check reads bytes at any alignment, as they will be in the storage, so nothing is
+    // copied for a bad image.
+    check::<T, W>(bytes, todo)?;
     // SAFETY: `bytes` is not in a new storage.
     let r = unsafe { Self::copy_of(S::default(), limit::<T>(), bytes.as_ptr(), bytes.len()) };
-    let r = r.ok_or(Error::StorageFull)?;
-    // SAFETY: the bytes in use are in the memory, initialized: they were just copied.
-    check::<T>(unsafe { slice::from_raw_parts(r.base(), r.buf.len()) })?;
-    Ok(r)
+    r.ok_or(Error::StorageFull)
   }
 
   /// [`from_bytes`](Self::from_bytes) without the check, for bytes that are trusted, or that the

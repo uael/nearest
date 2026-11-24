@@ -23,54 +23,8 @@ note: erroneous constant encountered
   | |   };
   | |___^
 
-note: erroneous constant encountered
- --> src/near.rs
+note: the above error was encountered while instantiating `fn nearest::near::offset::<Wide>`
+ --> src/flat.rs
   |
-  |       signed(offset_of!(Self, off), size_of::<O>(), O::ENDIAN) - <T as Pointee<O>>::LEAD
-  |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^
-
-note: erroneous constant encountered
- --> src/near.rs
-  |
-  | #[derive(Pun)]
-  |          ^^^
-  |
-  = note: this note originates in the derive macro `Pun` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-note: erroneous constant encountered
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/19ae3cd/puns/src/std_enums.rs:105:46
-    |
-105 |   const SAMPLES: [MaybeUninit<Self>; 2] = if T::LAYOUT.is_inhabited() {
-    |                                              ^^^^^^^^^
-
-note: erroneous constant encountered
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/19ae3cd/puns/src/std_enums.rs:141:43
-    |
-141 |     crate::discover::discover::<Self, 2>(&<Self as Found>::SAMPLES, &<Self as Found>::FIELDS)
-    |                                           ^^^^^^^^^^^^^^^^^^^^^^^^
-
-note: erroneous constant encountered
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/19ae3cd/puns/src/std_enums.rs:147:5
-    |
-147 |     <Self as Found>::DESC.tag_offset(),
-    |     ^^^^^^^^^^^^^^^^^^^^^
-
-note: erroneous constant encountered
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/19ae3cd/puns/src/std_enums.rs:232:55
-    |
-232 |     let layout = Layout::enumeration::<Self>(const { &<Self as Found>::ENUM }).identified(Self::ID);
-    |                                                       ^^^^^^^^^^^^^^^^^^^^^
-
-note: erroneous constant encountered
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/19ae3cd/puns/src/std_enums.rs:232:46
-    |
-232 |     let layout = Layout::enumeration::<Self>(const { &<Self as Found>::ENUM }).identified(Self::ID);
-    |                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-note: erroneous constant encountered
-  --> tests/compile-fail/offset_without_niche.rs:18:1
-   |
-18 | #[flat]
-   | ^^^^^^^
-   |
-   = note: this note originates in the derive macro `::nearest::puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)
+  |     offset::<O>();
+  |     ^^^^^^^^^^^^^

@@ -3,7 +3,7 @@
 
 use core::pin::Pin;
 
-use nearest::{Error, Inline, Near, Region, flat, puns};
+use nearest::{Error, Inline, Near, Pending, Region, flat};
 
 #[flat]
 #[derive(Debug, PartialEq)]
@@ -34,44 +34,71 @@ fn build_edit_move_and_load() {
   assert!(moved.as_bytes().is_none());
   let compact = Region::new_in(Inline::<128>::default(), &*moved);
   let bytes = compact.as_bytes().unwrap();
-  assert_eq!(nearest::view::<Msg>(bytes), Ok(&*moved));
-  let loaded = Region::<Msg, Inline<64>>::from_bytes(bytes);
+  let mut scratch = [Pending::default(); 128 / 4];
+  assert_eq!(nearest::view_with::<Msg>(bytes, &mut scratch), Ok(&*moved));
+  let loaded = Region::<Msg, Inline<64>>::from_bytes_with(bytes, &mut scratch);
   assert_eq!(*loaded.unwrap(), *moved);
-  // An image larger than the storage is an error, not a panic.
-  let small = Region::<Msg, Inline<32>>::from_bytes(bytes);
+  // A valid image larger than the storage is an error, not a panic.
+  let small = Region::<Msg, Inline<32>>::from_bytes_with(bytes, &mut scratch);
   assert_eq!(small.err(), Some(Error::StorageFull));
+  #[cfg(feature = "alloc")]
+  assert_eq!(Region::<Msg, Inline<32>>::from_bytes(bytes).err(), Some(Error::StorageFull));
   assert!(std::panic::catch_unwind(|| Region::new_in(Inline::<32>::default(), &*moved)).is_err());
 }
 
-/// The storage of the deep sums, and so their largest image.
-type Big = Region<Expr, Inline<4096>>;
+/// Under Miri everything below is eight times smaller: the same paths, in seconds rather than
+/// minutes (the time that Miri reports is not the one that passes).
+const SCALE: usize = if cfg!(miri) { 8 } else { 1 };
 
-/// A left-deep sum of `depth` terms, compact: its first term is `depth` pointers deep.
+/// The storage of the deep sums, and so their largest image.
+const SIZE: usize = (1 << 14) / SCALE;
+type Big = Region<Expr, Inline<SIZE>>;
+
+/// The terms of a deep sum: its image nearly fills `SIZE`.
+const DEPTH: usize = 500 / SCALE;
+
+/// A left-deep sum of `depth` terms, compact: checking it keeps about `depth` pointers waiting.
 fn sum(depth: usize) -> Big {
   // Each term leaves the sum it wraps behind: four times the image is room enough.
-  let mut r = Region::new_in(Inline::<{ 4 * 4096 }>::default(), Expr::Lit(0));
+  let mut r = Region::new_in(Inline::<{ 4 * SIZE }>::default(), Expr::Lit(0));
   for i in 1..=depth {
     r.edit().update(|old| Expr::add(old, Expr::Lit(i64::try_from(i).unwrap())));
   }
   Region::new_in(Inline::default(), &*r)
 }
 
-/// Checking takes no memory but the stack: `view` and `from_bytes` check bytes where they are,
-/// without `alloc` too, as deep as `puns` follows pointers (`AIM_DEPTH`); one level deeper, the
-/// check stops, which says nothing of the bytes. Under Miri, a shallow sum: the same paths.
+/// Checking keeps the pointers still to visit in scratch memory from the caller: a quarter of
+/// the size of the image, in entries, is always enough, and too little is not an invalid image.
 #[test]
-fn checking_takes_no_memory() {
-  let depth = if cfg!(miri) { 4 } else { puns::AIM_DEPTH };
-  let deep = sum(depth);
+fn checking_takes_scratch_memory_from_the_caller() {
+  #[expect(clippy::large_stack_arrays, reason = "memory without a heap, as a caller would have")]
+  let mut scratch = [Pending::default(); SIZE / 4];
+  let shallow = sum(DEPTH / 10);
+  let bytes = shallow.as_bytes().unwrap();
+  assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch[..64]), Ok(&*shallow));
+  let deep = sum(DEPTH);
   let bytes = deep.as_bytes().unwrap();
-  assert_eq!(nearest::view::<Expr>(bytes), Ok(&*deep));
-  assert_eq!(*Big::from_bytes(bytes).unwrap(), *deep);
-  if !cfg!(miri) {
-    let deeper = sum(depth + 1);
-    assert_eq!(nearest::view::<Expr>(deeper.as_bytes().unwrap()), Err(Error::Limit));
-    assert_eq!(Big::from_bytes(deeper.as_bytes().unwrap()).err(), Some(Error::Limit));
+  assert!(bytes.len() > SIZE / 2);
+  assert_eq!(nearest::view_with::<Expr>(bytes, &mut scratch), Ok(&*deep));
+  assert_eq!(*Big::from_bytes_with(bytes, &mut scratch).unwrap(), *deep);
+  // Too little: the check could not finish.
+  assert_eq!(
+    nearest::view_with::<Expr>(bytes, &mut scratch[..DEPTH * 4 / 5]),
+    Err(Error::ScratchFull)
+  );
+  assert_eq!(
+    Big::from_bytes_with(bytes, &mut scratch[..DEPTH * 4 / 5]).err(),
+    Some(Error::ScratchFull)
+  );
+  // Invalid bytes are invalid, given enough.
+  let cut = &bytes[..bytes.len() - 16];
+  assert!(matches!(nearest::view_with::<Expr>(cut, &mut scratch), Err(Error::Invalid(_))));
+  assert!(matches!(Big::from_bytes_with(&bytes[1..], &mut scratch), Err(Error::Invalid(_))));
+  // With `alloc`, the checker's own memory grows as needed.
+  #[cfg(feature = "alloc")]
+  {
+    assert_eq!(nearest::view::<Expr>(bytes), Ok(&*deep));
+    assert_eq!(*Big::from_bytes(bytes).unwrap(), *deep);
+    assert!(matches!(nearest::view::<Expr>(cut), Err(Error::Invalid(_))));
   }
-  // Invalid bytes are invalid.
-  assert_eq!(nearest::view::<Expr>(&bytes[..bytes.len() - 16]), Err(Error::Invalid));
-  assert_eq!(Big::from_bytes(&bytes[1..]).err(), Some(Error::Invalid));
 }

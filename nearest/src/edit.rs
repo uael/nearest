@@ -466,7 +466,7 @@ impl<'e, T: Flat, O: Offset> ListEdit<'e, T, O> {
   fn list(&self) -> (*mut Buf, List<O>) {
     let buf = self.0.buf();
     // SAFETY: the handle designates a `Near<[T]>`.
-    (buf, unsafe { List::read::<T>(buf, self.0.at()) })
+    (buf, unsafe { List::read(buf, self.0.at()) })
   }
 
   /// Writes `value` into the spare room after the elements, growing the list if it is full.

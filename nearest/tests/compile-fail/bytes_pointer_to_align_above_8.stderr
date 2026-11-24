@@ -23,24 +23,8 @@ note: erroneous constant encountered
   | |   };
   | |___^
 
-note: erroneous constant encountered
- --> src/near.rs
+note: the above error was encountered while instantiating `fn nearest::__private::fits::<A>`
+ --> src/flat.rs
   |
-  |       signed(offset_of!(Self, off), size_of::<O>(), O::ENDIAN) - <T as Pointee<O>>::LEAD
-  |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^
-
-note: erroneous constant encountered
- --> src/near.rs
-  |
-  | #[derive(Pun)]
-  |          ^^^
-  |
-  = note: this note originates in the derive macro `Pun` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-note: erroneous constant encountered
- --> tests/compile-fail/bytes_pointer_to_align_above_8.rs:8:1
-  |
-8 | #[flat]
-  | ^^^^^^^
-  |
-  = note: this note originates in the derive macro `::nearest::puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)
+  |   fits::<T>();
+  |   ^^^^^^^^^^^

@@ -32,14 +32,13 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all  # Build documentation
 cargo deny check                     # License/advisory/ban auditing
 ```
 
-The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`). `rust-version` is
-1.99, that of `puns` (its crate docs say why, "Minimum Rust version": `size_of_val_raw` in
-`const`); the CI job "Minimum
-Rust version" builds and tests on it. Without `alloc`, CI also builds for `thumbv7em-none-eabihf`, a target
-without `std`, and for `msp430-none-elf`, a 16-bit one. A pinned nightly (`nightly-2026-11-17`,
-the one of `puns`) is used by `cargo xtask fmt` (`rustfmt.toml` uses unstable options), by Miri,
-and to build `core` for the 16-bit target. Generate trybuild `.stderr` files with the pinned
-stable; the trybuild test runs on stable only.
+The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`). `rust-version` is 1.99,
+that of `puns` (its crate docs say why, "Minimum Rust version": `size_of_val_raw` in `const`); the
+CI job "Minimum Rust version" builds and tests on it. Without `alloc`, CI also builds for
+`thumbv7em-none-eabihf`, a target without `std`, and for `msp430-none-elf`, a 16-bit one. A pinned
+nightly (`nightly-2026-11-17`, the one of `puns`) is used by `cargo xtask fmt` (`rustfmt.toml` uses
+unstable options), by Miri, and to build `core` for the 16-bit target. Generate trybuild `.stderr`
+files with the pinned stable; the trybuild test runs on stable only.
 
 What `unsafe` code assumes of the target (the alignment of a primitive, the width of `usize` and
 `isize`, the byte order) is a `const` assertion where it is used, or a constant derived from the

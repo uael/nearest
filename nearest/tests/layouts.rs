@@ -1,5 +1,5 @@
 //! What `nearest` takes from the layouts of `puns`: numbers of a fixed byte order in a region, a
-//! value that holds pointers read as plain data, and from bytes once `puns` checked its targets,
+//! value that holds pointers read as plain data, and from bytes once `puns` checked its pointees,
 //! optional pointers, generic types, the alignment of the elements of a list, and the rules of
 //! `#[pun(..)]`, checked at load.
 
@@ -34,11 +34,11 @@ enum Pong<O: nearest::Offset> {
 }
 
 /// A generic type whose parameter is what it holds: the derive finds its bounds (and `#[flat]`
-/// its own: the parameter is `Flat`). `Debug` and `PartialEq` read the targets, whose `Deref`
-/// requires the parameter to be `Flat`, so it is written, and `#[flat]` does not add it again.
+/// its own: the parameter is `Flat`). `Debug` and `PartialEq` read the pointees, whose `Deref`
+/// reads with `puns`, which requires the parameter to be `Pun`, so it is written.
 #[flat]
 #[derive(Debug, PartialEq, Eq)]
-struct Boxed<T: nearest::Flat> {
+struct Boxed<T: puns::Pun> {
   id: u8,
   value: Near<T, i32le>,
   more: Near<[T], i32le>,
@@ -52,11 +52,12 @@ fn generic_types() {
   let flags = Region::new(Boxed::<bool>::new(1, true, [false, true]));
   let bytes: &Boxed<u8> = nearest::view(flags.as_bytes().unwrap()).unwrap();
   assert_eq!((bytes.id, *bytes.value, &bytes.more[..]), (1, 1, &[0, 1][..]));
-  // A `u8` of 2 is no `bool`: refused.
+  // A `u8` of 2 is no `bool`: refused where it is.
   let two = Region::new(Boxed::<u8>::new(1, 2, [0]));
+  let at = (&raw const *two.value).addr() - two.as_bytes().unwrap().as_ptr().addr();
   assert_eq!(
     nearest::view::<Boxed<bool>>(two.as_bytes().unwrap()).err(),
-    Some(nearest::Error::Invalid)
+    Some(nearest::Error::Invalid(at))
   );
 }
 
@@ -102,7 +103,7 @@ fn pointers_are_read_as_bytes() {
   assert_eq!(puns::try_pun_ref::<Table, Flagged>(&r).map(|f| f.set), Ok(true));
 }
 
-/// Two pointers, which `puns` reads from bytes once it checked their targets.
+/// Two pointers, which `puns` reads from bytes once it checked their pointees.
 #[flat]
 #[derive(Debug, PartialEq, Eq)]
 struct Two {
@@ -111,16 +112,16 @@ struct Two {
 }
 
 /// `puns` reads a value that holds pointers from bytes as it reads any value, once it checked
-/// every target (`Deref` then reads them). It does not require the image to be compact: two
-/// pointers may share a target, which a region refuses, since an edit of one target through a
-/// `&mut` would be seen through the other pointer.
+/// every pointee (`Deref` then reads them). Without its compact check, it does not require the
+/// image to be compact: two pointers may share a pointee, which a region refuses, since an edit of
+/// one pointee through a `&mut` would be seen through the other pointer.
 #[test]
-fn puns_reads_pointers_from_bytes_once_it_checked_their_targets() {
+fn puns_reads_pointers_from_bytes_once_it_checked_their_pointees() {
   let r = Region::new(Two::new(7, 9));
   let image = r.as_bytes().unwrap();
   let (two, _) = puns::from_head::<Two>(image).unwrap();
   assert_eq!((*two.a, *two.b), (7, 9));
-  // In words: an address aligned as a region is, for the targets.
+  // In words: an address aligned as a region is, for the pointees.
   let in_words = |bytes: &[u8], f: &dyn Fn(&[u8])| {
     let mut words = vec![0u64; bytes.len().div_ceil(8)];
     // SAFETY: the words hold at least `bytes.len()` bytes, all initialized.
@@ -129,7 +130,7 @@ fn puns_reads_pointers_from_bytes_once_it_checked_their_targets() {
     at.copy_from_slice(bytes);
     f(at);
   };
-  // `b` aims at the target of `a`: valid for `puns`, not a region.
+  // `b` aims at the pointee of `a`: valid for `puns`, not a region, refused where `b` is.
   let at = core::mem::offset_of!(Two, b);
   let a_target = i32::from_le_bytes(image[..4].try_into().unwrap());
   let b = a_target - i32::try_from(at).unwrap();
@@ -137,13 +138,13 @@ fn puns_reads_pointers_from_bytes_once_it_checked_their_targets() {
   in_words(&shared, &|bytes| {
     let (two, _) = puns::from_head::<Two>(bytes).unwrap();
     assert_eq!((*two.a, *two.b), (7, 7));
-    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid));
+    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid(at)));
   });
   // `b` aims past the bytes: invalid for both.
   let far = [&image[..at], &1000i32.to_le_bytes(), &image[at + 4..]].concat();
   in_words(&far, &|bytes| {
     assert_eq!(puns::from_head::<Two>(bytes).err(), Some(puns::Error::Validity));
-    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid));
+    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid(at)));
   });
 }
 
@@ -187,11 +188,11 @@ fn optional_pointers() {
   let named = nearest::view::<Named>(owned.as_bytes().unwrap()).unwrap();
   assert_eq!((named.level, *named.owner, named.more[0].level), (1, 7, 9));
   assert_eq!(named.more[0].owner, None);
-  // One that is null is not.
+  // One that is null is not: refused where the pointer is.
   let anonymous = Region::new(Maybe::new(2, None, ()));
   assert_eq!(
     nearest::view::<Named>(anonymous.as_bytes().unwrap()).err(),
-    Some(nearest::Error::Invalid)
+    Some(nearest::Error::Invalid(core::mem::offset_of!(Named, owner)))
   );
 }
 
@@ -351,10 +352,11 @@ fn a_value_that_breaks_a_rule_is_saved_not_loaded() {
   // Built and edited without a check: the rules are requirements, not guarantees.
   let mut bad = Region::new(Spans::new([span(1, 2), span(5, 3)]));
   let image = bad.as_bytes().unwrap().to_vec();
-  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid));
+  let at = (&raw const bad.spans[1]).addr() - bad.as_bytes().unwrap().as_ptr().addr();
+  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(at)));
   *bad.edit().spans().at(1).hi() = u16le::new(1000);
   *bad.edit().spans().at(1).lo() = u16le::new(0);
   let image = Region::new(&*bad).as_bytes().unwrap().to_vec();
-  // `valid(..1000)` of `hi`.
-  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid));
+  // `valid(..1000)` of `hi`: where it is.
+  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(at + 2)));
 }

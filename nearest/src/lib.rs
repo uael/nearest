@@ -203,10 +203,10 @@
 //!
 //! Every `#[flat]` type is also a [`puns::Pun`] type: its layout and its valid values are known
 //! at compile time. A [`Near`] is an eager aim of `puns` ([`puns::layout::Aim`]): its offset,
-//! and its target at the address of the pointer plus the offset. `puns` checks a value that holds
-//! one with its target, and the targets of the target, so the loaders check every value with
-//! `puns`, and then only that the image is compact. So the bytes saved by one version of a
-//! program load as the next, in place, when they are a value of it:
+//! and its pointee at the address of the pointer plus the offset. The loaders are the check of
+//! `puns` ([`puns::check`]), which checks a value that holds one with its pointee, and the
+//! pointees of the pointee, each where a deep copy writes it. So the bytes saved by one version of
+//! a program load as the next, in place, when they are a value of it:
 //!
 //! ```
 //! use nearest::{Error, Near, Region, flat};
@@ -231,13 +231,14 @@
 //! // Checked, not copied: the address of the bytes.
 //! let new: &NewExpr = nearest::view(old.as_bytes().unwrap()).unwrap();
 //! assert_eq!(eval(new), -1);
-//! // The other way, a `Mul` is no `Expr`: refused.
+//! // The other way, a `Mul` is no `Expr`: refused where its tag is.
 //! let mul = Region::new(NewExpr::mul(NewExpr::Lit(2), NewExpr::Lit(3)));
-//! assert_eq!(nearest::view::<Expr>(mul.as_bytes().unwrap()).err(), Some(Error::Invalid));
+//! assert_eq!(nearest::view::<Expr>(mul.as_bytes().unwrap()).err(), Some(Error::Invalid(0)));
 //! ```
 //!
 //! What `#[pun(..)]` says of a type, `valid(..)` of a field and `assert(..)` of a struct, are
-//! requirements: the loaders check them, and refuse a value that breaks one. A region does
+//! requirements: the loaders check them, and refuse a value that breaks one where the field is,
+//! or where the value is. A region does
 //! not check them when it builds or edits a value: like a field of a struct that safe code can
 //! write, a value of a region may not meet them, and nothing relies on it; such a value is saved
 //! by [`Region::as_bytes`] and refused when loaded.
@@ -251,7 +252,7 @@
 //!
 //! let backwards = Region::new(Span::new(2, 1)); // built: rules are not checked here
 //! let bytes = backwards.as_bytes().unwrap();
-//! assert_eq!(Region::<Span>::from_bytes(bytes).err(), Some(Error::Invalid));
+//! assert_eq!(Region::<Span>::from_bytes(bytes).err(), Some(Error::Invalid(0)));
 //! assert!(Region::<Span>::from_bytes(Region::new(Span::new(1, 2)).as_bytes().unwrap()).is_ok());
 //! ```
 //!
@@ -259,16 +260,15 @@
 //!
 //! [`Region::as_bytes`] returns the compact image, borrowed: the bytes a deep copy writes, which
 //! a region is until it is edited. Save an edited region by copying it first:
-//! `Region::new(&*r).as_bytes()`. [`Region::from_bytes`] copies and checks bytes; [`view`]
+//! `Region::new(&*r).as_bytes()`. [`Region::from_bytes`] checks and copies bytes; [`view`]
 //! checks a slice aligned as a region is (as a `u64`: 8 bytes on x86-64, 4 on `i686`) and reads
-//! it in place. Checking accepts exactly the compact images of valid values, without panics, and
-//! takes no memory but the stack: `puns` checks every value and follows every pointer to its
-//! target, then a walk requires each target where a deep copy puts it, so that the value is a
-//! tree whose parts do not overlap, as a region is. `puns` follows pointers at most
-//! [`puns::AIM_DEPTH`] (64) deep, one behind another, and recurses once for each: bytes that
-//! nest deeper are [`Error::Limit`], which says nothing of them. An [`Error`] says that the
-//! bytes are not such an image, that they nest too deep, or that they do not fit the storage,
-//! not where. For bytes that are
+//! it in place. Checking accepts exactly the compact images
+//! of valid values, in one pass, without recursion or panics; an [`Error`] says where the
+//! bytes went wrong, or that a valid image does not fit the storage. Checking keeps the
+//! pointers still to visit in memory that grows with the nesting of the data: [`view_with`] and
+//! [`Region::from_bytes_with`] take it from the caller, as a slice of [`Pending`]
+//! (`bytes.len() / 4` entries are always enough, `/ 2` with 2-byte pointers), and say if it
+//! runs out. For bytes that are
 //! trusted, or checked by the caller, [`Region::from_bytes_unchecked`] and [`view_unchecked`]
 //! skip the check and are `unsafe`. The bytes hold the layout of the target, its values in the byte order of their
 //! types, and distances and lengths as their [`Offset`] writes them (native-endian for `i16`,
@@ -334,9 +334,10 @@
 //! assert_eq!(*Region::new(&*moved), *moved); // the same value, on the heap
 //! ```
 //!
-//! The default feature `alloc` provides the [`Heap`]. Without it the crate needs no allocator: a
-//! region names its storage (`Region<T, Inline<N>>`); everything else is the same, loading
-//! included, which takes no memory.
+//! The default feature `alloc` provides the [`Heap`]. Without it the crate needs no allocator:
+//! a region names its storage (`Region<T, Inline<N>>`), and `from_bytes` and [`view`] are not
+//! available, while [`Region::as_bytes`], [`Region::from_bytes_with`] and [`view_with`], which
+//! take the memory for checking from the caller, are.
 //!
 //! # Safety model
 //!
@@ -355,7 +356,7 @@
 //!
 //! What [`puns`] makes of a value that holds a `Near` keeps all of this: it reads such a value
 //! as plain data, makes none by value and no `&mut` to one, and makes a reference to one only
-//! once it checked its targets, which `Deref` then reads.
+//! once it checked its pointees, which `Deref` then reads.
 //!
 //! Stored types must be no more aligned than a `u64` (the words of a region's memory: 8 bytes on
 //! x86-64, 4 on `i686`), and have a non-zero size and no drop glue (checked at compile time). A region holds at most what the pointers of its root reach (2 GiB with the
@@ -375,7 +376,9 @@ mod near;
 mod region;
 mod storage;
 
-pub use bytes::{Error, view, view_unchecked};
+#[cfg(feature = "alloc")]
+pub use bytes::view;
+pub use bytes::{Error, view_unchecked, view_with};
 pub use edit::{Handle, ListEdit, Old, OptionEdit, Plain, PlainEdit, StrEdit};
 pub use flat::{Emit, Flat};
 pub use near::{Near, Offset};
@@ -469,6 +472,35 @@ pub use nearest_derive::flat;
 /// numbers of a fixed byte order ([`puns::num`]) and the `Pun` of `#[pun(..)]` are those of the
 /// version that `nearest` uses.
 pub use puns;
+/// One entry of scratch memory for checking bytes: a pointer still to check.
+///
+/// [`view_with`] and [`Region::from_bytes_with`] take a slice of them. `bytes.len() / 4` entries
+/// are enough for any bytes (`bytes.len() / 2` with 2-byte pointers, `Near<_, i16>`): each entry
+/// waits for a pointer of its own in the image. Most data needs far fewer, or none: the check
+/// follows pointers in place, a few deep, and keeps in scratch the pointers that wait past those.
+/// An entry is 24 bytes on a 64-bit target, 12 on a 32-bit one.
+///
+/// ```
+/// use nearest::{Error, Near, Pending, Region, flat};
+///
+/// #[flat]
+/// #[derive(Debug, PartialEq)]
+/// enum Expr { Lit(i64), Neg(Near<Expr>) }
+///
+/// let mut r = Region::new(Expr::Lit(1));
+/// for _ in 0..8 {
+///   r.edit().update(Expr::neg); // one pointer deeper
+/// }
+/// let compact = Region::new(&*r);
+/// let bytes = compact.as_bytes().unwrap();
+/// let mut scratch = [Pending::default(); 8];
+/// let back = Region::<Expr>::from_bytes_with(bytes, &mut scratch)?;
+/// assert_eq!(*back, *r);
+/// // Too little scratch is not an invalid image: the check could not finish.
+/// assert_eq!(Region::<Expr>::from_bytes_with(bytes, &mut []).err(), Some(Error::ScratchFull));
+/// # Ok::<(), nearest::Error>(())
+/// ```
+pub use puns::Pending;
 pub use region::Region;
 #[cfg(feature = "alloc")]
 pub use storage::Heap;
@@ -509,7 +541,6 @@ pub type Edit<'e, T> = <T as Flat>::Edit<'e>;
 pub mod __private {
   use crate::{Emit, Flat, Near, Offset};
   pub use crate::{
-    bytes::Compact,
     edit::Raw,
     flat::{Buf, Sink, fits, make},
     near::Packed,

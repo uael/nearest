@@ -85,17 +85,12 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let name = &input.ident;
   let vis = &input.vis;
   let mut generics = input.generics.clone();
-  // Every type parameter is `Flat`, as the user wrote it or as added here: a parameter that a
-  // value points at is bounded by the user for the impls of `core` that a derive writes, such as
-  // `Debug`, since `Deref` of a pointer requires it, and a second bound would repeat it.
-  let flat_params: Vec<_> = input
-    .generics
-    .type_params()
-    .map(|p| &p.ident)
-    .filter(|id| !has_flat(&input.generics, id))
-    .collect();
-  for id in &flat_params {
-    generics.make_where_clause().predicates.push(parse_quote!(#id: ::nearest::Flat));
+  // Every type parameter is `Flat`, added to the bounds that the user wrote on it: a parameter
+  // that a value points at may be bounded by the user (`T: Pun`, for the impls of `core` that a
+  // derive writes, such as `Debug`, since `Deref` of a pointer requires it), and a type bounded in
+  // two places is one that clippy sees twice.
+  for param in generics.type_params_mut() {
+    param.bounds.push(parse_quote!(::nearest::Flat));
   }
   let (impl_g, ty_g, where_c) = generics.split_for_impl();
   let self_ty = quote!(#name #ty_g);
@@ -105,8 +100,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let mut handle_g = generics.clone();
   handle_g.params.insert(0, GenericParam::Lifetime(parse_quote!(#e)));
   let (h_impl, h_ty, h_where) = handle_g.split_for_impl();
-  let [sink, at, buf, base, d, ck] =
-    ["sink", "at", "buf", "base", "d", "ck"].map(|s| Ident::new(s, Span::mixed_site()));
+  let [sink, at, buf, base, d] =
+    ["sink", "at", "buf", "base", "d"].map(|s| Ident::new(s, Span::mixed_site()));
   let np = quote!(::nearest::__private);
   let pin = quote!(::core::pin::Pin);
   let handle = format_ident!("__NearestEdit");
@@ -252,8 +247,8 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // What `edit` holds besides building the handle: for an enum, a closure per variant with
   // fields that builds it, never called, which tells the dead-code lint that the variant is
   // built (by its constructor, which it cannot see through `make`).
-  // The bodies of `store`, `shift` and `compact`, and the types of all fields.
-  let (built, store, shift, compact) = match &input.data {
+  // The bodies of `store` and `shift`, and the types of all fields.
+  let (built, store, shift) = match &input.data {
     Data::Union(u) => {
       return Err(Error::new(u.union_token.span, "`#[flat]` does not support unions"));
     }
@@ -300,7 +295,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         quote!(),
         quote!(#(::nearest::Flat::store(&self.#members, #sink, #at + #offs);)*),
         quote!(#(<#tys as ::nearest::Flat>::shift(#base, #at + #offs, #d);)*),
-        quote!(#(<#tys as ::nearest::Flat>::compact(#ck, #at + #offs)?;)*),
       )
     }
     Data::Enum(data) => {
@@ -312,7 +306,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       }
       let mut_name = format_ident!("{name}Mut");
       let (mut built, mut views, mut view_arms) = (vec![], vec![], vec![]);
-      let (mut store_arms, mut shift_arms, mut compact_arms) = (vec![], vec![], vec![]);
+      let (mut store_arms, mut shift_arms) = (vec![], vec![]);
       let mut ctor_names = vec![];
       let (mut pin_variants, mut pin_arms) = (vec![], vec![]);
       for (i, v) in data.variants.iter().enumerate() {
@@ -380,9 +374,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         });
         shift_arms
           .push(quote!(#tag => { #(<#tys as ::nearest::Flat>::shift(#base, #at + #offs, #d);)* }));
-        compact_arms.push(quote! {
-          #tag => { #(<#tys as ::nearest::Flat>::compact(#ck, #at + #offs)?;)* }
-        });
         let doc = format!("Builds `{name}::{vname}` from its fields, in declaration order.");
         let tag_emit = quote!(::nearest::Emit::<u8>::emit(#tag, #sink, #at););
         let cname = renames[i].clone().unwrap_or_else(|| snake(vname));
@@ -476,13 +467,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
             _ => {}
           }
         },
-        // The tag of a value that `puns` found valid.
-        quote! {
-          match #ck.tag(#at)? {
-            #(#compact_arms)*
-            _ => {}
-          }
-        },
       )
     }
   };
@@ -507,17 +491,16 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // The type is a `Pun` type: its layout and its valid values, for `puns` (the crate that
   // `nearest` re-exports), which checks loaded bytes, reads a value as another type, and reads
   // the `#[pun(..)]` attributes of the user. First, so that those come after the derive. Bounded
-  // as the impls of this macro are, every type parameter `Flat` (so `Pun`), and by nothing that
+  // by every type parameter `Pun`, which is what a layout needs, and what gives the type an
+  // identity (`puns` reads a pointer to it as the same pointer only then), and by nothing that
   // the derive would find from the fields: through pointers, the bounds of types that hold each
-  // other would go round in a circle.
+  // other would go round in a circle. So a type that reads its pointees (`Deref`, in an impl that
+  // the user derives) needs its parameters `Pun`, not `Flat`.
   // `puns` takes `bound` only where there are bounds to write: an enum without fields has no
   // type parameter.
-  let bound = input
-    .generics
-    .type_params()
-    .next()
-    .is_some()
-    .then(|| quote!(, bound(#(#flat_params: ::nearest::Flat),*)));
+  let type_params = input.generics.type_params().map(|p| &p.ident).collect::<Vec<_>>();
+  let bound =
+    (!type_params.is_empty()).then(|| quote!(, bound(#(#type_params: ::nearest::puns::Pun),*)));
   input.attrs.insert(0, parse_quote!(#[pun(crate = ::nearest::puns #bound)]));
   input.attrs.insert(0, parse_quote!(#[derive(::nearest::puns::Pun)]));
   // A pinned value must keep its pointers, so the type is `Unpin` exactly when its fields are.
@@ -577,7 +560,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
           edit
         }
         #reach
-        const POINTERS: bool = false #(|| <#field_tys as ::nearest::Flat>::POINTERS)*;
         unsafe fn edit<#lt, #e: #lt>(
           #buf: *mut #np::Buf,
           #at: usize,
@@ -593,15 +575,6 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
         }
         unsafe fn shift(#base: *mut u8, #at: usize, #d: isize) {
           unsafe { #shift }
-        }
-        #[inline]
-        fn compact(
-          #ck: &mut #np::Compact<'_>,
-          #at: usize,
-        ) -> ::core::result::Result<(), ::nearest::Error> {
-          #np::fits::<Self>();
-          #compact
-          ::core::result::Result::Ok(())
         }
       }
       impl #impl_g #self_ty #where_c {
@@ -795,23 +768,4 @@ fn snake(variant: &Ident) -> Ident {
     _ if s == "gen" || syn::parse_str::<Ident>(&s).is_err() => Ident::new_raw(&s, variant.span()),
     _ => Ident::new(&s, variant.span()),
   }
-}
-
-/// Returns whether `generics` bound the type parameter `id` by `Flat`, as `<T: Flat>` or
-/// `where T: Flat`. The bound is read by its last name, as written: `Flat` or `nearest::Flat`.
-fn has_flat(generics: &syn::Generics, id: &Ident) -> bool {
-  let flat = |bounds: &syn::punctuated::Punctuated<syn::TypeParamBound, syn::Token![+]>| {
-    bounds.iter().any(|bound| {
-      matches!(bound, syn::TypeParamBound::Trait(bound)
-        if bound.path.segments.last().is_some_and(|segment| segment.ident == "Flat"))
-    })
-  };
-  generics.type_params().any(|param| param.ident == *id && flat(&param.bounds))
-    || generics.where_clause.as_ref().is_some_and(|clause| {
-      clause.predicates.iter().any(|predicate| {
-        matches!(predicate, syn::WherePredicate::Type(predicate)
-          if matches!(&predicate.bounded_ty, syn::Type::Path(ty) if ty.path.is_ident(id))
-            && flat(&predicate.bounds))
-      })
-    })
 }

@@ -58,9 +58,9 @@ fn invalid_bytes_are_an_error() {
   // The same error as `from_bytes`, as a custom error of the format.
   let cut = &bytes[..bytes.len() - 1];
   let err = Region::<Tree>::from_bytes(cut).unwrap_err();
-  assert_eq!(err, nearest::Error::Invalid);
+  assert!(matches!(err, nearest::Error::Invalid(_)));
   assert_de_tokens_error::<Region<Tree>>(&[Token::Bytes(cut)], &err.to_string());
-  assert_de_tokens_error::<Region<Tree>>(&[Token::Bytes(&[])], "invalid region bytes");
+  assert_de_tokens_error::<Region<Tree>>(&[Token::Bytes(&[])], "invalid region bytes at offset 0");
   assert_de_tokens_error::<Region<Tree>>(
     &[Token::Str("x")],
     "invalid type: string \"x\", expected the bytes of a region",

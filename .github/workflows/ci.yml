@@ -211,7 +211,7 @@ jobs:
             tests: >-
               --test inline -- --exact
               a_panic_in_a_list_operation_leaves_a_valid_list a_panic_leaves_the_old_value a_region_is_aligned_as_its_words a_region_moves_with_its_storage
-              a_value_overwrites_every_pointer values_nested_deeper_than_puns_follows_are_a_limit build_and_read builders_compose
+              a_value_overwrites_every_pointer a_very_deep_value_is_checked_without_recursion build_and_read builders_compose
               builders_write_the_compact_image bytes_round_trip compaction constructors_box_pointer_fields
               enum_handles enums_generics_and_nesting every_emit_source every_primitive
               full_inline_storage
@@ -227,7 +227,7 @@ jobs:
               --skip a_region_is_aligned_as_its_words
               --skip a_region_moves_with_its_storage
               --skip a_value_overwrites_every_pointer
-              --skip values_nested_deeper_than_puns_follows_are_a_limit
+              --skip a_very_deep_value_is_checked_without_recursion
               --skip build_and_read
               --skip builders_compose
               --skip builders_write_the_compact_image
@@ -294,7 +294,7 @@ jobs:
             tests: >-
               --test inline -- --exact
               a_panic_in_a_list_operation_leaves_a_valid_list a_panic_leaves_the_old_value a_region_is_aligned_as_its_words a_region_moves_with_its_storage
-              a_value_overwrites_every_pointer values_nested_deeper_than_puns_follows_are_a_limit build_and_read builders_compose
+              a_value_overwrites_every_pointer a_very_deep_value_is_checked_without_recursion build_and_read builders_compose
               builders_write_the_compact_image bytes_round_trip compaction constructors_box_pointer_fields
               enum_handles enums_generics_and_nesting every_emit_source every_primitive
               full_inline_storage
@@ -311,7 +311,7 @@ jobs:
               --skip a_region_is_aligned_as_its_words
               --skip a_region_moves_with_its_storage
               --skip a_value_overwrites_every_pointer
-              --skip values_nested_deeper_than_puns_follows_are_a_limit
+              --skip a_very_deep_value_is_checked_without_recursion
               --skip build_and_read
               --skip builders_compose
               --skip builders_write_the_compact_image

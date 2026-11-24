@@ -3,7 +3,6 @@ use core::{
   fmt,
   hash::{Hash, Hasher},
   marker::{PhantomData, PhantomPinned},
-  mem::offset_of,
   num::NonZero,
   ops::Deref,
   panic::{RefUnwindSafe, UnwindSafe},
@@ -48,14 +47,10 @@ use crate::{
 #[pun(bound(T: Pointee<O> + Pun, O: Pun))]
 #[repr(transparent)]
 pub struct Near<T: ?Sized, O: Offset = i32> {
-  /// The distance from the pointer to the place of its target where it aims, an eager aim of
-  /// `puns` at the target, which starts the lead of the target before that place (`aim`). An
-  /// `InPlace`, so that a `Near` has no constructor. `puns` reads the target (`target`,
-  /// `target_mut`).
-  #[pun(aim(
-    target: <T as Pointee<O>>::Target =
-      signed(offset_of!(Self, off), size_of::<O>(), O::ENDIAN) - <T as Pointee<O>>::LEAD
-  ))]
+  /// The distance from the pointer to its pointee, an eager aim of `puns` at the pointee that
+  /// [`Pointee`] maps `T` to (`aim`), as the layout of `O::NonZero` says. An `InPlace`, so that a
+  /// `Near` has no constructor. `puns` reads the pointee (`target`, `target_mut`).
+  #[pun(pointer(mut target: <T as Pointee<O>>::Target = off as u128))]
   pub(crate) off: InPlace<O::NonZero>,
   _t: PhantomData<T>,
   _pin: PhantomPinned,
@@ -111,58 +106,57 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// assert!(bytes.windows(6).any(|w| w == [2, 0, 0, 0, b'a', b'b']));
 /// ```
 ///
-/// An `Offset` of yours is an integer in two's complement of a byte order that it tells
-/// ([`ENDIAN`](Offset::ENDIAN)), in which the loaders read it. Its [`NonZero`](Offset::NonZero) is
-/// a [`Pun`] type, which `puns` checks the offset of a `Near` as.
+/// An `Offset` of yours is an integer in two's complement, as its layout as a [`Pun`] type says
+/// (`#[flat]` derives it): a struct around one of the offsets above, here with a smaller
+/// [`LIMIT`](Offset::LIMIT). Its [`NonZero`](Offset::NonZero) is the same integer without zero,
+/// as its layout says too, which `puns` checks the offset of a `Near` as. An offset of another byte
+/// order is one around an offset of [`puns::num`], with a `NonZero` around its `NonZero`.
 ///
 /// ```
 /// use std::num::NonZero;
 ///
-/// use nearest::{
-///   Near, Offset, Region, flat,
-///   puns::{Pun, layout::Endian},
-/// };
+/// use nearest::{Near, Offset, Region, flat, puns::Pun};
 ///
-/// /// An `i32` stored little-endian, whatever the target.
+/// /// An `i32` of the target, for regions of at most 1 MiB.
 /// #[flat]
 /// #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// #[repr(transparent)]
-/// struct I32Le(i32);
+/// struct Small(i32);
 ///
-/// /// An `I32Le` that is not zero.
+/// /// A `Small` that is not zero.
 /// #[derive(Clone, Copy, Pun)]
 /// #[pun(crate = nearest::puns)]
 /// #[repr(transparent)]
-/// struct NonZeroI32Le(NonZero<i32>);
+/// struct NonZeroSmall(NonZero<i32>);
 ///
-/// impl From<NonZeroI32Le> for I32Le {
-///   fn from(n: NonZeroI32Le) -> Self {
-///     I32Le(n.0.get())
+/// impl From<NonZeroSmall> for Small {
+///   fn from(n: NonZeroSmall) -> Self {
+///     Small(n.0.get())
 ///   }
 /// }
 ///
-/// // SAFETY: `I32Le` is an `i32` whose bytes are those of the little-endian integer, which
-/// // `to_isize` reads and `from_isize` writes, and `NonZeroI32Le` the same bytes when not zero;
-/// // swapping bytes keeps zero zero, so the integer 0 is the zero bytes, which are `None` for
-/// // `Option<NonZero<i32>>`.
-/// unsafe impl Offset for I32Le {
-///   type NonZero = NonZeroI32Le;
-///   const ENDIAN: Endian = Endian::Little;
+/// // SAFETY: `Small` is an `i32`, as its layout says, which `to_isize` reads and `from_isize`
+/// // writes; `NonZeroSmall` is the same bytes when not zero, a `NonZero<i32>`, so the integer 0 is
+/// // the zero bytes, which are `None` for `Option<NonZeroSmall>`. `from_isize` is called within
+/// // `LIMIT`, which an `i32` holds.
+/// unsafe impl Offset for Small {
+///   type NonZero = NonZeroSmall;
+///   const LIMIT: u64 = 1 << 20;
 ///   fn from_isize(n: isize) -> Self {
-///     I32Le((n as i32).to_le())
+///     Small(n as i32)
 ///   }
 ///   fn to_isize(self) -> isize {
-///     i32::from_le(self.0) as isize
+///     self.0 as isize
 ///   }
 /// }
 ///
 /// #[flat]
-/// struct Table { name: Near<str, I32Le>, rows: Near<[u16], I32Le> }
+/// struct Table { name: Near<str, Small>, rows: Near<[u16], Small> }
 ///
 /// let r = Region::new(Table::new("ab", [1, 2]));
 /// assert_eq!((&*r.name, &r.rows[..]), ("ab", &[1, 2][..]));
 /// let bytes = r.as_bytes().unwrap();
-/// assert!(bytes.windows(6).any(|w| w == [2, 0, 0, 0, b'a', b'b']));
+/// assert!(bytes.windows(6).any(|w| w[..4] == 2i32.to_ne_bytes() && w[4..] == *b"ab"));
 /// ```
 ///
 /// # Valid offsets
@@ -176,19 +170,22 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 ///
 /// A region reads and writes the distances and lengths of an `O` only through `from_isize` and
 /// `to_isize`, and reads stored ones as values of `Self` and [`NonZero`](Offset::NonZero) made of
-/// bytes it checked (see Valid offsets) or wrote; its loaders read them as integers of the width
-/// and the byte order of `Self`. It trusts that:
+/// bytes it checked (see Valid offsets) or wrote; its loaders, which are `puns`, read them as their
+/// layouts as [`Pun`] types say. It trusts that:
 ///
 /// - **Two's complement.** The bytes of every `Self` are a signed integer in two's complement,
-///   `size_of::<Self>()` bytes in the byte order [`ENDIAN`](Offset::ENDIAN), and `to_isize` is
-///   that integer converted as `as` converts (it truncates an integer wider than `isize`). So
-///   every bit pattern of `size_of::<Self>()` bytes is a valid `Self`, and `Self` has no padding.
+///   `size_of::<Self>()` bytes, which the layout of `Self` is: a scalar whose `Spec` says its byte
+///   order and that it is signed (as `i32` and the offsets of [`puns::num`]), or a
+///   `#[repr(transparent)]` struct around one. `to_isize` is that integer converted as `as`
+///   converts (it truncates an integer wider than `isize`). So every bit pattern of
+///   `size_of::<Self>()` bytes is a valid `Self`, and `Self` has no padding.
 /// - **Round trip.** `from_isize(n)` is the `Self` whose integer is `n`, for every `n: isize` from
 ///   `-LIMIT` to `LIMIT`; so `from_isize(0)` is all zero bytes.
 /// - **`NonZero`** is `Self` without zero: its valid values are the bit patterns of `Self` other
-///   than all zero bytes, it has the size and the alignment of `Self`, `Option<Self::NonZero>`
-///   has the size of `Self` with `None` all zero bytes (as for a `#[repr(transparent)]` wrapper
-///   of a [`core::num::NonZero`]), and `Into<Self>` keeps the bytes.
+///   than all zero bytes, its layout is the integer of `Self` without zero (the same byte order
+///   and sign), it has the size and the alignment of `Self`, `Option<Self::NonZero>` has the size
+///   of `Self` with `None` all zero bytes (as for a `#[repr(transparent)]` wrapper of a
+///   [`core::num::NonZero`]), and `Into<Self>` keeps the bytes.
 /// - **Plain functions.** `from_isize` and `to_isize` depend only on their argument, never panic
 ///   (`from_isize` is only called within `LIMIT`), and do nothing else.
 ///
@@ -197,13 +194,11 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// [`LIMIT`](Offset::LIMIT) is a multiple of 8 that the integers of `Self` reach.
 pub unsafe trait Offset: Flat + Copy + fmt::Debug + Eq + Ord + Hash {
   /// The stored form: a `Self` that is not zero, whose layout as a [`Pun`] type is what `puns`
-  /// checks of the offset of a `Near`.
+  /// checks and reads of the offset of a `Near`.
   type NonZero: Copy + Pun + Into<Self> + Send + Sync + UnwindSafe + RefUnwindSafe;
   /// The largest region whose distances and lengths fit, a multiple of 8, whatever the target.
   /// By default, the largest multiple of 8 that a signed integer of the size of `Self` holds.
   const LIMIT: u64 = (1 << (8 * size_of::<Self>() - 1)) - 8;
-  /// The byte order of the integer, in which the loaders read it.
-  const ENDIAN: Endian;
   /// The `Self` of `n`, which is within `LIMIT` of 0.
   fn from_isize(n: isize) -> Self;
   /// The integer of `self`.
@@ -241,7 +236,6 @@ macro_rules! offsets {
     #[expect(clippy::cast_possible_truncation, reason = "values within a region fit both")]
     unsafe impl Offset for $t {
       type NonZero = NonZero<$t>;
-      const ENDIAN: Endian = Endian::NATIVE;
       #[inline]
       fn from_isize(n: isize) -> Self {
         n as Self
@@ -255,46 +249,45 @@ macro_rules! offsets {
 }
 offsets!(i16, i32, i64);
 
-/// A `T` of alignment 1: the [`NonZero`](Offset::NonZero) of the offsets of a fixed byte order
-/// of [`puns::num`], which are byte arrays, and the capacity and the length of a list or a text as
-/// `puns` reads them (`aim::Block`). Packing keeps the niche of a [`core::num::NonZero`], so
-/// `Option` of it has its size, `None` being zero. It has no use of its own.
+/// A `T` of alignment 1 that holds an integer of the byte order of the offset `O`: the
+/// [`NonZero`](Offset::NonZero) of the offsets of a fixed byte order of [`puns::num`], which are
+/// byte arrays. Packing keeps the niche of a [`core::num::NonZero`], so `Option` of it has its
+/// size, `None` being zero. It has no use of its own.
 #[doc(hidden)]
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
-pub struct Packed<T: Copy>(T);
-
-// SAFETY: a packed `O`: its size, initialized bytes (an `Offset` has no padding, and every bit
-// pattern is one), all of which `SPEC` accepts. It holds no `UnsafeCell`.
-unsafe impl<O: Offset> Scalar for Packed<O> {
-  const SPEC: Spec = Spec::any::<Self>();
-}
+pub struct Packed<T: Copy, O>(T, PhantomData<O>);
 
 macro_rules! packed {
-  ($($raw:ident $bits:ident;)+) => {$(
+  ($($raw:ident $bits:ident $name:ident $endian:ident;)+) => {$(
     // SAFETY: a packed `NonZero<$raw>`: its size, initialized bytes that are never all zero, which
-    // `SPEC` accepts, every bit pattern but zeros (a set that the byte order does not change). It
-    // holds no `UnsafeCell`. Its bytes are a `NonZero<$raw>` (`stored_as`), whose niche is the one
-    // of `Option` of it: `None` is zero, which `puns` assumes and checks when compiling, since
-    // `core` does not document the niche of a packed struct.
-    unsafe impl Scalar for Packed<NonZero<$raw>> {
-      const SPEC: Spec = Spec::ranges::<Self>(Endian::Little, &[(1, $bits::MAX as u128)])
+    // `SPEC` accepts, every bit pattern but zeros (a set that the byte order does not change), the
+    // signed integer of the byte order of `$name`. It holds no `UnsafeCell`. Its bytes are a
+    // `NonZero<$raw>` (`stored_as`), whose niche is the one of `Option` of it: `None` is zero,
+    // which `puns` assumes and checks when compiling, since `core` does not document the niche of
+    // a packed struct.
+    unsafe impl Scalar for Packed<NonZero<$raw>, $name> {
+      const SPEC: Spec = Spec::ranges::<Self>(Endian::$endian, &[(1, $bits::MAX as u128)])
+        .signed()
         .stored_as::<NonZero<$raw>>();
     }
   )+};
 }
 
 packed! {
-  i16 u16;
-  i32 u32;
-  i64 u64;
+  i16 u16 i16le Little;
+  i16 u16 i16be Big;
+  i32 u32 i32le Little;
+  i32 u32 i32be Big;
+  i64 u64 i64le Little;
+  i64 u64 i64be Big;
 }
 
 macro_rules! fixed {
-  ($($name:ident: $raw:ident $endian:ident;)+) => {$(
-    impl From<Packed<NonZero<$raw>>> for $name {
+  ($($name:ident: $raw:ident;)+) => {$(
+    impl From<Packed<NonZero<$raw>, $name>> for $name {
       #[inline]
-      fn from(value: Packed<NonZero<$raw>>) -> Self {
+      fn from(value: Packed<NonZero<$raw>, $name>) -> Self {
         // The bytes as they are in memory: the integer is only what `to_isize` makes of them.
         Self::from_bytes({ value.0 }.get().to_ne_bytes())
       }
@@ -302,19 +295,19 @@ macro_rules! fixed {
 
     // SAFETY:
     // - a byte array, whose bytes are the integer in two's complement in the byte order of the
-    //   type (`puns::num`), which `get` reads and `to_isize` converts with `as`: every bit
-    //   pattern is a value, and it has no padding;
+    //   type, as its layout says (`puns::num`), which `get` reads and `to_isize` converts with
+    //   `as`: every bit pattern is a value, and it has no padding;
     // - `new` writes the bytes of the integer in that byte order and `get` reads them back: a
     //   round trip for every integer of its size, which those within `LIMIT` are;
     // - `NonZero` is a `NonZero` of the size of the offset, packed: its size, the alignment of
-    //   the offset (1), valid for every bit pattern but zeros; `Option` of it has its size (a
-    //   `const` assertion of `offset`, where a region uses it), so `None` is the only bit pattern
-    //   left, zeros. `From` keeps the bytes;
+    //   the offset (1), valid for every bit pattern but zeros, the integer of the byte order of
+    //   the offset (`packed!`); `Option` of it has its size (a `const` assertion of `offset`,
+    //   where a region uses it), so `None` is the only bit pattern left, zeros. `From` keeps the
+    //   bytes;
     // - `from_isize` and `to_isize` are conversions between integers.
     #[expect(clippy::cast_possible_truncation, reason = "values within a region fit both")]
     unsafe impl Offset for $name {
-      type NonZero = Packed<NonZero<$raw>>;
-      const ENDIAN: Endian = Endian::$endian;
+      type NonZero = Packed<NonZero<$raw>, $name>;
       #[inline]
       fn from_isize(n: isize) -> Self {
         Self::new(n as $raw)
@@ -328,12 +321,12 @@ macro_rules! fixed {
 }
 
 fixed! {
-  i16le: i16 Little;
-  i16be: i16 Big;
-  i32le: i32 Little;
-  i32be: i32 Big;
-  i64le: i64 Little;
-  i64be: i64 Big;
+  i16le: i16;
+  i16be: i16;
+  i32le: i32;
+  i32be: i32;
+  i64le: i64;
+  i64be: i64;
 }
 
 impl<T: Flat, O: Offset> Near<T, O> {
@@ -377,9 +370,9 @@ impl<T: Flat, O: Offset> Near<T, O> {
   #[must_use]
   pub const fn as_pin_mut(self: Pin<&mut Self>) -> Pin<&mut T> {
     offset::<O>();
-    // SAFETY: A `Near` is in a region, which holds its target at its offset, in the buffer that
+    // SAFETY: A `Near` is in a region, which holds its pointee at its offset, in the buffer that
     // the `&mut` comes from, so it has its provenance under tree borrows, as `target_mut`
-    // requires ("Reading a target" in `aim`). A `Near` owns its target alone, and a pinned view
+    // requires ("Reading a pointee" in `aim`). A `Near` owns its target alone, and a pinned view
     // borrows the handle that it comes from, so the target is reached only through the result,
     // and nothing grows the buffer, which would move it, while the pin lives. The pointer is not
     // moved out of the pin.
@@ -423,42 +416,25 @@ impl<T: Flat, O: Offset> Near<[T], O> {
   #[must_use = "the iterator does nothing unless it is used"]
   pub fn iter_pin_mut(self: Pin<&mut Self>) -> impl ExactSizeIterator<Item = Pin<&mut T>> {
     offset::<O>();
-    // SAFETY: As for `Near::as_pin_mut`, the target is a `ListBlock`; the elements are disjoint
-    // and stay where they are.
+    // SAFETY: As for `Near::as_pin_mut`; the elements are disjoint and stay where they are.
     unsafe {
-      (Self::target_mut(Pin::get_unchecked_mut(self)).data.iter_mut())
+      (Self::target_mut(Pin::get_unchecked_mut(self)).iter_mut())
         .map(|element| Pin::new_unchecked(element))
     }
   }
 }
 
-impl<T: Flat, O: Offset> Deref for Near<T, O> {
+/// The pointee: a `T`, a slice or a `str`, read by `puns` (`aim`). It needs only what that read
+/// needs: that a `Near<T, O>` is a [`Pun`] type, which a `T: Pun` is enough for.
+impl<T: ?Sized + Pointee<O> + Pun, O: Offset> Deref for Near<T, O> {
   type Target = T;
+  #[inline]
   fn deref(&self) -> &T {
-    offset::<O>();
-    // SAFETY: A `&Near` exists only inside a region, which holds its target at its offset, or in
-    // bytes that `puns` checked with its target, and borrowed with it, so its target is valid and
+    // SAFETY: A `&Near` exists only inside a region, which holds its pointee at its offset, or in
+    // bytes that `puns` checked with its pointee, and borrowed with it, so its pointee is valid and
     // not written while the `&Near` lives, and the reference has the provenance of the buffer
-    // under tree borrows, as `target` requires ("Reading a target" in `aim`).
+    // under tree borrows, as `target` requires ("Reading a pointee" in `aim`).
     unsafe { Self::target(self) }
-  }
-}
-
-impl<T: Flat, O: Offset> Deref for Near<[T], O> {
-  type Target = [T];
-  fn deref(&self) -> &[T] {
-    offset::<O>();
-    // SAFETY: As above; the target is a `ListBlock`.
-    unsafe { &Self::target(self).data }
-  }
-}
-
-impl<O: Offset> Deref for Near<str, O> {
-  type Target = str;
-  fn deref(&self) -> &str {
-    offset::<O>();
-    // SAFETY: As above; the target is a `TextBlock`, whose data a `str` is.
-    unsafe { &Self::target(self).data }
   }
 }
 
@@ -475,7 +451,7 @@ impl<O: Offset> Deref for Near<str, O> {
 /// for x in &r.items { n += u32::from(*x) }
 /// assert_eq!(n, 294);
 /// ```
-impl<'a, T: Flat, O: Offset> IntoIterator for &'a Near<[T], O> {
+impl<'a, T: Pun, O: Offset> IntoIterator for &'a Near<[T], O> {
   type Item = &'a T;
   type IntoIter = slice::Iter<'a, T>;
   fn into_iter(self) -> Self::IntoIter {
