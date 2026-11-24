@@ -1,3 +1,12 @@
+error[E0308]: mismatched types
+ --> tests/compile-fail/near_construct.rs:5:30
+  |
+5 |   let _ = Near::<u32> { off: std::num::NonZero::new(4).unwrap(), _t: std::marker::PhantomData };
+  |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `InPlace<NonZero<i32>>`, found `NonZero<{integer}>`
+  |
+  = note: expected struct `InPlace<NonZero<i32>>`
+             found struct `NonZero<{integer}>`
+
 error: cannot construct `Near<u32>` with struct literal syntax due to private fields
  --> tests/compile-fail/near_construct.rs:5:11
   |

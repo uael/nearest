@@ -70,9 +70,7 @@ the target. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, `
 Hidden: `nearest::__private::{Raw, Buf, Sink, Compact, fits, make, Variant, Pointer}`, the
 plumbing of the macro; `__private::Packed<T>`, the `NonZero` of the offsets of `puns::num`, an
 associated type that must be public, and the length and capacity of a block as `puns` reads them;
-`__private::{Block, BlockHead, BlockLen, BlockData, NearOff}`, the target of a pointer to a list
-or a text and the field lists of the hand-written `Pun`s (see Pointers and `puns`), which public
-associated types name; the hidden items of `Flat` (`POINTERS`, `PLAIN`, `REACH`, `edit`, `store`,
+the hidden items of `Flat` (`POINTERS`, `PLAIN`, `REACH`, `edit`, `store`,
 `shift`, `compact`; `PLAIN` is not given: it is `Pun::LAYOUT.is_plain()` and no `POINTERS`) and
 `Emit` (`emit`, `plain`).
 Nothing else is public; do not add public items.
@@ -189,10 +187,10 @@ fixed order is a choice of the type, made where its bytes leave the machine.
 **Valid offsets.** A region holds only the `O`s that `from_isize` makes: `o` is valid when
 `from_isize(o.to_isize())` has the very bytes of `o` (and `|o.to_isize()| <= LIMIT`). By the
 contract, that is the two's complement integer of the width and the byte order of the offset,
-which `puns` reads from `size_of::<O>()` and `O::ENDIAN` as an `i128` (`aim::start` for an
-offset, `aim::len` for a length, never the layout of `O`, which for an offset of the user's may
-be a struct of a native integer), and the walk of a compact image the same way
-(`Compact::integer`). No distance or length past `LIMIT` is in bounds: the bytes are at most the
+which `puns` reads from `size_of::<O>()` and `O::ENDIAN` as an `i128` (the rules
+`signed(.., size_of::<O>(), O::ENDIAN)` of the aim of `Near` for an offset and of `aim::Block` for a
+length, never the layout of `O`, which for an offset of the user's may be a struct of a native
+integer), and the walk of a compact image the same way (`Compact::integer`). No distance or length past `LIMIT` is in bounds: the bytes are at most the
 limit of the root, at most the `LIMIT` of every pointer (`fits_behind`), so `puns` refuses it,
 the target or the elements not within the bytes. So an integer that does not fit `isize` (an
 `i64` of 2^32 + 8 on a 32-bit target), which `to_isize` truncates, is invalid: in 0.7.1 it was
@@ -206,34 +204,36 @@ bytes, so at most `GRAIN`; `NonZero` and `Option<NonZero>` of that size, `NonZer
 multiple of 8 that the integers of that size reach). Every function that reads or writes the
 bytes of an `O` calls it: `fits_behind`, `aim`, `read_len`, `Sink::link`, `Sink::write_len`,
 `Near::target`, `Near::target_mut`, `moved`, the `None` of `Option<Near>`, `Compact::integer`,
-and the operations of the aim of a `Near` (`aim::load`), which every layout that holds one
-evaluates. `LIMIT` defaults to `2^(8 * size - 1) - 8`, the largest multiple
+and the lead of the target of a `Near` (`aim::Pointee::LEAD`, through `fits_behind` for a list),
+which every layout that holds one evaluates. `LIMIT` defaults to `2^(8 * size - 1) - 8`, the largest multiple
 of 8 of a signed integer of that size (`iN::MAX & !7` for the three integers).
 
 ## Pointers and `puns`
 
-`aim.rs` implements `puns::Pun` by hand for the three pointers, `Near<T, O>`, `Near<[T], O>` and
-`Near<str, O>`: a struct of one field, the offset (`O::NonZero`, so zero is not a `Near`), whose
-one rule is an eager, thin aim (`puns::layout::Aim`, `Check::Eager`, `Metadata::Thin`) at the
-target, at the address of the pointer plus the offset (`Start::Stored`), sign-extended from the
-width and the byte order of `O`, minus the bytes of the target before the place where the pointer
-aims. Its `LAYOUT` evaluates `fits_behind::<T, O>()` (and so `fits::<T>()` and `offset::<O>()`;
-`offset::<O>()` for text): every layout that holds a pointer refuses at compile time a target that
-a region cannot hold. The targets:
+`Near<T, O>` derives `puns::Pun` (`near.rs`): a `repr(transparent)` struct of its offset, an
+`InPlace<O::NonZero>` (so zero is not a `Near`, and no code makes a `Near`), whose one rule is an
+eager, thin aim (`#[pun(aim(..))]`) at the target, `<T as Pointee<O>>::Target`, at the address of
+the pointer plus the offset, sign-extended from the width and the byte order of `O`
+(`signed(.., size_of::<O>(), O::ENDIAN)`), minus the bytes of the target before the place where the
+pointer aims (`Pointee::LEAD`). `aim::Pointee` maps the three pointers to their targets; its
+`LEAD` evaluates `fits_behind::<T, O>()` (and so `fits::<T>()` and `offset::<O>()`;
+`offset::<O>()` for text), so every layout that holds a pointer refuses at compile time a target
+that a region cannot hold. The targets:
 
-| Pointer | Target (`aim::Block`) | Before the place it aims at |
+| Pointer | Target (`Pointee::Target`) | Before the place it aims at (`LEAD`) |
 |---|---|---|
 | `Near<T, O>` | `T` | nothing |
 | `Near<[T], O>` | `ListBlock<T, O>`: capacity, length (`Packed<O>`), `[T]` | the capacity, `w` |
 | `Near<str, O>` | `TextBlock<O>`: length (`Packed<O>`), `str` | nothing |
 
-A target holds its own metadata (the aim is thin): a block holds the length of its data, and its
-`len` rule reads it in `O::ENDIAN`, its highest bit clear. Its capacity and its length are `O`s of
-alignment 1, so a block is aligned as its data and ends where its data ends: `puns` requires a
-target to end within the bytes at `size_of_val`, which would otherwise include padding after the
-last text or list of an image. The offsets of a block are those of `Shape`, a sized `repr(C)`
-mirror whose data is `[E; 0]` (`offset_of!`, no `Pun` bound: `Deref` of `Near<[T]>` has none). Its
-`Pun` is written by hand too: its fields, its `len` rule, the identity of its type.
+A target holds its own metadata (the aim is thin): a block (`aim::Block`, which derives `Pun`)
+holds the length of its data, and its `len` rule reads it as a signed integer in `O::ENDIAN`, so
+that a negative length fails. Its capacity and its length are `O`s of alignment 1, so a block is
+aligned as its data and ends where its data ends: `puns` requires a target to end within the
+bytes at `size_of_val`, which would otherwise include padding after the last text or list of an
+image. The offset of the data of a block is that of an empty array of its elements in the same
+block (`offset_of!`, which does not take an unsized field; no `Pun` bound: `Deref` of `Near<[T]>`
+has none).
 
 `#[flat]` derives `Pun` for the rest (see Generated code). `Option<Near<..>>` is the `Option` of
 the pointer, which `puns` lays out: as the `NonZero` of a native offset (`Pun::NULL_OPTIMIZED`,
@@ -379,7 +379,7 @@ Miri: assertions carry it. The assumptions, and what holds each:
 | The integer of an offset fits `isize` (`Near::target`, `aim`, `read_len`, `Near::list`) | Valid offsets: `puns` refuses an `O` whose target is not within the bytes, which one that does not round-trip is not, for every `Offset`; `integers_wider_than_isize_are_invalid` (Miri on `i686`), `offsets_that_from_isize_does_not_make_are_invalid` (every target); 16 bits: the same code, not run |
 | A region is at most `isize::MAX` bytes, so a distance fits `isize` (`distance`, `wrapping_offset`) | `limit` caps at `isize::MAX & !7`, from `isize::MAX` of the target |
 | `usize` is at least 16 bits (`limit`, positions) | Rust supports no narrower `usize`; built for `msp430` (and `puns`, whose assumptions of `usize` are in its crate docs, "Portability") |
-| The bytes of an offset are a two's complement integer in `O::ENDIAN`, which `to_isize` reads (the loaders read it so: `aim::start`, `aim::len`, `Compact::integer`) | the contract of `Offset` (`unsafe`); `Endian::NATIVE`, from the target, for `i16`, `i32`, `i64`; `contract` (`tests/width.rs`) for every offset of the tests, Miri on `i686` and `s390x` |
+| The bytes of an offset are a two's complement integer in `O::ENDIAN`, which `to_isize` reads (the loaders read it so: the rules of `Near` and `aim::Block`, `Compact::integer`) | the contract of `Offset` (`unsafe`); `Endian::NATIVE`, from the target, for `i16`, `i32`, `i64`; `contract` (`tests/width.rs`) for every offset of the tests, Miri on `i686` and `s390x` |
 | The first element of a list is at a position that is a multiple of `max(align_of::<T>(), w)` (the slice of `Near::list`, aligned for `T`) | `List::new` and `claim`; `tests/layouts.rs` under Miri on `i686` |
 | An image written with the offsets and the numbers of a fixed byte order is the same on every machine (`examples/ir.rs`, `ir.image`) | `tests/ir.rs` under Miri on `s390x` compares it byte for byte |
 | The byte order of `i16`, `i32`, `i64` and of stored numbers is the target's (`plain!`'s `from_ne_bytes`, the images) | no `unsafe` code depends on it; Miri on `s390x` runs the tests of the library, of offsets and of every storage big-endian; the tests write expected bytes with `to_ne_bytes` |
@@ -770,13 +770,14 @@ Files of `src/`:
   `List<O>`, `make`.
 - `edit.rs`: `Raw` (the core of every handle: `set`, `replace`, `update`, `swap_in`, `pin`),
   `Old`, `ListEdit`, `OptionEdit`, `StrEdit`.
-- `aim.rs`: a pointer as `puns` sees it: the operations of its aim (`load`, `start`, `len`), the
-  targets `Block`, `ListBlock`, `TextBlock` with their offsets (`Shape`) and their `Pun`, and the
-  `Pun` of the three pointers (see Pointers and `puns`).
+- `aim.rs`: what a pointer points at as `puns` sees it: `Pointee`, the target of each pointer and
+  the bytes before the place where it aims, and the targets `Block`, `ListBlock`, `TextBlock`,
+  which derive `Pun`, with their offsets (see Pointers and `puns`).
 - `bytes.rs`: `Error`, the walk of a compact image `Compact` (`tag`, `integer`, `claim`,
   `extend`, `len`, `null`, and its steps `target`, `list`, `text`), `check`, `view`,
   `view_unchecked`.
-- `near.rs`: `Near<T, O>`: `Deref` for `T`, `[T]` and `str`, builders, trait impls; `Offset`,
+- `near.rs`: `Near<T, O>`, which derives `Pun` with its aim: `Deref` for `T`, `[T]` and `str`,
+  builders, trait impls; `Offset`,
   its impls (`offsets!` for the integers of the target, `fixed!` for those of `puns::num`, with
   `Packed` and its `Scalar`s), `offset` (its layout, checked).
 - `region.rs`: `Region<T, S>`: `attach`, `base`, `copy_of`, constructors, `edit`, `as_bytes`,

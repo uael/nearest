@@ -509,7 +509,6 @@ pub type Edit<'e, T> = <T as Flat>::Edit<'e>;
 pub mod __private {
   use crate::{Emit, Flat, Near, Offset};
   pub use crate::{
-    aim::{Block, BlockData, BlockHead, BlockLen, NearOff},
     bytes::Compact,
     edit::Raw,
     flat::{Buf, Sink, fits, make},

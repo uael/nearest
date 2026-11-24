@@ -3,6 +3,7 @@ use core::{
   fmt,
   hash::{Hash, Hasher},
   marker::{PhantomData, PhantomPinned},
+  mem::offset_of,
   num::NonZero,
   ops::Deref,
   panic::{RefUnwindSafe, UnwindSafe},
@@ -11,14 +12,14 @@ use core::{
 };
 
 use puns::{
-  Pun, Scalar,
+  InPlace, Pun, Scalar,
   layout::{Endian, Spec},
   num::{i16be, i16le, i32be, i32le, i64be, i64le},
 };
 
 use crate::{
   Emit, Flat,
-  aim::{ListBlock, TextBlock},
+  aim::{ListBlock, Pointee, TextBlock},
   flat::{New, Seq},
 };
 
@@ -43,9 +44,18 @@ use crate::{
 /// assert_eq!(&*r.next.as_ref().unwrap().name, "b");
 /// assert_eq!(size_of::<Option<Near<Pair>>>(), 4);
 /// ```
+#[derive(Pun)]
+#[pun(bound(T: Pointee<O> + Pun, O: Pun))]
 #[repr(transparent)]
 pub struct Near<T: ?Sized, O: Offset = i32> {
-  pub(crate) off: O::NonZero,
+  /// The distance from the pointer to the place of its target where it aims, an eager aim of
+  /// `puns` at the target, which starts the lead of the target before that place (`aim`). An
+  /// `InPlace`, so that a `Near` has no constructor.
+  #[pun(aim(
+    <T as Pointee<O>>::Target =
+      signed(offset_of!(Self, off), size_of::<O>(), O::ENDIAN) - <T as Pointee<O>>::LEAD
+  ))]
+  pub(crate) off: InPlace<O::NonZero>,
   _t: PhantomData<T>,
   _pin: PhantomPinned,
 }
@@ -330,14 +340,14 @@ impl<T: ?Sized, O: Offset> Near<T, O> {
   /// region.
   fn target(&self) -> *const u8 {
     offset::<O>();
-    let off: O = self.off.into();
+    let off: O = self.off.get().into();
     ptr::from_ref(self).cast::<u8>().wrapping_offset(off.to_isize())
   }
 
   /// The same, for writing.
   fn target_mut(&mut self) -> *mut u8 {
     offset::<O>();
-    let off: O = self.off.into();
+    let off: O = self.off.get().into();
     ptr::from_mut(self).cast::<u8>().wrapping_offset(off.to_isize())
   }
 
