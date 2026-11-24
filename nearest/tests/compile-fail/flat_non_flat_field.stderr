@@ -18,10 +18,10 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
              and $N others
      = note: required for `String` to implement `Pun`
 note: required by a bound in `nearest::puns::Fields::Type`
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/19ae3cd/puns/src/lib.rs:2276:23
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a380061/puns/src/lib.rs:2316:23
      |
-2275 | pub unsafe trait Fields {
-2276 |   type Type: ?Sized + Pun;
+2315 | pub unsafe trait Fields {
+2316 |   type Type: ?Sized + Pun;
      |                       ^^^ required by this bound in `Fields::Type`
 
 error[E0277]: the trait bound `String: Scalar` is not satisfied
@@ -175,34 +175,6 @@ note: required by a bound in `nearest::Flat::REACH`
   |
 
 error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and its valid values
- --> tests/compile-fail/flat_non_flat_field.rs:5:18
-  |
-5 | struct S { name: String }
-  |                  ^^^^^^ not a `Pun` type
-  |
-  = help: the trait `Scalar` is not implemented for `String`
-  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
-  = help: the following other types implement trait `Scalar`:
-            ()
-            NonZero<i128>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
-          and $N others
-  = note: required for `String` to implement `Pun`
-note: required by a bound in `nearest::Flat::POINTERS`
- --> src/flat.rs
-  |
-  | pub unsafe trait Flat: Pun + Sized + 'static {
-  |                        ^^^ required by this bound in `Flat::POINTERS`
-...
-  |   const POINTERS: bool = false;
-  |
-
-error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and its valid values
  --> tests/compile-fail/flat_non_flat_field.rs:4:1
   |
 4 | #[flat]
@@ -256,34 +228,6 @@ note: required by a bound in `nearest::Flat::shift`
   |                        ^^^ required by this bound in `Flat::shift`
 ...
   |   unsafe fn shift(base: *mut u8, at: usize, d: isize);
-  |
-
-error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and its valid values
- --> tests/compile-fail/flat_non_flat_field.rs:5:18
-  |
-5 | struct S { name: String }
-  |                  ^^^^^^ not a `Pun` type
-  |
-  = help: the trait `Scalar` is not implemented for `String`
-  = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
-  = help: the following other types implement trait `Scalar`:
-            ()
-            NonZero<i128>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
-          and $N others
-  = note: required for `String` to implement `Pun`
-note: required by a bound in `nearest::Flat::compact`
- --> src/flat.rs
-  |
-  | pub unsafe trait Flat: Pun + Sized + 'static {
-  |                        ^^^ required by this bound in `Flat::compact`
-...
-  |   fn compact(ck: &mut Compact<'_>, at: usize) -> Result<(), Error>;
   |
 
 error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and its valid values

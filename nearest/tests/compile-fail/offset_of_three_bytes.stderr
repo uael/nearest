@@ -1,27 +1,38 @@
-error[E0080]: evaluation panicked: an `Offset` is 2, 4 or 8 bytes
- --> $RUST/core/src/panic.rs
-  |
-  = note: evaluation of `nearest::near::offset::<Three>::{constant#0}` failed here
-  |
- ::: src/near.rs
-  |
-  |     assert!(w == 2 || w == 4 || w == 8, "an `Offset` is 2, 4 or 8 bytes");
-  |     --------------------------------------------------------------------- in this macro invocation
+error[E0080]: evaluation panicked: a rule casts the integer fields of its struct, and this field is not one (a floating-point number, a `bool`, a `char` or an enum is not): read its bytes with `le(offset, size)` or `be(offset, size)`
+    --> src/near.rs
+     |
+     | #[derive(Pun)]
+     |          --- in this derive macro expansion
+...
+     |   #[pun(pointer(mut target: <T as Pointee<O>>::Target = off as u128))]
+     |                                                         ^^^ evaluation of `nearest::near::_::<impl nearest::puns::Pun for nearest::Near<str, Three>>::LAYOUT::{constant#1}::{constant#0}` failed inside this call
+     |
+note: inside `Op::load_as::<NonZeroThree>`
+    --> $RUST/core/src/panic.rs
+     |
+     = note: the failure occurred here
+     |
+    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a380061/puns/src/layout.rs:5269:7
+     |
+5269 | /       panic!(
+5270 | |         "a rule casts the integer fields of its struct, and this field is not one (a \
+5271 | |          floating-point number, a `bool`, a `char` or an enum is not): read its bytes with \
+5272 | |          `le(offset, size)` or `be(offset, size)`"
+5273 | |       )
+     | |_______- in this macro invocation
 
 note: erroneous constant encountered
  --> src/near.rs
   |
-  | /   const {
-  | |     let w = size_of::<O>();
-  | |     assert!(w == 2 || w == 4 || w == 8, "an `Offset` is 2, 4 or 8 bytes");
-  | |     assert!(
-... |
-  | |     );
-  | |   };
-  | |___^
-
-note: the above error was encountered while instantiating `fn nearest::near::offset::<Three>`
- --> src/flat.rs
+  | #[derive(Pun)]
+  |          ^^^
   |
-  |     offset::<O>();
-  |     ^^^^^^^^^^^^^
+  = note: this note originates in the derive macro `Pun` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+note: erroneous constant encountered
+  --> tests/compile-fail/offset_of_three_bytes.rs:27:1
+   |
+27 | #[flat]
+   | ^^^^^^^
+   |
+   = note: this note originates in the derive macro `::nearest::puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)

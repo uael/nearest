@@ -1,36 +1,36 @@
 error[E0080]: evaluation panicked:
-              cannot pun: the source or the target holds an eager aim, the target of a pointer that is checked with it and read without a check: a write through a `&mut` could move it away from that target.
+              cannot pun: the source or the target holds an eager aim, whose pointee is checked with it and read without a check: a write through a `&mut` could move it away from that pointee.
 
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/19ae3cd/puns/src/lib.rs:3333:5
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a380061/puns/src/lib.rs:3395:5
      |
-3333 |     Self::require(Self::eager_mut());
+3395 |     Self::require(Self::eager_mut());
      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `nearest::puns::Plan::<[u8], nearest::Near<u32>>::TRY_MUT` failed inside this call
      |
 note: inside `puns::Plan::<[u8], Near<u32>>::require`
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/19ae3cd/puns/src/lib.rs:3197:7
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a380061/puns/src/lib.rs:3259:7
      |
-3197 |       message.panic();
+3259 |       message.panic();
      |       ^^^^^^^^^^^^^^^
 note: inside `puns::Message::panic`
     --> $RUST/core/src/panic.rs
      |
      = note: the failure occurred here
      |
-    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/19ae3cd/puns/src/lib.rs:3498:5
+    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a380061/puns/src/lib.rs:3582:5
      |
-3498 |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
+3582 |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
      |     ---------------------------------------------------------------------------------------- in this macro invocation
 
 note: erroneous constant encountered
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/19ae3cd/puns/src/lib.rs:4477:11
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a380061/puns/src/lib.rs:4561:11
      |
-4477 |   const { Plan::<[u8], D>::TRY_MUT };
+4561 |   const { Plan::<[u8], D>::TRY_MUT };
      |           ^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: erroneous constant encountered
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/19ae3cd/puns/src/lib.rs:4477:3
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a380061/puns/src/lib.rs:4561:3
      |
-4477 |   const { Plan::<[u8], D>::TRY_MUT };
+4561 |   const { Plan::<[u8], D>::TRY_MUT };
      |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: the above error was encountered while instantiating `fn from_bytes_mut::<Near<u32>>`
