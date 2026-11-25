@@ -88,6 +88,19 @@ fn a_region_in_a_fixed_buffer() {
   assert_eq!(loaded.as_bytes(), Some(image));
 }
 
+/// A buffer that starts 1 byte past a multiple of 8: `Fixed` skips 7 bytes to align the block.
+#[repr(C, align(8))]
+struct Odd([MaybeUninit<u8>; 72]);
+
+/// A region whose first growth asks for more than the buffer has, but needs less: it takes what
+/// it needs (here 14 bytes of 57).
+#[test]
+fn a_fixed_buffer_shorter_than_a_growth() {
+  let mut odd = Odd([MaybeUninit::uninit(); 72]);
+  let r = nearest::Region::new_in(Lst::<u8>::new([1, 2]), Fixed::new(&mut odd.0[1..65]));
+  assert_eq!(r.items[..], [1, 2]);
+}
+
 /// One block at a time: a second region in the same `Fixed` finds no room until the first one is
 /// dropped; a buffer too small for a value panics, and for an image is `Error::Alloc`.
 #[test]

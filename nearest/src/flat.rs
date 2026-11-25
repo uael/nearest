@@ -228,7 +228,9 @@ impl Buf {
     self.cap = to;
   }
 
-  /// Makes the block at least `end` bytes, asking the allocator for `want` if it is shorter.
+  /// Makes the block at least `end` bytes, asking the allocator for `want` if it is shorter, or
+  /// for `end` if it does not give `want`: a buffer of a fixed size may hold what is needed, not
+  /// what a growth would like.
   ///
   /// # Panics
   /// If `end` is past the limit, or the allocator does not give the block.
@@ -237,8 +239,10 @@ impl Buf {
   /// As for [`alloc`](Self::alloc).
   pub(crate) unsafe fn room(&mut self, end: usize, want: usize) {
     assert!(end <= self.max, "region exceeds what its pointers reach");
-    // SAFETY: forwarded.
-    let given = end <= self.mem || unsafe { (self.regrow)(self, want) };
+    // SAFETY: forwarded; a refused growth leaves the block as it was.
+    let given = end <= self.mem
+      || unsafe { (self.regrow)(self, want) }
+      || (end < want && unsafe { (self.regrow)(self, end) });
     assert!(given, "region exceeds what its allocator gives");
   }
 
