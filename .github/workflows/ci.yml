@@ -32,8 +32,8 @@ jobs:
             id: all-2
             run: >-
               cargo test -p nearest --examples $(for file in nearest/tests/*.rs; do
-              case $(basename $file .rs) in compile_fail | integration | inline | user_storage) ;;
-              *) echo --test $(basename $file .rs) ;; esac; done)
+              case $(basename $file .rs) in (compile_fail | integration | inline | user_storage) ;;
+              (*) echo --test $(basename $file .rs) ;; esac; done)
           - name: compile-fail, 1 of 2
             id: compile-fail-1
             run: cargo test -p nearest --test compile_fail -- --exact a_to_o_but_f
