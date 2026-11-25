@@ -34,23 +34,23 @@ error[E0080]: evaluation panicked: the target needs a greater alignment than the
      |
      = note: evaluation of `nearest::puns::checked::<A, 8>::{constant#0}` failed here
      |
-    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/90c1d09/puns/src/lib.rs:5166:5
+    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/f25ad88/puns/src/lib.rs:5212:5
      |
-5166 |     assert!(align_of::<D>() <= ALIGN, "the target needs a greater alignment than the bytes have");
+5212 |     assert!(align_of::<D>() <= ALIGN, "the target needs a greater alignment than the bytes have");
      |     --------------------------------------------------------------------------------------------- in this macro invocation
 
 note: erroneous constant encountered
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/90c1d09/puns/src/lib.rs:5163:3
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/f25ad88/puns/src/lib.rs:5209:3
      |
-5163 | /   const {
-5164 | |     let () = Plan::<[u8], D>::TRY_REF;
-5165 | |     assert!(ALIGN.is_power_of_two(), "the alignment of the bytes is a power of two");
-5166 | |     assert!(align_of::<D>() <= ALIGN, "the target needs a greater alignment than the bytes have");
-5167 | |   };
+5209 | /   const {
+5210 | |     let () = Plan::<[u8], D>::TRY_REF;
+5211 | |     assert!(ALIGN.is_power_of_two(), "the alignment of the bytes is a power of two");
+5212 | |     assert!(align_of::<D>() <= ALIGN, "the target needs a greater alignment than the bytes have");
+5213 | |   };
      | |___^
 
 note: the above error was encountered while instantiating `fn puns::checked::<A, 8>`
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/90c1d09/puns/src/lib.rs:5154:3
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/f25ad88/puns/src/lib.rs:5200:3
      |
-5154 |   checked::<D, ALIGN>(bytes, true, &mut Dyn(work))
+5200 |   checked::<D, ALIGN>(bytes, true, &mut Dyn(work))
      |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

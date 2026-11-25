@@ -29,7 +29,7 @@ nearest-derive = { version = "=0.8.1", path = "../nearest-derive" }
 # the pointers included, which are aims), and the numbers of a fixed byte order (`puns::num`).
 # Re-exported as `nearest::puns`. Pinned to a commit: aims are not released yet. The version is
 # the one of that commit, which `cargo deny` requires (a git dependency without one is a wildcard).
-puns = { version = "=0.2.4", git = "https://github.com/uael/puns", rev = "90c1d09b421228f59f997e26e3750c5ef78a16a0" }
+puns = { version = "=0.2.4", git = "https://github.com/uael/puns", rev = "f25ad88471c913f038fe4d7124f9af0defcf2621" }
 serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
