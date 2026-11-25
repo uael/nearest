@@ -319,31 +319,34 @@ pub fn main() {
   let owned = Region::<Function>::from_bytes(&unaligned[1..]).unwrap();
   assert_eq!(*owned, *loaded);
 
-  // Bytes that are not a function are refused, where they stop being one.
+  // Bytes that are not a function are refused.
   let invalid = |at: usize, value: u8| {
     let mut bad = bytes.to_vec();
     bad[at] = value;
     Region::<Function>::from_bytes(&bad).err()
   };
   let place = |part: &u8| (&raw const *part).addr() - bytes.as_ptr().addr();
+  let refused = Some(Error::Invalid(puns::Error::Validity));
   // The magic number, the version, and the rule of the function.
-  assert_eq!(invalid(0, b'Q'), Some(Error::Invalid(0)));
-  assert_eq!(invalid(4, 2), Some(Error::Invalid(4)));
-  assert_eq!(invalid(6, 5), Some(Error::Invalid(0)));
-  // A pointer that aims elsewhere: the name, one byte further.
-  assert_eq!(invalid(10, bytes[10] + 1), Some(Error::Invalid(10)));
+  assert_eq!(invalid(0, b'Q'), refused);
+  assert_eq!(invalid(4, 2), refused);
+  assert_eq!(invalid(6, 5), refused);
+  // A pointer that aims elsewhere: the name, one byte further, where its length is not aligned.
+  assert_eq!(invalid(10, bytes[10] + 1), refused);
   // A tag that is not one: the end of the first block, an operation of the second.
   let end = place(puns::head_ref::<End, u8>(&loaded.blocks[0].end));
-  assert_eq!(invalid(end, 3), Some(Error::Invalid(end)));
+  assert_eq!(invalid(end, 3), refused);
   let Inst::Bin(_, op, ..) = &loaded.blocks[1].body[0] else { panic!("not what was written") };
   let op = place(puns::pun_ref::<Op, u8>(op));
-  assert_eq!(invalid(op, 4), Some(Error::Invalid(op)));
-  // A label that is not UTF-8: the error is at its length.
+  assert_eq!(invalid(op, 4), refused);
+  // A label that is not UTF-8.
   let label = place(&loaded.blocks[3].label.as_bytes()[0]);
-  assert_eq!(invalid(label, 0xff), Some(Error::Invalid(label - size_of::<Off>())));
-  // Cut short, or with something after it.
+  assert_eq!(invalid(label, 0xff), refused);
+  // Cut short; with something after it, which no pointer reaches, it is the same function.
   assert!(Region::<Function>::from_bytes(&bytes[..size - 1]).is_err());
-  assert_eq!(invalid_extended(bytes), Some(Error::Invalid(size)));
+  let mut long = bytes.to_vec();
+  long.push(0);
+  assert_eq!(*Region::<Function>::from_bytes(&long).unwrap(), *loaded);
 
   // What a loaded function names by number is checked where it is used.
   let mut wild = bytes.to_vec();
@@ -353,11 +356,4 @@ pub fn main() {
   assert_eq!(run(&wild, &[3], &mut String::new()), None);
 
   println!("ok");
-}
-
-/// What loading `bytes` with one more gives.
-fn invalid_extended(bytes: &[u8]) -> Option<Error> {
-  let mut long = bytes.to_vec();
-  long.push(0);
-  Region::<Function>::from_bytes(&long).err()
 }

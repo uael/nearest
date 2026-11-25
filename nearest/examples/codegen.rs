@@ -5,15 +5,15 @@
 //! ```
 //!
 //! and look for their names in the `codegen.s` that it writes under `target/release` (`find target
-//! -name codegen.s`). The check of a region is the compact check of `puns`
-//! (`puns::check_compact`), which keeps the pointers still to follow in the scratch of the caller.
+//! -name codegen.s`). The check of a region is the check of `puns` (`puns::from_head`), which takes
+//! no memory from the caller.
 #![expect(
   clippy::no_mangle_with_rust_abi,
   reason = "the code of the Rust ABI is what is measured; `no_mangle` only names it in the assembly"
 )]
 
 use nearest::{
-  Near, Pending, flat,
+  Near, flat,
   puns::num::{i32le, u16le, u32le},
 };
 
@@ -49,20 +49,20 @@ pub struct Numbers {
 
 // The check of a recursive enum: a tag, then the parts of its variant.
 #[unsafe(no_mangle)]
-pub fn load_expr<'b>(bytes: &'b [u8], scratch: &mut [Pending]) -> Option<&'b Expr> {
-  nearest::view_with(bytes, scratch).ok()
+pub fn load_expr(bytes: &[u8]) -> Option<&Expr> {
+  nearest::view(bytes).ok()
 }
 
-// The check of a region, with the memory of the caller.
+// The check of a region.
 #[unsafe(no_mangle)]
-pub fn load_table<'b>(bytes: &'b [u8], scratch: &mut [Pending]) -> Option<&'b Table> {
-  nearest::view_with(bytes, scratch).ok()
+pub fn load_table(bytes: &[u8]) -> Option<&Table> {
+  nearest::view(bytes).ok()
 }
 
 // A list of numbers is not walked: its pointer, its length, and that is all.
 #[unsafe(no_mangle)]
-pub fn load_numbers<'b>(bytes: &'b [u8], scratch: &mut [Pending]) -> Option<&'b Numbers> {
-  nearest::view_with(bytes, scratch).ok()
+pub fn load_numbers(bytes: &[u8]) -> Option<&Numbers> {
+  nearest::view(bytes).ok()
 }
 
 fn main() {}

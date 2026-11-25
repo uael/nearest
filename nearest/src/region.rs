@@ -4,11 +4,8 @@ use core::{fmt, marker::PhantomData, ops::Deref, slice};
 
 #[cfg(feature = "alloc")]
 use crate::Heap;
-#[cfg(feature = "alloc")]
-use crate::bytes::Stack;
 use crate::{
-  Emit, Error, Flat, Pending, Storage,
-  bytes::check,
+  Emit, Error, Flat, Storage,
   flat::{Buf, Sink, fits, limit},
 };
 
@@ -187,12 +184,14 @@ impl<T: Flat, S: Storage> Region<T, S> {
     self.buf.compact.then(|| unsafe { slice::from_raw_parts(self.base(), self.buf.len()) })
   }
 
-  /// The region whose image is `bytes`, which may have any alignment, in a new storage. The
-  /// bytes are checked, then copied: they must be exactly what [`as_bytes`](Self::as_bytes)
-  /// returns for a `T`. For a storage that has no `Default`, copy from a view instead:
-  /// `Region::new_in(storage, nearest::view::<T>(bytes)?)`. It needs `alloc`: checking takes
-  /// memory that grows with the nesting of the data, which
-  /// [`from_bytes_with`](Self::from_bytes_with) takes from the caller.
+  /// The region whose image is `bytes`, which may have any alignment, in a new storage: the bytes
+  /// are copied as they are, to an address aligned as a region is, then checked there as
+  /// [`view`](crate::view) checks them. The check of `puns` requires the pointees in the order of
+  /// a copy, so that each is reached by one pointer, which the edits of a region rely on: what
+  /// [`as_bytes`](Self::as_bytes) returns, with gaps that no pointer reaches too. A value whose
+  /// pointees are shared, or out of that order, is read with `view` and copied:
+  /// `Region::new(nearest::view::<T>(bytes)?)`, which is also how a storage without `Default`
+  /// loads.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -204,67 +203,33 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// let bytes = r.as_bytes().unwrap();
   /// let back = Region::<Msg>::from_bytes(bytes)?;
   /// assert_eq!((back.id, &*back.body), (1, "hi"));
-  /// assert!(Region::<Msg>::from_bytes(&bytes[1..]).is_err());
+  /// assert!(Region::<Msg>::from_bytes(&bytes[..bytes.len() - 1]).is_err());
   /// # Ok::<(), nearest::Error>(())
   /// ```
   ///
   /// # Errors
-  /// [`Error::Invalid`] if the bytes are not the compact image of a valid `T`, and
-  /// [`Error::StorageFull`] if they are one, larger than the storage gives.
-  #[cfg(feature = "alloc")]
+  /// [`Error::Invalid`] with [`puns::Error::Size`] for bytes longer than the limit of `T`,
+  /// [`Error::StorageFull`] if the storage cannot hold the bytes, and [`Error::Invalid`] with what
+  /// `puns` found if the copy is not the image of a valid `T` in the order of a copy.
   pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error>
   where
     S: Default,
   {
-    Self::load(bytes, &mut Stack::new())
-  }
-
-  /// [`from_bytes`](Self::from_bytes), checking with `scratch` for memory.
-  /// `bytes.len() / 4` entries are always enough (`/ 2` with 2-byte pointers; see [`Pending`]).
-  /// It needs no `alloc`.
-  ///
-  /// ```
-  /// use nearest::{Inline, Near, Pending, Region, flat};
-  ///
-  /// #[flat]
-  /// struct Msg { id: u8, body: Near<str> }
-  ///
-  /// type Small = Region<Msg, Inline<64>>;
-  ///
-  /// let r = Small::new_in(Inline::default(), Msg::new(1, "hi"));
-  /// let bytes = r.as_bytes().unwrap();
-  /// let mut scratch = [Pending::default(); 64 / 4]; // enough for anything `Inline<64>` holds
-  /// let back = Small::from_bytes_with(bytes, &mut scratch)?;
-  /// assert_eq!((back.id, &*back.body), (1, "hi"));
-  /// assert!(Small::from_bytes_with(&bytes[1..], &mut scratch).is_err());
-  /// # Ok::<(), nearest::Error>(())
-  /// ```
-  ///
-  /// # Errors
-  /// As [`from_bytes`](Self::from_bytes), and [`Error::ScratchFull`] if `scratch` ran out before
-  /// the check finished, which says nothing about the bytes.
-  pub fn from_bytes_with(bytes: &[u8], scratch: &mut [Pending]) -> Result<Self, Error>
-  where
-    S: Default,
-  {
-    Self::load(bytes, scratch)
-  }
-
-  /// `from_bytes`, checking with `todo`.
-  fn load<W: puns::Worklist + ?Sized>(bytes: &[u8], todo: &mut W) -> Result<Self, Error>
-  where
-    S: Default,
-  {
-    // The check reads bytes at any alignment, as they will be in the storage, so nothing is
-    // copied for a bad image.
-    check::<T, W>(bytes, todo)?;
+    fits::<T>();
+    if bytes.len() > limit::<T>() {
+      return Err(Error::Invalid(puns::Error::Size));
+    }
     // SAFETY: `bytes` is not in a new storage.
     let r = unsafe { Self::copy_of(S::default(), limit::<T>(), bytes.as_ptr(), bytes.len()) };
-    r.ok_or(Error::StorageFull)
+    let r = r.ok_or(Error::StorageFull)?;
+    // SAFETY: the bytes in use are in the memory of `r`, which `copy_of` initialized.
+    let image = unsafe { slice::from_raw_parts(r.base(), r.buf.len()) };
+    crate::view::<T>(image)?;
+    Ok(r)
   }
 
-  /// [`from_bytes`](Self::from_bytes) without the check, for bytes that are trusted, or that the
-  /// caller checked itself.
+  /// The region whose bytes are a copy of `bytes`, which are trusted, or that the caller checked
+  /// itself: nothing is checked, and nothing is copied but the bytes.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -279,12 +244,12 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// ```
   ///
   /// # Safety
-  /// [`from_bytes`](Self::from_bytes) would not return [`Error::Invalid`] for them, in this
-  /// build: `bytes` (at any address) are the compact image of a valid `T`, no longer than its
-  /// limit, every offset and length an `O` that `from_isize` makes (see
-  /// [`Offset`](crate::Offset)). That is what [`as_bytes`](Self::as_bytes) returned for a region
-  /// of `T` in a build with the same layout of `T` (this one, for example), and what a check of
-  /// the caller's that accepts no more than `from_bytes` accepted.
+  /// In this build, [`view`](crate::view) would accept `bytes` at an address aligned as a region
+  /// is, every offset and length is an `O` that `from_isize` makes (see
+  /// [`Offset`](crate::Offset)), and each pointee is reached by one pointer only, and overlaps no
+  /// other value: the bytes are a tree, which the edits of a region rely on. That is what
+  /// [`as_bytes`](Self::as_bytes) returned for a region of `T` in a build with the same layout of
+  /// `T` (this one, for example).
   ///
   /// # Panics
   /// If the storage cannot hold them.

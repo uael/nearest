@@ -32,17 +32,17 @@ error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know
      = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
      = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
 help: the trait `Pun` is conditionally implemented for `Option<T>`
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/e18e7d1/puns/src/std_enums.rs:224:1
+    --> /Users/uael/.cargo/git/checkouts/puns-d339d9f67c1777da/205d543/puns/src/std_enums.rs:224:1
      |
  224 | unsafe impl<T: Pun> Pun for Option<T> {
      | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
      |                |
      |                unsatisfied requirement introduced here: `Near<Byte, u8>: Pun`
 note: required by a bound in `nearest::puns::Fields::Type`
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/e18e7d1/puns/src/lib.rs:2379:23
+    --> /Users/uael/.cargo/git/checkouts/puns-d339d9f67c1777da/205d543/puns/src/lib.rs:2406:23
      |
-2378 | pub unsafe trait Fields {
-2379 |   type Type: ?Sized + Pun;
+2405 | pub unsafe trait Fields {
+2406 |   type Type: ?Sized + Pun;
      |                       ^^^ required by this bound in `Fields::Type`
 
 error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know its layout and its valid values
@@ -54,7 +54,7 @@ error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know
     = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
     = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
 help: the trait `Pun` is conditionally implemented for `Option<T>`
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/e18e7d1/puns/src/std_enums.rs:224:1
+   --> /Users/uael/.cargo/git/checkouts/puns-d339d9f67c1777da/205d543/puns/src/std_enums.rs:224:1
     |
 224 | unsafe impl<T: Pun> Pun for Option<T> {
     | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
@@ -147,7 +147,7 @@ error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know
     = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
     = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
 help: the trait `Pun` is conditionally implemented for `Option<T>`
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/e18e7d1/puns/src/std_enums.rs:224:1
+   --> /Users/uael/.cargo/git/checkouts/puns-d339d9f67c1777da/205d543/puns/src/std_enums.rs:224:1
     |
 224 | unsafe impl<T: Pun> Pun for Option<T> {
     | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
@@ -163,7 +163,7 @@ error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know
     = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
     = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
 help: the trait `Pun` is conditionally implemented for `Option<T>`
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/e18e7d1/puns/src/std_enums.rs:224:1
+   --> /Users/uael/.cargo/git/checkouts/puns-d339d9f67c1777da/205d543/puns/src/std_enums.rs:224:1
     |
 224 | unsafe impl<T: Pun> Pun for Option<T> {
     | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
@@ -187,7 +187,7 @@ error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know
     = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
     = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
 help: the trait `Pun` is conditionally implemented for `Option<T>`
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/e18e7d1/puns/src/std_enums.rs:224:1
+   --> /Users/uael/.cargo/git/checkouts/puns-d339d9f67c1777da/205d543/puns/src/std_enums.rs:224:1
     |
 224 | unsafe impl<T: Pun> Pun for Option<T> {
     | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
@@ -232,7 +232,7 @@ error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know
     = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
     = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
 help: the trait `Pun` is conditionally implemented for `Option<T>`
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/e18e7d1/puns/src/std_enums.rs:224:1
+   --> /Users/uael/.cargo/git/checkouts/puns-d339d9f67c1777da/205d543/puns/src/std_enums.rs:224:1
     |
 224 | unsafe impl<T: Pun> Pun for Option<T> {
     | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^
@@ -281,7 +281,7 @@ error[E0277]: `Option<Near<Byte, u8>>` is not a `Pun` type: `puns` does not know
     = help: the trait `Pun` is not implemented for `Option<Near<Byte, u8>>`
     = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
 help: the trait `Pun` is conditionally implemented for `Option<T>`
-   --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/e18e7d1/puns/src/std_enums.rs:224:1
+   --> /Users/uael/.cargo/git/checkouts/puns-d339d9f67c1777da/205d543/puns/src/std_enums.rs:224:1
     |
 224 | unsafe impl<T: Pun> Pun for Option<T> {
     | ^^^^^^^^^^^^^^^---^^^^^^^^^^^^^^^^^^^

@@ -60,7 +60,10 @@ fn invalid_bytes_are_an_error() {
   let err = Region::<Tree>::from_bytes(cut).unwrap_err();
   assert!(matches!(err, nearest::Error::Invalid(_)));
   assert_de_tokens_error::<Region<Tree>>(&[Token::Bytes(cut)], &err.to_string());
-  assert_de_tokens_error::<Region<Tree>>(&[Token::Bytes(&[])], "invalid region bytes at offset 0");
+  assert_de_tokens_error::<Region<Tree>>(
+    &[Token::Bytes(&[])],
+    "invalid region bytes: value does not have the size of the target type",
+  );
   assert_de_tokens_error::<Region<Tree>>(
     &[Token::Str("x")],
     "invalid type: string \"x\", expected the bytes of a region",

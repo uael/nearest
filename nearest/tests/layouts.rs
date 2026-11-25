@@ -7,6 +7,7 @@ use nearest::{
   Flat, Near, Region, flat,
   puns::{
     self,
+    Error::Validity,
     num::{i16be, i32le, u16le, u32le},
   },
 };
@@ -50,12 +51,11 @@ fn generic_types() {
   let flags = Region::new(Boxed::<bool>::new(1, true, [false, true]));
   let bytes: &Boxed<u8> = nearest::view(flags.as_bytes().unwrap()).unwrap();
   assert_eq!((bytes.id, *bytes.value, &bytes.more[..]), (1, 1, &[0, 1][..]));
-  // A `u8` of 2 is no `bool`: refused where it is.
+  // A `u8` of 2 is no `bool`.
   let two = Region::new(Boxed::<u8>::new(1, 2, [0]));
-  let at = (&raw const *two.value).addr() - two.as_bytes().unwrap().as_ptr().addr();
   assert_eq!(
     nearest::view::<Boxed<bool>>(two.as_bytes().unwrap()).err(),
-    Some(nearest::Error::Invalid(at))
+    Some(nearest::Error::Invalid(Validity))
   );
 }
 
@@ -128,21 +128,21 @@ fn puns_reads_pointers_from_bytes_once_it_checked_their_pointees() {
     at.copy_from_slice(bytes);
     f(at);
   };
-  // `b` aims at the pointee of `a`: valid for `puns`, not a region, refused where `b` is.
+  // `b` aims at the pointee of `a`: two pointers to one pointee, which `puns` refuses, since the
+  // pointees of a check form a tree.
   let at = core::mem::offset_of!(Two, b);
   let a_target = i32::from_le_bytes(image[..4].try_into().unwrap());
   let b = a_target - i32::try_from(at).unwrap();
   let shared = [&image[..at], &b.to_le_bytes(), &image[at + 4..]].concat();
   in_words(&shared, &|bytes| {
-    let (two, _) = puns::from_head::<Two>(bytes).unwrap();
-    assert_eq!((*two.a, *two.b), (7, 7));
-    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid(at)));
+    assert_eq!(puns::from_head::<Two>(bytes).err(), Some(puns::Error::Validity));
+    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid(Validity)));
   });
   // `b` aims past the bytes: invalid for both.
   let far = [&image[..at], &1000i32.to_le_bytes(), &image[at + 4..]].concat();
   in_words(&far, &|bytes| {
     assert_eq!(puns::from_head::<Two>(bytes).err(), Some(puns::Error::Validity));
-    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid(at)));
+    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid(Validity)));
   });
 }
 
@@ -190,7 +190,7 @@ fn optional_pointers() {
   let anonymous = Region::new(Maybe::new(2, None, ()));
   assert_eq!(
     nearest::view::<Named>(anonymous.as_bytes().unwrap()).err(),
-    Some(nearest::Error::Invalid(core::mem::offset_of!(Named, owner)))
+    Some(nearest::Error::Invalid(Validity))
   );
 }
 
@@ -350,11 +350,10 @@ fn a_value_that_breaks_a_rule_is_saved_not_loaded() {
   // Built and edited without a check: the rules are requirements, not guarantees.
   let mut bad = Region::new(Spans::new([span(1, 2), span(5, 3)]));
   let image = bad.as_bytes().unwrap().to_vec();
-  let at = (&raw const bad.spans[1]).addr() - bad.as_bytes().unwrap().as_ptr().addr();
-  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(at)));
+  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(Validity)));
   *bad.edit().spans().at(1).hi() = u16le::new(1000);
   *bad.edit().spans().at(1).lo() = u16le::new(0);
   let image = Region::new(&*bad).as_bytes().unwrap().to_vec();
-  // `valid(..1000)` of `hi`: where it is.
-  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(at + 2)));
+  // `valid(..1000)` of `hi`.
+  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(Validity)));
 }

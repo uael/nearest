@@ -8,8 +8,8 @@ use std::{
 };
 
 use nearest::{
-  Edit, Error, Heap, Inline, Near, Offset, Pending, Region, flat,
-  puns::{Pun, layout::Endian, num},
+  Edit, Error, Heap, Inline, Near, Offset, Region, flat,
+  puns::{Error::Validity, Pun, layout::Endian, num},
 };
 
 /// The byte order of an offset, which its layout says, as the tests read it.
@@ -272,27 +272,24 @@ fn bytes<O: Offset>() {
   let image = compact.as_bytes().unwrap();
   assert_eq!(Region::<Tree<O>>::from_bytes(image), Ok(Region::new(&*r)));
   assert_eq!(nearest::view::<Tree<O>>(image), Ok(&*r));
-  let mut scratch = vec![Pending::default(); image.len() / size_of::<O>().min(4)];
-  assert_eq!(nearest::view_with::<Tree<O>>(image, &mut scratch), Ok(&*r));
-  assert_eq!(Region::<Tree<O>>::from_bytes_with(image, &mut []).err(), Some(Error::ScratchFull));
-  // Cut, padded, or a pointer one byte off.
+  // Cut, padded (bytes that no pointer reaches), or a pointer one byte off.
   let cut = &image[..image.len() - 1];
   assert!(matches!(Region::<Tree<O>>::from_bytes(cut), Err(Error::Invalid(_))));
   let mut long = image.to_vec();
   long.push(0);
-  assert_eq!(Region::<Tree<O>>::from_bytes(&long).err(), Some(Error::Invalid(image.len())));
+  assert_eq!(Region::<Tree<O>>::from_bytes(&long), Ok(Region::new(&*r)));
   let name = std::mem::offset_of!(Tree<O>, name);
   for n in [1, -1] {
     let mut bad = image.to_vec();
     put::<O>(&mut bad, name, int::<O>(image, name) + n);
-    assert_eq!(Region::<Tree<O>>::from_bytes(&bad).err(), Some(Error::Invalid(name)));
+    assert_eq!(Region::<Tree<O>>::from_bytes(&bad).err(), Some(Error::Invalid(Validity)));
   }
   // A negative length is as bad as one too long.
   let text = Region::<Near<str, O>>::new("hi");
   let mut bad = text.as_bytes().unwrap().to_vec();
   let w = size_of::<O>();
   put::<O>(&mut bad, w, -1);
-  assert_eq!(Region::<Near<str, O>>::from_bytes(&bad).err(), Some(Error::Invalid(w)));
+  assert_eq!(Region::<Near<str, O>>::from_bytes(&bad).err(), Some(Error::Invalid(Validity)));
 }
 
 /// Each test with each offset. Under Miri, the tests that build and check regions run with seven
@@ -443,7 +440,10 @@ fn bytes_past_the_size_limit_are_invalid() {
   let mut long = r.as_bytes().unwrap().to_vec();
   assert_eq!(Region::<Small>::from_bytes(&long).map(|r| r.to_vec()), Ok(vec![1, 2]));
   long.resize(LIMIT + 8, 0);
-  assert_eq!(Region::<Small>::from_bytes(&long).err(), Some(Error::Invalid(0)));
+  assert_eq!(
+    Region::<Small>::from_bytes(&long).err(),
+    Some(Error::Invalid(nearest::puns::Error::Size))
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -529,8 +529,8 @@ fn integers_wider_than_isize_are_invalid() {
   let bytes = r.as_bytes().unwrap();
   assert_eq!(bytes, [&8i64.to_ne_bytes()[..], &[7]].concat());
   let far = with_i64(bytes, 0, HIGH + 8);
-  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&far).err(), Some(Error::Invalid(0)));
-  assert_eq!(view_in_words::<Near<u8, i64>>(&far), Err(Error::Invalid(0)));
+  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&far).err(), Some(Error::Invalid(Validity)));
+  assert_eq!(view_in_words::<Near<u8, i64>>(&far), Err(Error::Invalid(Validity)));
   assert_eq!(view_in_words::<Near<u8, i64>>(bytes), Ok(()));
   // The length and the capacity of a list, and the length of a text.
   let list = Region::<Near<[u8], i64>>::new(Near::from_iter([1u8, 2]));
@@ -546,10 +546,10 @@ fn integers_wider_than_isize_are_invalid() {
   let text = Region::<Near<str, i64>>::new("hi");
   let bytes = text.as_bytes().unwrap();
   let bad = with_i64(bytes, 8, HIGH + 2);
-  assert_eq!(Region::<Near<str, i64>>::from_bytes(&bad).err(), Some(Error::Invalid(8)));
+  assert_eq!(Region::<Near<str, i64>>::from_bytes(&bad).err(), Some(Error::Invalid(Validity)));
   // Nor any `i64` that is not what `from_isize` makes: the most negative one.
   let low = with_i64(r.as_bytes().unwrap(), 0, i64::MIN);
-  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&low).err(), Some(Error::Invalid(0)));
+  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&low).err(), Some(Error::Invalid(Validity)));
 }
 
 /// `nearest::view` of `bytes`, copied to words: an address aligned as a region is.
@@ -602,7 +602,7 @@ fn offsets_that_from_isize_does_not_make_are_invalid() {
   assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(bytes).map(|r| **r), Ok(7));
   let mut far = bytes.to_vec();
   far[..4].copy_from_slice(&((1 << 20) + 4i32).to_ne_bytes()); // past `LIMIT`
-  assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(&far).err(), Some(Error::Invalid(0)));
+  assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(&far).err(), Some(Error::Invalid(Validity)));
 }
 
 // ---------------------------------------------------------------------------------------------

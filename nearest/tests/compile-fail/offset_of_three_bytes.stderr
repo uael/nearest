@@ -12,13 +12,13 @@ note: inside `Op::load_as::<NonZeroThree>`
      |
      = note: the failure occurred here
      |
-    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/e18e7d1/puns/src/layout.rs:5459:7
+    ::: /Users/uael/.cargo/git/checkouts/puns-d339d9f67c1777da/205d543/puns/src/layout.rs:5498:7
      |
-5459 | /       panic!(
-5460 | |         "a rule casts the integer fields of its struct, and this field is not one (a \
-5461 | |          floating-point number, a `bool`, a `char` or an enum is not): read its bytes with \
-5462 | |          `le(offset, size)` or `be(offset, size)`"
-5463 | |       )
+5498 | /       panic!(
+5499 | |         "a rule casts the integer fields of its struct, and this field is not one (a \
+5500 | |          floating-point number, a `bool`, a `char` or an enum is not): read its bytes with \
+5501 | |          `le(offset, size)` or `be(offset, size)`"
+5502 | |       )
      | |_______- in this macro invocation
 
 note: erroneous constant encountered

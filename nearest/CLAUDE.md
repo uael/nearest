@@ -18,7 +18,7 @@ for the rest.
 `puns` (type punning proven at compile time, same owner) knows the layout and the valid values of
 every stored type: `#[flat]` derives `puns::Pun`, and so does `Near`, with an eager aim of `puns` at
 its pointee (see Pointers and `puns`). So the loaders check bytes with `puns` alone, pointees
-included (`puns::check_compact`), and the numbers of a fixed byte order of `puns::num` make the
+included (`puns::from_head`), and the numbers of a fixed byte order of `puns::num` make the
 bytes of a region the same on every machine. `puns` is a git dependency, pinned to a commit: its
 aims are not released.
 
@@ -43,10 +43,9 @@ aims are not released.
   byte order of its integer. Its
   supertraits `Flat + Copy + Debug + Eq + Ord + Hash` let a type generic over the width be
   `#[flat]` (which bounds every type parameter by `Flat`) and derive the usual traits.
-- `Region<T, S: Storage = Heap>`: `new`, `new_in`, `edit`, `as_bytes`, `from_bytes`,
-  `from_bytes_with`, `byte_len`; `unsafe` `from_bytes_unchecked`.
-- Functions `view::<T>(bytes)`, `view_with::<T>(bytes, scratch)`; `unsafe`
-  `view_unchecked::<T>(bytes)`.
+- `Region<T, S: Storage = Heap>`: `new`, `new_in`, `edit`, `as_bytes`, `from_bytes`, `byte_len`;
+  `unsafe` `from_bytes_unchecked`.
+- Functions `const fn view::<T>(bytes)`; `unsafe` `view_unchecked::<T>(bytes)`.
 - `unsafe trait Storage`: `memory`, `memory_mut(words)`, where a region keeps its bytes.
   Storages: `Heap` (the default; `with_capacity(bytes)`), `Inline<N>` (`N` bytes inside the
   region).
@@ -59,17 +58,14 @@ aims are not released.
   `update`; the handle of plain data), and `Plain<'a, 'e, T>` (the same by value: `edit` gives
   the `&mut PlainEdit`).
 - `Old<'e, T>`: no methods; a value that left its place, which can only be written somewhere.
-- `enum Error`: `Invalid(usize)`, `ScratchFull`, `StorageFull`; the error of every loader.
-- `Pending`: `puns::Pending`, re-exported: no methods; an entry of the scratch that
-  `from_bytes_with` and `view_with` take.
+- `enum Error`: `Invalid(puns::Error)`, `StorageFull`; the error of every loader.
 
 Trait impls: `Region`: `Deref`, `Clone` (`S: Default`), `Debug`, `Display`, `PartialEq`, `Eq`;
 with `serde`, `Serialize` and `Deserialize` (`S: Default`). `Near`: `Deref`, `Debug`,
 `Display`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, and
 `IntoIterator` for `&Near<[T]>`; `Debug`, `Display` and the comparisons forward to the value or
 the pointee. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, `Display`,
-`core::error::Error`, `Clone`, `Copy`, `PartialEq`, `Eq`. `Pending`: `Default`, `Clone`, `Copy`,
-`Debug`.
+`core::error::Error`, `Clone`, `Copy`, `PartialEq`, `Eq`.
 
 Hidden: `nearest::__private::{Raw, Buf, Sink, fits, make, Variant, Pointer}`, the plumbing of the
 macro; `Near::AIMS`, which the derive of `puns` writes, and which names the aim of a `Near` for
@@ -82,11 +78,10 @@ Nothing else is public; do not add public items.
 
 Features:
 
-- `alloc` (default) gives `Heap`, the default `S = Heap` (so `Region<T>` and `Region::new`; a
-  `#[cfg]` on the generic parameter), and `from_bytes` and `view`, whose check takes memory from
-  the heap. Without it nothing allocates: a region names its storage, and `as_bytes`,
-  `from_bytes_with`, `view_with` and the unchecked loaders remain. The feature is additive: code
-  that builds without it names every storage, so it builds with it.
+- `alloc` (default) gives `Heap` and the default `S = Heap` (so `Region<T>` and `Region::new`; a
+  `#[cfg]` on the generic parameter). Without it nothing allocates: a region names its storage,
+  and every loader remains, since a check takes no memory. The feature is additive: code that
+  builds without it names every storage, so it builds with it.
 - `serde` (implies `alloc`; the optional `serde` dependency, without its `std`) makes a `Region`
   `Serialize` and `Deserialize` as its bytes (see Bytes). It adds no public item.
 
@@ -269,12 +264,11 @@ What `puns` does with a value that holds a pointer:
   once every pointee is a valid value within the bytes, aligned for it, so a `&Near` from `puns`
   is one whose pointee `Deref` may read
   (`puns_reads_pointers_from_bytes_once_it_checked_their_pointees`, `tests/layouts.rs`). Those
-  follow pointers one within another up to `puns::AIM_PARTS` parts of their layouts;
-  `puns::check_compact`, which the loaders use, follows them at any depth (see Bytes).
-- Without its compact check, it does not require the image to be compact: pointees may be shared,
-  overlap other values, or leave gaps. A region cannot hold such bytes: an edit of one pointee
-  through a `&mut` would be seen through another pointer. So the loaders ask `puns` for the
-  compact check, and the reads of `puns` give `&T` only, never a region or a handle.
+  follow pointers at any depth, with a stack that the types bound (`puns::AIM_PARTS`).
+- It requires the pointees in the order of a copy, each after everything before it, with gaps
+  allowed: so no pointee is shared, overlaps another value, or is reached by a cycle, and the
+  bytes form a tree, which the edits of a region rely on (I4). The reads of `puns` give `&T` only,
+  never a region or a handle.
 - It makes no value that holds one (`pun`, `try_pun`, `zeroed` do not compile; a `Near` is not
   `Copy` either), and no `&mut` to or from one (`pun_mut`, `from_bytes_mut`:
   `tests/compile-fail/puns_mut_bytes_as_pointer.rs`).
@@ -318,8 +312,8 @@ Only what cannot be known before:
 
 - **Size.** Growing past the limit (2 GiB with `i32` at the root), or past what the storage
   gives, panics before anything changes (the capacity overflow of `Vec`); it is only looked at
-  when the zeroed capacity is used up. `from_bytes*` return `Error::StorageFull` instead (and
-  `Error::Invalid(0)` for bytes longer than the limit). The growth is `max(end, 2 * cap, 64)` capped at the limit (not `clamp`, which
+  when the zeroed capacity is used up. `from_bytes` returns `Error::StorageFull` instead (and
+  `Error::Invalid(puns::Error::Size)` for bytes longer than the limit). The growth is `max(end, 2 * cap, 64)` capped at the limit (not `clamp`, which
   panicked on a limit below 64, possible with an `Offset` of the user's).
 - **Indices.** `at`, `insert`, `remove`, `swap` panic out of bounds; `try_at` returns `None`.
 - **Loaded bytes.** The loaders check bytes from outside (see Bytes). A region built or edited
@@ -631,7 +625,7 @@ pub unsafe trait Storage {
 makes room up front (nothing written). `Inline<N>` is `N` bytes (rounded down to words) inside
 the `Region` value, and does not grow. Any other memory (an arena, a borrowed buffer, a mapped
 file) is a storage of the user's. `new_in(storage, value)` builds in any storage; `new` is
-`new_in(Heap::default(), ..)`. `from_bytes*`, the unchecked loaders and `clone` make a storage
+`new_in(Heap::default(), ..)`. `from_bytes`, the unchecked loaders and `clone` make a storage
 with `Default`; a storage without one loads with `Region::new_in(storage, view::<T>(bytes)?)`.
 Everything else is the same for every storage.
 
@@ -649,7 +643,7 @@ region zeroes what it uses. The contract (also the trait's `# Safety`, keep both
   memory is as before, at the same address.
 
 The region checks the rest: it asks for no more than its limit, uses no more of any memory, and
-panics if it gets less than it asked for (`from_bytes*`: `Error::StorageFull`). A storage that
+panics if it gets less than it asked for (`from_bytes`: `Error::StorageFull`). A storage that
 does not grow returns its memory as it is, whatever it is asked for.
 
 Handles never see the storage; they reach one concrete `Buf` (`flat.rs`): `ptr` (byte 0), `len`,
@@ -685,8 +679,8 @@ the limit is used, so every offset fits. `Inline<N>` is `#[repr(C, align(8))]`, 
 (asserted).
 
 A storage that cannot hold the region panics where the heap would grow: `new_in`,
-`from_bytes_unchecked`, `clone`, edits. `from_bytes*` load bytes from outside and return an
-error: they check, ask the storage for room (`Buf::load`), and copy only if they got it.
+`from_bytes_unchecked`, `clone`, edits. `from_bytes` loads bytes from outside and returns an
+error: it asks the storage for room (`Buf::load`), copies, and checks the copy.
 
 ## Bytes
 
@@ -697,11 +691,9 @@ pointee. Builders write the same image.
 
 ```rust
 pub fn as_bytes(&self) -> Option<&[u8]>                                      // Region
-pub fn from_bytes(bytes: &[u8]) -> Result<Region<T, S>, Error>               // S: Default; alloc
-pub fn from_bytes_with(bytes: &[u8], scratch: &mut [Pending]) -> Result<Region<T, S>, Error>
+pub fn from_bytes(bytes: &[u8]) -> Result<Region<T, S>, Error>               // S: Default
 pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Region<T, S>              // panics if full
-pub fn view<T: Flat>(bytes: &[u8]) -> Result<&T, Error>                       // crate root; alloc
-pub fn view_with<'b, T: Flat>(bytes: &'b [u8], scratch: &mut [Pending]) -> Result<&'b T, Error>
+pub const fn view<T: Flat>(bytes: &[u8]) -> Result<&T, Error>                 // crate root
 pub const unsafe fn view_unchecked<T: Flat>(bytes: &[u8]) -> &T
 ```
 
@@ -711,74 +703,40 @@ pub const unsafe fn view_unchecked<T: Flat>(bytes: &[u8]) -> &T
   hint (`List::finish` with `cap != len`, or a builder list that had to grow). A deep copy never
   clears it: it writes every list with `cap == len` and grows none, so `Region::new(&*r)` is
   always compact and is how any region is saved.
-- `from_bytes` checks the bytes (any alignment) and copies them into a new region in any storage
-  with `Default`. A valid image the storage cannot hold is `Error::StorageFull`, not a panic.
-- `view` checks a slice aligned as a region is, to `ALIGN` (a mapped file, a region's own buffer,
-  on every target), and reads it in place;
-  a `&T` needs nothing else, since `Near` resolves relative to itself. It is a function, not a
+- `view` is `puns::from_head` (`const`, no memory): the slice aligned for `T`, every value and
+  pointee valid, the pointees in the order of a copy, bytes that no pointer reaches allowed. A
+  `&T` needs nothing else, since `Near` resolves relative to itself. It is a function, not a
   method: it makes no region and has no storage.
-- The `_with` forms check with the caller's scratch; `Error::ScratchFull` says it ran out before
-  the check finished, which says nothing about the bytes.
-- The unchecked forms are `unsafe`: the checked form would accept the bytes, in this build (for
-  `view_unchecked`, at an address aligned to `ALIGN`, and the compact image of a valid `T`; for
-  the loaders, the image at any address). That is what `as_bytes` returned for the same `T` in a
-  build with the same layout, and what a check of the caller's that accepts no more (a crate
-  that checks images itself) accepted. Loading is then one `memcpy`, and viewing reads nothing.
-  `from_bytes_unchecked` panics if the storage is full.
-- `Error` (exhaustive): `Invalid(at)`, where the bytes stop being the image of a valid value (0
-  for a slice not aligned to `ALIGN` in `view*`, or bytes shorter than a `T` or longer than its
-  limit);
-  `ScratchFull`; `StorageFull`.
+- `from_bytes` copies the bytes (any alignment) into a new region in any storage with `Default`,
+  then checks the copy as `view` does, so the region holds the image as it is. A valid image the
+  storage cannot hold is `Error::StorageFull`, not a panic, found from the length before the check.
+- The unchecked forms are `unsafe`: `view` would accept the bytes, in this build, which makes them
+  a tree. That is what `as_bytes` returned for the same `T` in a build with the same layout.
+  Loading is then one `memcpy`, and viewing reads nothing. `from_bytes_unchecked` panics if the
+  storage is full.
+- `Error` (exhaustive): `Invalid(puns::Error)`, what `puns` found (`Size` also for bytes longer
+  than the limit of `T`); `StorageFull`.
 
-Checking (`bytes::check`) accepts exactly the compact images of valid values. It is
-`puns::check_compact`, at the alignment of a region (`ALIGN`), with the scratch of the
-loader as its worklist: `puns` checks the root, then each pointee, depth first, each value before
-its pointees and each pointer of a value before the next, which is the order of the deep copy, and
-requires each pointee at the first position after the one before it where it is aligned (with what
-is stored before its value, the length and the capacity of a list, right before it), and the last
-one to end where the bytes end. That one rule gives bounds, alignment, no sharing, no cycles and
-no gaps. Each value is checked as its layout says: its scalars (`bool`, `char`, `NonZero`, the
-numbers of given values of `puns::num`), the tag of an enum then the fields of its variant, its
-rules (`valid(..)` of a field, `assert(..)` of the type), each `Near` (an offset of zero bytes is
-not one, and is `None` for an `Option<Near>`), UTF-8 and `cap == len` (the rule of `ListLen`).
-Padding is not looked at. Before `puns`, `check` refuses at offset 0 bytes shorter than a `T` or
-longer than its limit, and instantiates `Flat::store` of `T` (a function pointer to it), so that a
-load refuses at compile time, at every depth, the types that a build refuses (`fits_behind`).
+Checking is `puns::from_head::<T>`, after `fits::<T>()` and a function pointer to `Flat::store`
+of `T`, so that a load refuses at compile time, at every depth, the types that a build refuses
+(`fits_behind`). Each value is checked as its layout says: its scalars (`bool`, `char`,
+`NonZero`, the numbers of given values of `puns::num`), the tag of an enum then the fields of its
+variant, its rules (`valid(..)` of a field, `assert(..)` of the type), each `Near` (an offset of
+zero bytes is not one, and is `None` for an `Option<Near>`), UTF-8 and `cap == len` (the rule of
+`ListLen`). Padding is not looked at. The pointees are claimed in the order of a copy, each after
+everything before it: that gives bounds, alignment, no sharing, no overlap and no cycles, with
+gaps allowed. `tests/corpus.rs` compares, on every image of a corpus and every corruption, which
+ones are compact images of valid values (accepted, and copied to the same bytes) with what the
+loaders of 0.8.1 accepted, whose results were those of 0.7.
 
-After `Ok`, every value is in bounds and valid, every pointer aims at its pointee, and the address:
-the slice is aligned to `ALIGN` (`view`), every pointee aligned for its types at positions of a
-region (`puns::check_compact` with `ALIGN`), and no stored type more aligned than `ALIGN` (`fits`).
-That is what the cast relies on.
-
-Where the bytes stop being a value (`Error::Invalid(at)`) is where `puns` says (`puns::Failure`),
-recorded as the check runs, in one pass: the innermost scalar, tag or struct whose check fails
-(the length of a list past `LIMIT`, the capacity of a list whose length is not it); a pointer
-whose pointee is not where the compact image puts it, or does not fit in the bytes; the start of a
-pointee, at what is stored before its value, if its length is negative or does not fit; after the
-last pointee if bytes follow. The results are those of 0.8.1, which gave those of 0.7, on every
-image of `tests/corpus.rs` and every corruption, the least scratch included: the test compares
-them with the record of 0.7 and the four changes that 0.8.1 made to it. And types with rules
-refuse what breaks them, which 0.7 did not know.
-
-- The only `unsafe` steps of a loader are those of `puns::check_compact`, whose contract is its
-  own, the implementation of `puns::Worklist` for `Stack` (an `unsafe` trait: `puns` keeps its
-  entries in the vector), and the cast of checked bytes to `&T`. It never panics on any input.
-- It does not recurse with the depth of the data. Every pointer waits as an entry of the worklist
-  (`puns::Worklist`) until its pointee is checked, and once an element of a list put a pointer in
-  it, the rest of the list waits in one entry, as in 0.8.1. Time is linear in the bytes: before
-  each step, `puns` grows the worklist to the most entries that the step may add, so no step is
-  made twice. The worklist grows with the nesting of the data (no fixed size suffices; nothing
-  points back): a `Vec` that doubles for `from_bytes` and `view` (`Stack`), the caller's
-  `&mut [Pending]` for the `_with` forms, which cannot grow: `Error::ScratchFull` then (from
-  `puns::Error::Limit`), where an entry does not fit.
-- `bytes.len() / 4` entries always suffice (`/ 2` with `i16` pointers): each waits for a pointer of
-  its own, a stored offset of at least the size of an offset, and checked values are disjoint. So
-  an image fitting `Inline<N>` needs at most `N / 4`; most data needs few or none. An entry
-  (`puns::Pending`: a position, a size, and the check of its pointer) is 24 bytes on 64-bit
-  targets, 12 on 32-bit.
-- Elements of which every value is valid (from `Layout::is_free`: no pointers, no rules, every bit
-  pattern a value: lists and arrays of numbers) are not walked, so checking costs pointers, text
-  and values that can be invalid, not bulk numbers: a large mapped table is ready at once.
+- The only `unsafe` steps of a loader are the copy of `from_bytes` and the cast of checked bytes
+  to `&T`. It never panics on any input.
+- It does not recurse with the depth of the data, and takes no memory from the caller: `puns`
+  checks the pointees of a type that points at itself in a loop of that type, with 64 entries for
+  the pointees that wait, in its own frame (`puns::AIM_PARTS`).
+- Elements of which every value is valid (no pointers, no rules, every bit pattern a value: lists
+  and arrays of numbers) are not walked, so checking costs pointers, text and values that can be
+  invalid, not bulk numbers: a large mapped table is ready at once.
 - The bytes hold the layout of the target, its values in the byte order of their types, and
   distances and lengths as their `Offset` writes them (native-endian for `i16`, `i32`, `i64`);
   no header, no version in the bytes. A build with the same layout reads back what `as_bytes`
@@ -787,8 +745,7 @@ refuse what breaks them, which 0.7 did not know.
   compact copy, `Region::new(&*r)`, if it was edited), and deserializes through `from_bytes`
   (any storage with `Default`); its `Error` becomes `de::Error::custom`. The visitor takes bytes
   borrowed or owned, or a sequence of `u8` (as JSON writes them), whose size hint it trusts up
-  to 64 KiB. It needs `alloc`: `from_bytes` checks with the heap, and a sequence is collected
-  into a `Vec`.
+  to 64 KiB. It needs `alloc`: a sequence is collected into a `Vec`.
 
 ## Internals
 
@@ -805,14 +762,13 @@ Files of `src/`:
   `Old`, `ListEdit`, `OptionEdit`, `StrEdit`.
 - `aim.rs`: `Pointee<O>`, the pointee of the aim of a `Near<T, O>`, `ListLen<O>`, and the
   contract of a read of a pointee.
-- `bytes.rs`: `Error`, `Stack`, `check` (`puns::check_compact`), `view`, `view_with`,
-  `view_unchecked`.
+- `bytes.rs`: `Error`, `view` (`puns::from_head`), `view_unchecked`.
 - `near.rs`: `Near<T, O>` (its `Pun` and its aim): `Deref`, builders, trait impls, the pinned
   view, `pointee_mut`; `Offset`, its impls (`offsets!` for the integers of the target, `fixed!`
   for those of `puns::num`, whose `NonZero` is the one of `puns::num`), `offset` (its layout,
   checked).
 - `region.rs`: `Region<T, S>`: `attach`, `base`, `copy_of`, constructors, `edit`, `as_bytes`,
-  `from_bytes*`, trait impls, `serde` impls.
+  `from_bytes`, `from_bytes_unchecked`, trait impls, `serde` impls.
 - `storage.rs`: `Storage` and its contract, `Heap`, `Inline<N>`.
 
 Mechanics:
@@ -878,11 +834,8 @@ Mechanics:
   compacts any other; a method fusing the two needs a `Cow` and exists only with `alloc`.
 - No views on `Region`: viewing builds no region and needs no storage. As methods of
   `Region<T>` (the heap) they only served inference, and kept `Heap` alive without `alloc`.
-- No `from_bytes` or `view` without `alloc`, and no fixed bound on checking: a check that never
-  rejects a valid image needs memory that grows with the data. Without a heap the caller gives
-  it (`_with` forms); a missing method is better than a bound that rejects valid images.
-- No `#[non_exhaustive]` on `Error`: its three cases are every way a loader fails (the bytes,
-  the scratch, the storage), and an exhaustive match lets callers handle each one, checked by
+- No `#[non_exhaustive]` on `Error`: its two cases are every way a loader fails (the bytes, the
+  storage), and an exhaustive match lets callers handle each one, checked by
   the compiler. A new case would be a breaking release anyway.
 - Copies recurse once per level of nesting (`Region::new(&*region)`, so saving an edited
   region), like `Clone` for a `Box`. Checking bytes does not.

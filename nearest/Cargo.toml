@@ -15,10 +15,8 @@ exclude = ["CLAUDE.md"]
 
 [features]
 default = ["alloc"]
-# The heap: `Region<T>`, its default storage, and `from_bytes` and `view`, whose
-# check takes memory from the heap. Without it, regions live in other storage
-# (`Region<T, Inline<N>>`), and loaded bytes are checked with memory from the caller
-# (`from_bytes_with`, `view_with`).
+# The heap: `Region<T>` and its default storage. Without it, regions live in other storage
+# (`Region<T, Inline<N>>`).
 alloc = []
 # `Serialize` and `Deserialize` for `Region`: its bytes, checked when loaded.
 serde = ["alloc", "dep:serde"]
@@ -29,7 +27,7 @@ nearest-derive = { version = "=0.8.1", path = "../nearest-derive" }
 # the pointers included, which are aims), and the numbers of a fixed byte order (`puns::num`).
 # Re-exported as `nearest::puns`. Pinned to a commit: aims are not released yet. The version is
 # the one of that commit, which `cargo deny` requires (a git dependency without one is a wildcard).
-puns = { version = "=0.2.4", git = "https://github.com/uael/puns", rev = "e18e7d1c3f5b9ff1204f6c0ad168a27767b0f39b" }
+puns = { version = "=0.2.4", git = "https://github.com/uael/puns", rev = "205d543c7fba94c57f3069091363719020f7f882" }
 serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

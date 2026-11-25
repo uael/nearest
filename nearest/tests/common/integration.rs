@@ -1246,8 +1246,8 @@ fn builders_write_the_compact_image() {
 }
 
 /// Every image with one byte changed, or cut, or longer, is either rejected or read in full as a
-/// value that shows the same and whose copy is as long as those bytes: a corruption is never read
-/// as more than its bytes, nor out of them (Miri). Which corruptions are accepted depends on the bytes of
+/// value that shows the same and whose copy is no longer than those bytes: its pointees form a tree
+/// in them, so a corruption is never read as more than its bytes, nor out of them (Miri). Which corruptions are accepted depends on the bytes of
 /// the target (its widths, its alignment), so only that both outcomes happen is asserted: the
 /// image itself is accepted, a cut one rejected. Under Miri every 127th byte is changed.
 #[test]
@@ -1259,7 +1259,8 @@ fn small_corruptions_are_rejected_or_harmless() {
     (format!("{v:?}"), Region::new_in(Store::default(), v))
   }) {
     Ok((shown, again)) => {
-      assert_eq!((format!("{:?}", *again), again.byte_len()), (shown, bytes.len()));
+      assert_eq!(format!("{:?}", *again), shown);
+      assert!(again.byte_len() <= bytes.len(), "a copy is no longer than a tree");
       true
     }
     Err(_) => false,
@@ -1305,7 +1306,7 @@ fn malformed_images_are_rejected() {
   tag[0] = 3; // no such variant
   assert!(ok(&tag).is_err());
   assert!(ok(&image[..image.len() - 1]).is_err()); // missing bytes
-  assert!(ok(&[&image[..], &[0; 8]].concat()).is_err()); // trailing bytes
+  assert_eq!(ok(&[&image[..], &[0; 8]].concat()), Ok("(-1 + 2)".into())); // no pointer reaches them
   assert!(ok(&[]).is_err());
 
   // Lists and strings: absurd lengths, `cap != len`, bad UTF-8.
@@ -1379,16 +1380,11 @@ fn malformed_images_are_rejected() {
 
   // The error.
   let err = Region::<Expr>::from_bytes(&[9]).err().unwrap();
-  assert_eq!(err, nearest::Error::Invalid(0));
-  assert_eq!(err.to_string(), "invalid region bytes at offset 0");
+  assert_eq!(err, nearest::Error::Invalid(nearest::puns::Error::Size));
+  assert_eq!(err.to_string(), "invalid region bytes: value does not have the size of the target type");
   let _: &dyn std::error::Error = &err;
-  assert_eq!(format!("{err:?}"), "Invalid(0)");
-  for (e, shown) in [
-    (nearest::Error::ScratchFull, "scratch too small to check region bytes"),
-    (nearest::Error::StorageFull, "region bytes larger than the storage"),
-  ] {
-    assert_eq!(e.to_string(), shown);
-  }
+  assert_eq!(format!("{err:?}"), "Invalid(Size)");
+  assert_eq!(nearest::Error::StorageFull.to_string(), "region bytes larger than the storage");
 }
 
 #[test]
@@ -2055,6 +2051,31 @@ mod pinned {
         bump(a, by);
       }
     }
+  }
+
+  /// A region loaded as its bytes are, with bytes that no pointer reaches after them, is edited
+  /// through its pinned view, both sides of an addition borrowed at once, and through handles: the
+  /// check of `puns` found the pointees to form a tree, which these writes rely on (Miri). The
+  /// same image with two pointers to one pointee, or a pointer back to the root, is not loaded.
+  #[test]
+  fn a_loaded_image_is_edited_in_place() {
+    let built = Region::new_in(Store::default(), Expr::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2)));
+    let image = [built.as_bytes().unwrap(), &[0; 8][..]].concat();
+    let mut r = Region::<Expr>::from_bytes(&image).unwrap();
+    assert_eq!(r.byte_len(), image.len());
+    bump(r.edit().pin(), 10);
+    r.edit().update(|old| Expr::add(old, Expr::Lit(5)));
+    let mut expected = Region::new_in(Store::default(), Expr::add(Expr::neg(Expr::Lit(11)), Expr::Lit(12)));
+    expected.edit().update(|old| Expr::add(old, Expr::Lit(5)));
+    assert_eq!(*r, *expected);
+    let (left, right) = (4, 8); // the two pointers of the root `Add`
+    let word = |at: usize| i32::from_ne_bytes(image[at..at + 4].try_into().unwrap());
+    let mut shared = image.clone();
+    shared[right..right + 4].copy_from_slice(&(word(left) - 4).to_ne_bytes());
+    assert!(Region::<Expr>::from_bytes(&shared).is_err());
+    let mut cycle = image;
+    cycle[left..left + 4].copy_from_slice(&(-4i32).to_ne_bytes());
+    assert!(Region::<Expr>::from_bytes(&cycle).is_err());
   }
 
   /// Data without pointers stays `Unpin`: a pin of it gives a `&mut`.
