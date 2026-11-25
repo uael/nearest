@@ -415,10 +415,12 @@ pub use near::{Near, Offset};
 ///   that field's handle, and a variant with several fields holds a handle with a method per
 ///   field (and no `set` or `replace`, so the variant cannot change under it).
 ///
-/// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
-/// `repr`s other than `u8`, explicit discriminants, empty enums, enums of more than 256
-/// variants, variants whose constructors would have the same name (`rename` one) and `#[pin_v2]`
-/// are rejected. `#[flat(..)]` on a variant or a field is
+/// Generic type parameters must be [`Flat`] for the type to be `Flat`. The type bounds each of
+/// them by [`Pun`](puns::Pun), which its layout needs, so the impls that a `derive` writes, such
+/// as `Debug`, which reads the pointees, have that bound: do not write it again. Lifetime
+/// parameters, unions, `repr(packed)`, enum `repr`s other than `u8`, explicit discriminants, empty
+/// enums, enums of more than 256 variants, variants whose constructors would have the same name
+/// (`rename` one) and `#[pin_v2]` are rejected. `#[flat(..)]` on a variant or a field is
 /// read and removed. A variant with fields takes `rename = "name"`, a new name for its
 /// constructor, which no other constructor and not `project` may have; a field takes `into`,
 /// unless it is written as a pointer (`Near<..>`, `Option<Near<..>>`).

@@ -82,13 +82,18 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
     return Err(Error::new_spanned(l, "`#[flat]` types are `'static`: no lifetime parameters"));
   }
 
+  // Every type parameter of the type is `Pun`, added to the bounds that the user wrote on it: the
+  // type has a layout only then. On the type, every impl has the bound, those that the derives of
+  // `core` write too (`Debug` reads the pointees, and the `Deref` of a pointer requires its pointee
+  // to be `Pun`), so the user does not write it.
+  for param in input.generics.type_params_mut() {
+    param.bounds.push(parse_quote!(::nearest::puns::Pun));
+  }
   let name = &input.ident;
   let vis = &input.vis;
   let mut generics = input.generics.clone();
-  // Every type parameter is `Flat`, added to the bounds that the user wrote on it: a parameter
-  // that a value points at may be bounded by the user (`T: Pun`, for the impls of `core` that a
-  // derive writes, such as `Debug`, since `Deref` of a pointer requires it), and a type bounded in
-  // two places is one that clippy sees twice.
+  // Every type parameter is `Flat` in the impls of this crate, added to the bounds of the type: a
+  // type bounded in two places is one that clippy sees twice.
   for param in generics.type_params_mut() {
     param.bounds.push(parse_quote!(::nearest::Flat));
   }
@@ -490,21 +495,19 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   // The type is a `Pun` type: its layout and its valid values, for `puns` (the crate that
   // `nearest` re-exports), which checks loaded bytes, reads a value as another type, and reads
   // the `#[pun(..)]` attributes of the user. First, so that those come after the derive. Bounded
-  // by every type parameter `Pun`, which is what a layout needs, and what gives the type an
-  // identity (`puns` reads a pointer to it as the same pointer only then), and by nothing that
-  // the derive would find from the fields: through pointers, the bounds of types that hold each
-  // other would go round in a circle. So a type that reads its pointees (`Deref`, in an impl that
-  // the user derives) needs its parameters `Pun`, not `Flat`.
-  // `puns` takes `bound` only where there are bounds to write: an enum without fields has no
-  // type parameter.
-  let type_params = input.generics.type_params().map(|p| &p.ident).collect::<Vec<_>>();
-  let bound =
-    (!type_params.is_empty()).then(|| quote!(, bound(#(#type_params: ::nearest::puns::Pun),*)));
+  // by the bounds of the type, every type parameter `Pun` among them, which is what a layout
+  // needs, and what gives the type an identity (`puns` reads a pointer to it as the same pointer
+  // only then), and by nothing that the derive would find from the fields (`bound()`): through
+  // pointers, the bounds of types that hold each other would go round in a circle. Not `Flat`,
+  // so that the impls of `core` that the user derives, bounded by what the type states, read the
+  // pointees. `puns` takes `bound` only where there are bounds to write: an enum without fields
+  // has no type parameter.
+  let bound = input.generics.type_params().next().map(|_| quote!(, bound()));
   input.attrs.insert(0, parse_quote!(#[pun(crate = ::nearest::puns #bound)]));
   input.attrs.insert(0, parse_quote!(#[derive(::nearest::puns::Pun)]));
   // A pinned value must keep its pointers, so the type is `Unpin` exactly when its fields are.
   // An impl with a bound on all the fields says so, and makes any impl written by hand a
-  // conflict. With the bounds the user wrote, and no others.
+  // conflict. With the bounds of the type, and no others.
   let unpin = {
     let mut fields_g = input.generics.clone();
     fields_g.params.insert(0, GenericParam::Lifetime(parse_quote!(#lt)));

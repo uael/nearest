@@ -14,12 +14,11 @@ use nearest::{
 // -------------------------------------------------------------------------------------------------
 // Generic types
 
-/// Two generic types that hold each other: the bounds that the derive would find go round in a
-/// circle (`Ping<O>` is `Pun` if the pointer to `Pong<O>` is, which is if `Pong<O>` is...), so
-/// they are told: none but the ones that the types declare.
+/// Two generic types that hold each other: the bounds that the derive of `Pun` would find go round
+/// in a circle (`Ping<O>` is `Pun` if the pointer to `Pong<O>` is, which is if `Pong<O>` is...), so
+/// `#[flat]` gives it none but the ones of the types, where `O` is `Pun`.
 #[flat]
 #[derive(Debug, PartialEq, Eq)]
-#[pun(bound())]
 struct Ping<O: nearest::Offset> {
   id: u8,
   pongs: Near<[Pong<O>], O>,
@@ -27,18 +26,17 @@ struct Ping<O: nearest::Offset> {
 
 #[flat]
 #[derive(Debug, PartialEq, Eq)]
-#[pun(bound())]
 enum Pong<O: nearest::Offset> {
   End(bool),
   Ping(Near<Ping<O>, O>),
 }
 
-/// A generic type whose parameter is what it holds: the derive finds its bounds (and `#[flat]`
-/// its own: the parameter is `Flat`). `Debug` and `PartialEq` read the pointees, whose `Deref`
-/// reads with `puns`, which requires the parameter to be `Pun`, so it is written.
+/// A generic type whose parameter is what it holds. `Debug` and `PartialEq` read the pointees,
+/// whose `Deref` reads with `puns`, which requires the parameter to be `Pun`: `#[flat]` bounds it
+/// on the type, so the impls that the derives of `core` write have the bound.
 #[flat]
 #[derive(Debug, PartialEq, Eq)]
-struct Boxed<T: puns::Pun> {
+struct Boxed<T> {
   id: u8,
   value: Near<T, i32le>,
   more: Near<[T], i32le>,

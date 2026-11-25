@@ -250,9 +250,9 @@ a value that holds one (a region holds each pointee at its offset, and the refer
 provenance of the buffer under Tree Borrows). The pinned view (`as_pin_mut`, `iter_pin_mut`)
 calls `pointee_mut`, one `unsafe` block each, whose `// SAFETY:` is the contract of "Reading a
 pointee" in `aim.rs` (a `Near` owns its pointee alone).
-`Deref` requires only what the read needs, `T: Pun`; so a generic type that derives `Debug` or
-`PartialEq` over a `Near<T>` bounds `T: Pun` itself (`Pair`, `Lst`, `Tree` in
-`tests/common/integration.rs`, `Boxed` in `tests/layouts.rs`).
+`Deref` requires only what the read needs, `T: Pun`; `#[flat]` bounds every type parameter of the
+type by `Pun`, so a generic type that derives `Debug` or `PartialEq` over a `Near<T>` reads it
+(`Pair`, `Lst`, `Tree` in `tests/common/integration.rs`, `Boxed` in `tests/layouts.rs`).
 
 `Option<Near<..>>` is the `Option` of the pointer, which `puns` lays out as the `Option` of its
 `NonZero`: of a native offset, the niche that `core` documents; of an offset of `puns::num`, the
@@ -457,19 +457,21 @@ The three take the width as a last parameter, `i32` by default (`ListEdit<'e, T,
 
 ## Generated code
 
-On the type itself, `#[flat]` puts `#[derive(::nearest::puns::Pun)]` and `#[pun(crate =
-::nearest::puns, bound(T: ::nearest::puns::Pun, ..))]` (without `bound` for a type without type
-parameters, which `puns` refuses on an enum without fields) first (so that the user's `#[pun(..)]`
-attributes, which it leaves as they are, come after the derive that reads them). This is the
-derive of `puns`, not code of this crate's: the layout of the type is what `puns` finds
-(`#[repr(C)]` for a struct, `#[repr(u8)]` for an enum, as `#[flat]` makes them), and every field
-type must be `Pun` (every `Flat` type is). The bounds are every type parameter `Pun`, which a
-layout needs, and none that the derive would find from the fields: through pointers, the bounds of
-types that hold each other would go round in a circle (a user's `#[pun(bound(..))]` adds to them;
-`puns` leaves out a `Pun` bound that a parameter has already). Not `Flat`: a type that reads its
-pointees in an impl that a derive of `core` writes (`Debug`) is bounded by what the read needs,
-`T: Pun`, and its `Pun` must hold under that bound. The impls of `#[flat]` add `::nearest::Flat`
-to the bounds of each type parameter. A derive rather than an
+On the type itself, `#[flat]` adds `::nearest::puns::Pun` to the bounds of each type parameter, and
+puts `#[derive(::nearest::puns::Pun)]` and `#[pun(crate = ::nearest::puns, bound())]` (without
+`bound` for a type without type parameters, which `puns` refuses on an enum without fields) first
+(so that the user's `#[pun(..)]` attributes, which it leaves as they are, come after the derive
+that reads them). This is the derive of `puns`, not code of this crate's: the layout of the type is
+what `puns` finds (`#[repr(C)]` for a struct, `#[repr(u8)]` for an enum, as `#[flat]` makes them),
+and every field type must be `Pun` (every `Flat` type is). The bounds of `Pun` are those of the
+type, every type parameter `Pun` among them, which a layout needs, and none that the derive would
+find from the fields (`bound()`): through pointers, the bounds of types that hold each other would
+go round in a circle (a user's `#[pun(bound(..))]` adds to them). The `Pun` bound is on the type,
+not only on the impl of `Pun`, so that the impls that the derives of `core` write (`Debug`, which
+reads the pointees) have it, and the user does not write it: written twice, clippy reports it. Not
+`Flat`: the `Pun` of a type that reads its pointees in such an impl must hold under the bounds that
+the impl has. The impls of `#[flat]` add `::nearest::Flat` to the bounds of each type parameter.
+A derive rather than an
 implementation written by `#[flat]`: the items of `Pun` are `puns`'s own, which it may change,
 and the derive is how it writes them for a struct or an enum. Consequences for a user: a type that
 derives `Pun` itself conflicts, and the field types of a `pub` type must be as visible as it is

@@ -5,7 +5,7 @@ use std::{
   panic::{AssertUnwindSafe, catch_unwind},
 };
 
-use nearest::{Edit, Emit, Flat, Near, flat, puns::Pun};
+use nearest::{Edit, Emit, Flat, Near, flat};
 
 /// A region in the storage under test, `Store`: the heap (`integration.rs`), inline
 /// (`inline.rs`) or a storage written here (`user_storage.rs`).
@@ -113,23 +113,23 @@ enum Stmt {
 }
 
 // `Debug` and `PartialEq` read the pointees, through `Deref`, which reads with `puns`: a parameter
-// behind a pointer is `Pun`.
+// behind a pointer is `Pun`, which `#[flat]` states on the type.
 #[flat]
 #[derive(Debug, PartialEq)]
-struct Pair<A, B: Pun> {
+struct Pair<A, B> {
   first: A,
   second: Near<B>,
 }
 
 #[flat]
 #[derive(Debug, PartialEq)]
-struct Lst<T: Pun> {
+struct Lst<T> {
   items: Near<[T]>,
 }
 
 #[flat]
 #[derive(Debug, PartialEq)]
-enum Tree<T: Pun> {
+enum Tree<T> {
   Leaf(T),
   Node(Near<Tree<T>>, Near<Tree<T>>),
 }
