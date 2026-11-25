@@ -8,20 +8,20 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
      = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
      = help: the following other types implement trait `Scalar`:
                ()
-               NonZero<i128>
-               NonZero<i16>
-               NonZero<i32>
-               NonZero<i64>
-               NonZero<i8>
-               NonZero<isize>
-               NonZero<u128>
+               PhantomData<T>
+               PhantomPinned
+               bool
+               char
+               f32
+               f32be
+               f32le
              and $N others
      = note: required for `String` to implement `Pun`
 note: required by a bound in `nearest::puns::Fields::Type`
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/f25ad88/puns/src/lib.rs:2359:23
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/e18e7d1/puns/src/lib.rs:2379:23
      |
-2358 | pub unsafe trait Fields {
-2359 |   type Type: ?Sized + Pun;
+2378 | pub unsafe trait Fields {
+2379 |   type Type: ?Sized + Pun;
      |                       ^^^ required by this bound in `Fields::Type`
 
 error[E0277]: the trait bound `String: Scalar` is not satisfied
@@ -32,13 +32,13 @@ error[E0277]: the trait bound `String: Scalar` is not satisfied
   |
   = help: the following other types implement trait `Scalar`:
             ()
-            NonZero<i128>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
+            PhantomData<T>
+            PhantomPinned
+            bool
+            char
+            f32
+            f32be
+            f32le
           and $N others
   = note: required for `String` to implement `Pun`
   = note: this error originates in the derive macro `::nearest::puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)
@@ -53,11 +53,11 @@ error[E0277]: the trait bound `String: Flat` is not satisfied
             Near<T, O>
             Near<[T], O>
             Near<str, O>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<u16>
+            Option<Near<T, O>>
+            S
+            [T; N]
+            bool
+            char
           and $N others
 note: required by a bound in `Emit`
  --> src/flat.rs
@@ -76,11 +76,11 @@ error[E0277]: the trait bound `String: Flat` is not satisfied
             Near<T, O>
             Near<[T], O>
             Near<str, O>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<u16>
+            Option<Near<T, O>>
+            S
+            [T; N]
+            bool
+            char
           and $N others
   = note: this error originates in the attribute macro `flat` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -94,11 +94,11 @@ error[E0277]: the trait bound `String: Flat` is not satisfied
             Near<T, O>
             Near<[T], O>
             Near<str, O>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<u16>
+            Option<Near<T, O>>
+            S
+            [T; N]
+            bool
+            char
           and $N others
 note: required by a bound in `nearest::Emit::emit`
  --> src/flat.rs
@@ -119,13 +119,13 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
   = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
   = help: the following other types implement trait `Scalar`:
             ()
-            NonZero<i128>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
+            PhantomData<T>
+            PhantomPinned
+            bool
+            char
+            f32
+            f32be
+            f32le
           and $N others
   = note: required for `String` to implement `Pun`
 
@@ -139,11 +139,11 @@ error[E0277]: the trait bound `String: Flat` is not satisfied
             Near<T, O>
             Near<[T], O>
             Near<str, O>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<u16>
+            Option<Near<T, O>>
+            S
+            [T; N]
+            bool
+            char
           and $N others
 
 error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and its valid values
@@ -156,13 +156,13 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
   = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
   = help: the following other types implement trait `Scalar`:
             ()
-            NonZero<i128>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
+            PhantomData<T>
+            PhantomPinned
+            bool
+            char
+            f32
+            f32be
+            f32le
           and $N others
   = note: required for `String` to implement `Pun`
 note: required by a bound in `nearest::Flat::REACH`
@@ -184,13 +184,13 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
   = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
   = help: the following other types implement trait `Scalar`:
             ()
-            NonZero<i128>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
+            PhantomData<T>
+            PhantomPinned
+            bool
+            char
+            f32
+            f32be
+            f32le
           and $N others
   = note: required for `String` to implement `Pun`
 note: required by a bound in `nearest::Flat::store`
@@ -212,13 +212,13 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
   = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
   = help: the following other types implement trait `Scalar`:
             ()
-            NonZero<i128>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
+            PhantomData<T>
+            PhantomPinned
+            bool
+            char
+            f32
+            f32be
+            f32le
           and $N others
   = note: required for `String` to implement `Pun`
 note: required by a bound in `nearest::Flat::shift`
@@ -240,13 +240,13 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
   = note: a struct, an enum or a union is one with `#[derive(Pun)]`, a scalar with `Scalar`
   = help: the following other types implement trait `Scalar`:
             ()
-            NonZero<i128>
-            NonZero<i16>
-            NonZero<i32>
-            NonZero<i64>
-            NonZero<i8>
-            NonZero<isize>
-            NonZero<u128>
+            PhantomData<T>
+            PhantomPinned
+            bool
+            char
+            f32
+            f32be
+            f32le
           and $N others
   = note: required for `String` to implement `Pun`
 note: required by a bound in `nearest::Flat::reference`
