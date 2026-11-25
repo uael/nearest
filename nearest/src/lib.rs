@@ -541,7 +541,6 @@ pub mod __private {
   pub use crate::{
     edit::Raw,
     flat::{Buf, Sink, fits, make},
-    near::Packed,
   };
 
   /// Names the handle of a variant with several fields, for `XMut`.

@@ -20,8 +20,9 @@
 //!
 //! # Reading a pointee
 //!
-//! `puns` reads the pointee of a pointer, with the methods `Near::pointee` and `Near::pointee_mut`
-//! that its derive writes. `pointee` is safe, and `Deref` calls it: the offset of a `Near` is an
+//! `puns` reads the pointee of a pointer: with `Near::pointee`, which its derive writes, and with
+//! `Near::pointee_mut`, which calls `puns::aim_mut` with the aim of a `Near`,
+//! `Near::AIMS.pointee`. `pointee` is safe, and `Deref` calls it: the offset of a `Near` is an
 //! [`InPlace`](puns::InPlace), which no code makes, so a `&Near` comes from `puns`, which checked
 //! its pointee (`view`, `from_bytes`), or from unsafe code of `nearest` that takes the obligation
 //! that `InPlace` states ("Values made by unsafe code"):

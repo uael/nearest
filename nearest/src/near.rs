@@ -7,12 +7,11 @@ use core::{
   ops::Deref,
   panic::{RefUnwindSafe, UnwindSafe},
   pin::Pin,
-  slice,
+  ptr, slice,
 };
 
 use puns::{
-  InPlace, Pun, Scalar,
-  layout::{Endian, Spec},
+  InPlace, Pun,
   num::{i16be, i16le, i32be, i32le, i64be, i64le},
 };
 
@@ -49,9 +48,9 @@ use crate::{
 pub struct Near<T: ?Sized, O: Offset = i32> {
   /// The distance from the pointer to its pointee, the field of an eager aim of `puns` at the
   /// pointee that [`Pointee`] maps `T` to (`aim`), read as the layout of `O::NonZero` says. An
-  /// `InPlace`, so that a `Near` has no constructor. `puns` reads the pointee (`pointee`,
-  /// `pointee_mut`).
-  #[pun(pointer(mut pointee: <T as Pointee<O>>::Pointee))]
+  /// `InPlace`, so that a `Near` has no constructor. `puns` reads the pointee (`pointee`, which
+  /// its derive writes, and `pointee_mut`, through `puns::aim_mut`).
+  #[pun(pointer(pointee: <T as Pointee<O>>::Pointee))]
   pub(crate) off: InPlace<O::NonZero>,
   _t: PhantomData<T>,
   _pin: PhantomPinned,
@@ -111,8 +110,8 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// (`#[flat]` derives it): a struct around one of the offsets above, here with a smaller
 /// [`LIMIT`](Offset::LIMIT). Its [`NonZero`](Offset::NonZero) is the same integer without zero,
 /// as its layout says too, which `puns` checks the offset of a `Near` as. An offset of a fixed byte
-/// order is one around an offset of [`puns::num`], with a `NonZero` around its `NonZero`, as the
-/// second example shows.
+/// order is one around an offset of [`puns::num`], with a `NonZero` around its
+/// [`puns::num::NonZero`], as the second example shows.
 ///
 /// ```
 /// use std::num::NonZero;
@@ -161,13 +160,16 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// assert!(bytes.windows(6).any(|w| w[..4] == 2i32.to_ne_bytes() && w[4..] == *b"ab"));
 /// ```
 ///
-/// The same, little-endian on every target: around an `i32le`, whose `NonZero` is named through
-/// `Offset`.
+/// The same, little-endian on every target: around an `i32le`, whose `NonZero` is the one of
+/// `puns::num`.
 ///
 /// ```
 /// use nearest::{
 ///   Near, Offset, Region, flat,
-///   puns::{Pun, num::i32le},
+///   puns::{
+///     Pun,
+///     num::{NonZero, i32le},
+///   },
 /// };
 ///
 /// /// An `i32le`, for regions of at most 1 MiB.
@@ -180,7 +182,7 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// #[derive(Clone, Copy, Pun)]
 /// #[pun(crate = nearest::puns)]
 /// #[repr(transparent)]
-/// struct NonZeroSmallLe(<i32le as Offset>::NonZero);
+/// struct NonZeroSmallLe(NonZero<i32le>);
 ///
 /// impl From<NonZeroSmallLe> for SmallLe {
 ///   fn from(n: NonZeroSmallLe) -> Self {
@@ -302,65 +304,23 @@ macro_rules! offsets {
 }
 offsets!(i16, i32, i64);
 
-/// A `T` of alignment 1 that holds an integer of the byte order of the offset `O`: the
-/// [`NonZero`](Offset::NonZero) of the offsets of a fixed byte order of [`puns::num`], which are
-/// byte arrays. Packing keeps the niche of a [`core::num::NonZero`], so `Option` of it has its
-/// size, `None` being zero. It has no use of its own.
-#[doc(hidden)]
-#[derive(Clone, Copy)]
-#[repr(C, packed)]
-pub struct Packed<T: Copy, O>(T, PhantomData<O>);
-
-macro_rules! packed {
-  ($($raw:ident $bits:ident $name:ident $endian:ident;)+) => {$(
-    // SAFETY: a packed `NonZero<$raw>`: its size, initialized bytes that are never all zero, which
-    // `SPEC` accepts, every bit pattern but zeros (a set that the byte order does not change), the
-    // signed integer of the byte order of `$name`. It holds no `UnsafeCell`. Its bytes are a
-    // `NonZero<$raw>` (`stored_as`), whose niche is the one of `Option` of it: `None` is zero,
-    // which `puns` assumes and checks when compiling, since `core` does not document the niche of
-    // a packed struct.
-    unsafe impl Scalar for Packed<NonZero<$raw>, $name> {
-      const SPEC: Spec = Spec::ranges::<Self>(Endian::$endian, &[(1, $bits::MAX as u128)])
-        .signed()
-        .stored_as::<NonZero<$raw>>();
-    }
-  )+};
-}
-
-packed! {
-  i16 u16 i16le Little;
-  i16 u16 i16be Big;
-  i32 u32 i32le Little;
-  i32 u32 i32be Big;
-  i64 u64 i64le Little;
-  i64 u64 i64be Big;
-}
-
 macro_rules! fixed {
   ($($name:ident: $raw:ident;)+) => {$(
-    impl From<Packed<NonZero<$raw>, $name>> for $name {
-      #[inline]
-      fn from(value: Packed<NonZero<$raw>, $name>) -> Self {
-        // The bytes as they are in memory: the integer is only what `to_isize` makes of them.
-        Self::from_bytes({ value.0 }.get().to_ne_bytes())
-      }
-    }
-
     // SAFETY:
     // - a byte array, whose bytes are the integer in two's complement in the byte order of the
     //   type, as its layout says (`puns::num`), which `get` reads and `to_isize` converts with
     //   `as`: every bit pattern is a value, and it has no padding;
     // - `new` writes the bytes of the integer in that byte order and `get` reads them back: a
     //   round trip for every integer of its size, which those within `LIMIT` are;
-    // - `NonZero` is a `NonZero` of the size of the offset, packed: its size, the alignment of
-    //   the offset (1), valid for every bit pattern but zeros, the integer of the byte order of
-    //   the offset (`packed!`); `Option` of it has its size (a `const` assertion of `offset`,
-    //   where a region uses it), so `None` is the only bit pattern left, zeros. `From` keeps the
-    //   bytes;
+    // - `NonZero` is the `puns::num::NonZero` of the offset: its bytes, of its size and its
+    //   alignment (1), valid for every bit pattern but zeros, read as the integer of the byte
+    //   order of the offset, as its layout says; `Option` of it has its size (a `const` assertion
+    //   of `offset`, where a region uses it), so `None` is the only bit pattern left, zeros. Its
+    //   `From` keeps the bytes;
     // - `from_isize` and `to_isize` are conversions between integers.
     #[expect(clippy::cast_possible_truncation, reason = "values within a region fit both")]
     unsafe impl Offset for $name {
-      type NonZero = Packed<NonZero<$raw>, $name>;
+      type NonZero = puns::num::NonZero<$name>;
       #[inline]
       fn from_isize(n: isize) -> Self {
         Self::new(n as $raw)
@@ -474,6 +434,24 @@ impl<T: Flat, O: Offset> Near<[T], O> {
       (Self::pointee_mut(Pin::get_unchecked_mut(self)).iter_mut())
         .map(|element| Pin::new_unchecked(element))
     }
+  }
+}
+
+impl<T: ?Sized + Pointee<O> + Pun, O: Offset> Near<T, O> {
+  /// The pointee, to write: what `pointee` reads, from a pointer made from `self`
+  /// (`puns::aim_mut`).
+  ///
+  /// # Safety
+  ///
+  /// The caller must ensure that, for the lifetime of the result, the bytes of the pointee are
+  /// accessed only through it, and that what it writes leaves a valid `T`: a `&mut Near` does not
+  /// make its pointee exclusive, since a check may find it shared ("Reading a pointee" in `aim`).
+  const unsafe fn pointee_mut(&mut self) -> &mut T {
+    // SAFETY: A `Near` is in a region, or where `puns` checked it, with a valid pointee at its
+    // offset, and a pointer made from `self` has the provenance of the bytes of the pointee under
+    // tree borrows ("Reading a pointee" in `aim`). The caller ensures the rest of what `aim_mut`
+    // requires.
+    unsafe { puns::aim_mut(ptr::from_mut(self), Self::AIMS.pointee) }
   }
 }
 

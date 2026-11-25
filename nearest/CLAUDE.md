@@ -72,8 +72,8 @@ the pointee. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, 
 `Debug`.
 
 Hidden: `nearest::__private::{Raw, Buf, Sink, fits, make, Variant, Pointer}`, the plumbing of the
-macro; `__private::Packed<T, O>`, the `NonZero` of the offsets of `puns::num`, an associated type
-that must be public; the hidden items of `Flat` (`PLAIN`, `REACH`, `edit`, `store`, `shift`;
+macro; `Near::AIMS`, which the derive of `puns` writes, and which names the aim of a `Near` for
+`puns::aim_mut`; the hidden items of `Flat` (`PLAIN`, `REACH`, `edit`, `store`, `shift`;
 `PLAIN` is not given: it is `Pun::LAYOUT.is_plain()` and no eager aim,
 `!Pun::LAYOUT.holds_eager_aims()`) and `Emit` (`emit`, `plain`). The trait `aim::Pointee<O>`,
 which maps the `T` of a `Near<T, O>` to the pointee of its aim, is public in a private module: a
@@ -153,8 +153,8 @@ reading stored bytes as `O` (`read_unaligned`) or as `O::NonZero` (the field of 
 `Near`). Its bytes are a two's complement integer in the byte order that its layout says, a
 `puns` scalar (`Spec`) or a `#[repr(transparent)]` struct around one: `i16`, `i32`, `i64` are
 native-endian; `i16le`, `i32le`, `i64le`, `i16be`, `i32be`, `i64be` of `puns::num` (byte arrays,
-of alignment 1, implemented in `near.rs` with `__private::Packed<NonZero<iN>, O>` as `NonZero`,
-whose `Scalar` says the byte order of `O`: packing gives alignment 1 and keeps the niche) and a
+of alignment 1, implemented in `near.rs` with `puns::num::NonZero<O>` as `NonZero`, whose
+`Scalar` says the byte order of `O`: packing gives alignment 1 and keeps the niche) and a
 user's offset fix one for every target. `puns` reads the offset of a `Near` as the layout of
 `O::NonZero` says, and a length or a capacity as the layout of `O` says, so the layout is the
 byte order: there is no other statement of it to keep in step. The image of a type with one
@@ -240,8 +240,10 @@ read of `puns` does not need: the loaders instantiate `Flat::store`, a function 
 Bytes), as every other way into a region does. A constant of `Flat` cannot hold the assertion: the
 types that a recursive type reaches lead back to it, a cycle of constants that Rust refuses (E0391).
 
-`puns` reads the pointee: the aim is named, so the derive writes `Near::pointee`, safe, and
-`Near::pointee_mut`, `unsafe`, which make the `&T`, the `&[T]` or the `&str`. `Deref` calls
+`puns` reads the pointee: the aim is named, so the derive writes `Near::pointee`, safe, which
+makes the `&T`, the `&[T]` or the `&str`, and `Near::AIMS.pointee`, with which `Near::pointee_mut`,
+`unsafe`, calls `puns::aim_mut` (the derive of `puns` writes no method that writes a pointee: it
+would be `unsafe`, and call a function that a crate path names). `Deref` calls
 `pointee` with no `unsafe` block: a `&Near` comes from a check of `puns` or from the region, whose
 `Deref` takes the obligation that `puns::InPlace` states for unsafe code that gives a reference to
 a value that holds one (a region holds each pointee at its offset, and the reference has the
@@ -254,8 +256,9 @@ pointee" in `aim.rs` (a `Near` owns its pointee alone).
 
 `Option<Near<..>>` is the `Option` of the pointer, which `puns` lays out as the `Option` of its
 `NonZero`: of a native offset, the niche that `core` documents; of an offset of `puns::num`, the
-one of the `NonZero<iN>` that the `Scalar` of `Packed` says its bytes are (`Spec::stored_as`),
-which `puns` assumes and checks when compiling, without its `unstable` feature.
+one of the `NonZero<iN>` that the `Scalar` of `puns::num::NonZero` says its bytes are
+(`Spec::stored_as`), which `puns` assumes and checks when compiling, without its `unstable`
+feature.
 
 What `puns` does with a value that holds a pointer:
 
@@ -803,8 +806,8 @@ Files of `src/`:
 - `bytes.rs`: `Error`, `Stack`, `check` (`puns::check_compact`), `view`, `view_with`,
   `view_unchecked`.
 - `near.rs`: `Near<T, O>` (its `Pun` and its aim): `Deref`, builders, trait impls, the pinned
-  view; `Offset`, its impls (`offsets!` for the integers of the target, `fixed!` for those of
-  `puns::num`, with `Packed`, whose `Scalar` impls say their byte order), `offset` (its layout,
+  view, `pointee_mut`; `Offset`, its impls (`offsets!` for the integers of the target, `fixed!`
+  for those of `puns::num`, whose `NonZero` is the one of `puns::num`), `offset` (its layout,
   checked).
 - `region.rs`: `Region<T, S>`: `attach`, `base`, `copy_of`, constructors, `edit`, `as_bytes`,
   `from_bytes*`, trait impls, `serde` impls.
