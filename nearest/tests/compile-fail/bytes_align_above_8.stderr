@@ -28,3 +28,29 @@ note: the above error was encountered while instantiating `fn nearest::__private
   |
   |   fits::<T>();
   |   ^^^^^^^^^^^
+
+error[E0080]: evaluation panicked: the target needs a greater alignment than the bytes have
+    --> $RUST/core/src/panic.rs
+     |
+     = note: evaluation of `nearest::puns::checked::<A, 8>::{constant#0}` failed here
+     |
+    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/711c134/puns/src/lib.rs:5084:5
+     |
+5084 |     assert!(align_of::<D>() <= ALIGN, "the target needs a greater alignment than the bytes have");
+     |     --------------------------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/711c134/puns/src/lib.rs:5081:3
+     |
+5081 | /   const {
+5082 | |     let () = Plan::<[u8], D>::TRY_REF;
+5083 | |     assert!(ALIGN.is_power_of_two(), "the alignment of the bytes is a power of two");
+5084 | |     assert!(align_of::<D>() <= ALIGN, "the target needs a greater alignment than the bytes have");
+5085 | |   };
+     | |___^
+
+note: the above error was encountered while instantiating `fn puns::checked::<A, 8>`
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/711c134/puns/src/lib.rs:5072:3
+     |
+5072 |   checked::<D, ALIGN>(bytes, true, &mut Dyn(work))
+     |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

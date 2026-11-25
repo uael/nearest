@@ -18,7 +18,7 @@ for the rest.
 `puns` (type punning proven at compile time, same owner) knows the layout and the valid values of
 every stored type: `#[flat]` derives `puns::Pun`, and so does `Near`, with an eager aim of `puns`
 at its pointee (see Pointers and `puns`). So the loaders check bytes with `puns` alone, pointees
-included (`puns::check`), and the numbers of a fixed byte order of `puns::num` make the bytes of a
+included (`puns::check_compact`), and the numbers of a fixed byte order of `puns::num` make the bytes of a
 region the same on every machine. `puns` is a git dependency, pinned to a commit: its aims are not
 released.
 
@@ -225,19 +225,29 @@ at the address of the pointer plus the offset, read as the layout of `O::NonZero
 | `Near<[T], O>` | `puns::Thin<[T], ListLen<O>>`: the capacity, the length, the elements | the length |
 | `Near<str, O>` | `puns::Thin<str, O>`: the length, the UTF-8 bytes | the length |
 
-A `Thin<T, M>` is the format of a list behind its length: an `M` stored right before the elements
-(its last integer is the length, read as its layout says; a negative one is refused), the pointer
-aimed at the length, and the elements aligned to their alignment and to the size of the length.
-That is the format of 0.8 (see Layout), byte for byte. `ListLen<O>` is a `#[repr(C)]` struct of
-the capacity and the length, whose rule `cap == len` a loaded image keeps. The `Pun` of a `Near`
-does not evaluate `fits_behind`, which a read of `puns` does not need: the loaders reach it
-through `Flat::store` (see Bytes), as every other way into a region does.
+A `Thin<T, M>` stores the metadata of a pointer to `T` before it: for a list or a text, an `M`
+stored right before the elements (its last integer is the length, read as its layout says; a
+negative one is refused), the pointer aimed at the length, and the elements aligned to their
+alignment and to the size of the length; nothing for a sized `T`. That is the format of 0.8 (see
+Layout), byte for byte. `ListLen<O>` is a `#[repr(C)]` struct of the capacity and the length,
+whose rule `cap == len` a loaded image keeps, and whose length is within `LIMIT` of 0
+(`#[pun(valid(..))]`), so that a check refuses a length past it where the length is and a
+negative one within it with the capacity, as 0.8 did. `aim::Pointee<O>` exists because the format
+puts a capacity before the length of a list and none before the length of a text: a `Thin<T, M>`
+of every `T` with one `M` cannot say both. The `Pun` of a `Near` does not evaluate
+`fits_behind`, which a read of `puns` does not need: the loaders instantiate `Flat::store`, a
+function pointer to it (see Bytes), as every other way into a region does. A constant of `Flat` cannot hold
+the assertion: the types that a recursive type reaches lead back to it, a cycle of constants that
+Rust refuses (E0391).
 
-`puns` reads the pointee: the aim is named, so the derive writes `Near::target` and
-`Near::target_mut`, `unsafe`, which make the `&T`, the `&[T]` or the `&str`. `Deref` and the pinned
-view (`as_pin_mut`, `iter_pin_mut`) call them, one `unsafe` block each, whose `// SAFETY:` is the
-contract of "Reading a pointee" in `aim.rs` (a region holds each pointee at its offset, the
-reference has the provenance of the buffer under Tree Borrows, a `Near` owns its pointee alone).
+`puns` reads the pointee: the aim is named, so the derive writes `Near::target`, safe, and
+`Near::target_mut`, `unsafe`, which make the `&T`, the `&[T]` or the `&str`. `Deref` calls
+`target` with no `unsafe` block: a `&Near` comes from a check of `puns` or from the region, whose
+`Deref` takes the obligation that `puns::InPlace` states for unsafe code that gives a reference to
+a value that holds one (a region holds each pointee at its offset, and the reference has the
+provenance of the buffer under Tree Borrows). The pinned view (`as_pin_mut`, `iter_pin_mut`)
+calls `target_mut`, one `unsafe` block each, whose `// SAFETY:` is the contract of "Reading a
+pointee" in `aim.rs` (a `Near` owns its pointee alone).
 `Deref` requires only what the read needs, `T: Pun`; so a generic type that derives `Debug` or
 `PartialEq` over a `Near<T>` bounds `T: Pun` itself (`Pair`, `Lst`, `Tree` in
 `tests/common/integration.rs`, `Boxed` in `tests/layouts.rs`).
@@ -256,8 +266,8 @@ What `puns` does with a value that holds a pointer:
   once every pointee is a valid value within the bytes, aligned for it, so a `&Near` from `puns`
   is one whose pointee `Deref` may read
   (`puns_reads_pointers_from_bytes_once_it_checked_their_pointees`, `tests/layouts.rs`). Those
-  follow pointers at most `puns::AIM_DEPTH` (64) deep, one behind another; `puns::check`, which
-  the loaders use, follows them at any depth (see Bytes).
+  follow pointers one within another up to `puns::AIM_PARTS` parts of their layouts;
+  `puns::check_compact`, which the loaders use, follows them at any depth (see Bytes).
 - Without its compact check, it does not require the image to be compact: pointees may be shared,
   overlap other values, or leave gaps. A region cannot hold such bytes: an edit of one pointee
   through a `&mut` would be seen through another pointer. So the loaders ask `puns` for the
@@ -716,7 +726,7 @@ pub const unsafe fn view_unchecked<T: Flat>(bytes: &[u8]) -> &T
   `ScratchFull`; `StorageFull`.
 
 Checking (`bytes::check`) accepts exactly the compact images of valid values. It is
-`puns::check` in its compact mode, at the alignment of a region (`ALIGN`), with the scratch of the
+`puns::check_compact`, at the alignment of a region (`ALIGN`), with the scratch of the
 loader as its worklist: `puns` checks the root, then each pointee, depth first, each value before
 its pointees and each pointer of a value before the next, which is the order of the deep copy, and
 requires each pointee at the first position after the one before it where it is aligned (with what
@@ -727,37 +737,35 @@ numbers of given values of `puns::num`), the tag of an enum then the fields of i
 rules (`valid(..)` of a field, `assert(..)` of the type), each `Near` (an offset of zero bytes is
 not one, and is `None` for an `Option<Near>`), UTF-8 and `cap == len` (the rule of `ListLen`).
 Padding is not looked at. Before `puns`, `check` refuses at offset 0 bytes shorter than a `T` or
-longer than its limit, and mentions `Flat::store` of `T`, so that a load refuses at compile time,
-at every depth, the types that a build refuses (`fits_behind`).
+longer than its limit, and instantiates `Flat::store` of `T` (a function pointer to it), so that a
+load refuses at compile time, at every depth, the types that a build refuses (`fits_behind`).
 
 After `Ok`, every value is in bounds and valid, every pointer aims at its pointee, and the
 address: the slice is aligned to `ALIGN` (`view`), every pointee aligned for its types at
-positions of a region (`puns::check` with `ALIGN`), and no stored type more aligned than `ALIGN`
+positions of a region (`puns::check_compact` with `ALIGN`), and no stored type more aligned than `ALIGN`
 (`fits`). That is what the cast relies on.
 
-Where the bytes stop being a value (`Error::Invalid(at)`) is where `puns` says (`puns::Failure`):
-the innermost scalar, tag or struct whose check fails; a pointer whose pointee is not where the
-compact image puts it, or does not fit in the bytes; the length of a list or a text if it is
-negative; the start of a pointee, at what is stored before its value, if its length does not
-fit; after the last
-pointee if bytes follow. `puns` makes a check that fails again in a mode that records the place,
-so that a valid image costs one pass. The results are those of 0.8.1, which gave those of 0.7, on
-every image of `tests/corpus.rs` and every corruption, with two differences that the test states:
-the least scratch, and a negative length within `LIMIT` refused where it is, not where its list
-starts. And types with rules refuse what breaks them, which 0.7 did not know.
+Where the bytes stop being a value (`Error::Invalid(at)`) is where `puns` says (`puns::Failure`),
+recorded as the check runs, in one pass: the innermost scalar, tag or struct whose check fails
+(the length of a list past `LIMIT`, the capacity of a list whose length is not it); a pointer
+whose pointee is not where the compact image puts it, or does not fit in the bytes; the start of a
+pointee, at what is stored before its value, if its length is negative or does not fit; after the
+last pointee if bytes follow. The results are those of 0.8.1, which gave those of 0.7, on every
+image of `tests/corpus.rs` and every corruption, the least scratch included: the test compares
+them with the record of 0.7 and the four changes that 0.8.1 made to it. And types with rules
+refuse what breaks them, which 0.7 did not know.
 
-- The only `unsafe` steps of a loader are those of `puns::check`, whose contract is its own, and
-  the cast of checked bytes to `&T`. It never panics on any input.
-- It does not recurse with the depth of the data. `puns` follows a pointer in place, a few deep (4
-  pointees that hold pointers, then one that holds none), while nothing waits before it in its
-  step; past that, the pointers wait as entries of the worklist (`puns::Worklist`), each kept until
-  its pointee is checked. Time is linear in the bytes, but for a worklist that grows: a step that
-  fills it is made again from where it started, after it grows. The worklist grows with the
-  nesting of the data (no fixed size suffices; nothing points back): a `Vec` that doubles for
-  `from_bytes` and `view` (`Stack`), the caller's `&mut [Pending]` for the `_with` forms, which
-  cannot grow: `Error::ScratchFull` then (from `puns::Error::Limit`). When bytes are invalid,
-  `puns` checks them again with every pointer waiting, to find the place in the order of 0.8.1:
-  such a check may need more entries.
+- The only `unsafe` steps of a loader are those of `puns::check_compact`, whose contract is its
+  own, the implementation of `puns::Worklist` for `Stack` (an `unsafe` trait: `puns` keeps its
+  entries in the vector), and the cast of checked bytes to `&T`. It never panics on any input.
+- It does not recurse with the depth of the data. Every pointer waits as an entry of the worklist
+  (`puns::Worklist`) until its pointee is checked, and once an element of a list put a pointer in
+  it, the rest of the list waits in one entry, as in 0.8.1. Time is linear in the bytes: before
+  each step, `puns` grows the worklist to the most entries that the step may add, so no step is
+  made twice. The worklist grows with the nesting of the data (no fixed size suffices; nothing
+  points back): a `Vec` that doubles for `from_bytes` and `view` (`Stack`), the caller's
+  `&mut [Pending]` for the `_with` forms, which cannot grow: `Error::ScratchFull` then (from
+  `puns::Error::Limit`), where an entry does not fit.
 - `bytes.len() / 4` entries always suffice (`/ 2` with `i16` pointers): each waits for a pointer of
   its own, a stored offset of at least the size of an offset, and checked values are disjoint. So
   an image fitting `Inline<N>` needs at most `N / 4`; most data needs few or none. An entry
@@ -792,7 +800,8 @@ Files of `src/`:
   `Old`, `ListEdit`, `OptionEdit`, `StrEdit`.
 - `aim.rs`: `Pointee<O>`, the pointee of the aim of a `Near<T, O>`, `ListLen<O>`, and the
   contract of a read of a pointee.
-- `bytes.rs`: `Error`, `Stack`, `check` (`puns::check`), `view`, `view_with`, `view_unchecked`.
+- `bytes.rs`: `Error`, `Stack`, `check` (`puns::check_compact`), `view`, `view_with`,
+  `view_unchecked`.
 - `near.rs`: `Near<T, O>` (its `Pun` and its aim): `Deref`, builders, trait impls, the pinned
   view; `Offset`, its impls (`offsets!` for the integers of the target, `fixed!` for those of
   `puns::num`, with `Packed`, whose `Scalar` impls say their byte order), `offset` (its layout,

@@ -109,8 +109,9 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// An `Offset` of yours is an integer in two's complement, as its layout as a [`Pun`] type says
 /// (`#[flat]` derives it): a struct around one of the offsets above, here with a smaller
 /// [`LIMIT`](Offset::LIMIT). Its [`NonZero`](Offset::NonZero) is the same integer without zero,
-/// as its layout says too, which `puns` checks the offset of a `Near` as. An offset of another byte
-/// order is one around an offset of [`puns::num`], with a `NonZero` around its `NonZero`.
+/// as its layout says too, which `puns` checks the offset of a `Near` as. An offset of a fixed byte
+/// order is one around an offset of [`puns::num`], with a `NonZero` around its `NonZero`, as the
+/// second example shows.
 ///
 /// ```
 /// use std::num::NonZero;
@@ -157,6 +158,57 @@ pub struct Near<T: ?Sized, O: Offset = i32> {
 /// assert_eq!((&*r.name, &r.rows[..]), ("ab", &[1, 2][..]));
 /// let bytes = r.as_bytes().unwrap();
 /// assert!(bytes.windows(6).any(|w| w[..4] == 2i32.to_ne_bytes() && w[4..] == *b"ab"));
+/// ```
+///
+/// The same, little-endian on every target: around an `i32le`, whose `NonZero` is named through
+/// `Offset`.
+///
+/// ```
+/// use nearest::{
+///   Near, Offset, Region, flat,
+///   puns::{Pun, num::i32le},
+/// };
+///
+/// /// An `i32le`, for regions of at most 1 MiB.
+/// #[flat]
+/// #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// #[repr(transparent)]
+/// struct SmallLe(i32le);
+///
+/// /// A `SmallLe` that is not zero.
+/// #[derive(Clone, Copy, Pun)]
+/// #[pun(crate = nearest::puns)]
+/// #[repr(transparent)]
+/// struct NonZeroSmallLe(<i32le as Offset>::NonZero);
+///
+/// impl From<NonZeroSmallLe> for SmallLe {
+///   fn from(n: NonZeroSmallLe) -> Self {
+///     SmallLe(n.0.into())
+///   }
+/// }
+///
+/// // SAFETY: `SmallLe` is an `i32le`, as its layout says, which `to_isize` reads and `from_isize`
+/// // writes; `NonZeroSmallLe` is the `NonZero` of an `i32le`, the same bytes when not zero, so the
+/// // integer 0 is the zero bytes, which are `None` for `Option<NonZeroSmallLe>`. `from_isize` is
+/// // called within `LIMIT`, which an `i32le` holds.
+/// unsafe impl Offset for SmallLe {
+///   type NonZero = NonZeroSmallLe;
+///   const LIMIT: u64 = 1 << 20;
+///   fn from_isize(n: isize) -> Self {
+///     SmallLe(i32le::from_isize(n))
+///   }
+///   fn to_isize(self) -> isize {
+///     self.0.to_isize()
+///   }
+/// }
+///
+/// #[flat]
+/// struct Table { name: Near<str, SmallLe>, rows: Near<[u16], SmallLe> }
+///
+/// let r = Region::new(Table::new("ab", [1, 2]));
+/// assert_eq!((&*r.name, &r.rows[..]), ("ab", &[1, 2][..]));
+/// let bytes = r.as_bytes().unwrap();
+/// assert!(bytes.windows(6).any(|w| w == [2, 0, 0, 0, b'a', b'b']));
 /// ```
 ///
 /// # Valid offsets
@@ -430,11 +482,7 @@ impl<T: ?Sized + Pointee<O> + Pun, O: Offset> Deref for Near<T, O> {
   type Target = T;
   #[inline]
   fn deref(&self) -> &T {
-    // SAFETY: A `&Near` exists only inside a region, which holds its pointee at its offset, or in
-    // bytes that `puns` checked with its pointee, and borrowed with it, so its pointee is valid and
-    // not written while the `&Near` lives, and the reference has the provenance of the buffer
-    // under tree borrows, as `target` requires ("Reading a pointee" in `aim`).
-    unsafe { Self::target(self) }
+    self.target()
   }
 }
 

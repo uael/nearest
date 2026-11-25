@@ -63,8 +63,10 @@ impl Stack {
   }
 }
 
+// SAFETY: `items` is the vector, which only `grow` changes, and `grow` makes it longer, keeping its
+// elements.
 #[cfg(feature = "alloc")]
-impl Worklist for Stack {
+unsafe impl Worklist for Stack {
   fn items(&mut self) -> &mut [Pending] {
     &mut self.0
   }
@@ -77,7 +79,7 @@ impl Worklist for Stack {
 
 /// Checks that `bytes`, at any address, are the compact image of a valid `T` once at an address
 /// aligned as a region is: what `puns` checks without a reference, with a stack that does not grow
-/// with the data ([`puns::check`]), every value and every pointee valid, each pointee where a deep
+/// with the data ([`puns::check_compact`]), every value and every pointee valid, each pointee where a deep
 /// copy writes it (depth first, in the order of the fields, at the next position aligned for it),
 /// and nothing after the last one. That gives no sharing, no overlap, no cycle and no gap. The
 /// pointees that wait are kept in `todo` ([`Error::ScratchFull`] if it runs out first). Like every
@@ -85,13 +87,15 @@ impl Worklist for Stack {
 /// too, as writing them does (`Flat::store`).
 pub fn check<T: Flat, W: Worklist + ?Sized>(bytes: &[u8], todo: &mut W) -> Result<(), Error> {
   fits::<T>();
-  // A load refuses at compile time what a build refuses: the types that the stores of a value of
-  // `T` write, at every depth, assert where a pointer may lead (`fits_behind`).
+  // A load refuses at compile time what a build refuses: the stores of a value of `T`, which this
+  // instantiates, assert at every depth where a pointer may lead (`fits_behind`). A constant
+  // cannot hold that assertion: the types that a recursive type reaches lead back to it, a cycle
+  // of constants, which Rust refuses (E0391), where functions instantiate each other.
   let _: unsafe fn(&T, &mut crate::flat::Sink, usize) = T::store;
   if bytes.len() < size_of::<T>() || bytes.len() > limit::<T>() {
     return Err(Error::Invalid(0));
   }
-  match puns::check::<T, W>(bytes, ALIGN, true, todo) {
+  match puns::check_compact::<T, ALIGN, W>(bytes, todo) {
     Ok(()) => Ok(()),
     Err(Failure { error: puns::Error::Limit, .. }) => Err(Error::ScratchFull),
     Err(Failure { at, .. }) => Err(Error::Invalid(at)),

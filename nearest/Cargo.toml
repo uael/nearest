@@ -23,11 +23,11 @@ serde = ["alloc", "dep:serde"]
 
 [dependencies]
 nearest-derive = { version = "=0.8.1", path = "../nearest-derive" }
-# The layouts and the validity of values: `Pun` for every stored type, its check (the targets of
-# the pointees of the pointers included, which are aims), and the numbers of a fixed byte order (`puns::num`).
+# The layouts and the validity of values: `Pun` for every stored type, its check (the pointees of
+# the pointers included, which are aims), and the numbers of a fixed byte order (`puns::num`).
 # Re-exported as `nearest::puns`. Pinned to a commit: aims are not released yet. The version is
 # the one of that commit, which `cargo deny` requires (a git dependency without one is a wildcard).
-puns = { version = "=0.2.4", git = "https://github.com/uael/puns", rev = "a38006169cae7a0557fafb3060158af08ae6847d" }
+puns = { version = "=0.2.4", git = "https://github.com/uael/puns", rev = "711c134f58c69099acc23fa72c2bcb9dd5ae8d8b" }
 serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

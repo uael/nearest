@@ -21,20 +21,24 @@
 //! # Reading a pointee
 //!
 //! `puns` reads the pointee of a pointer, with the methods `Near::target` and `Near::target_mut`
-//! that its derive writes, which are `unsafe`. `Deref` and the pinned view call them, and uphold
-//! their requirements so:
+//! that its derive writes. `target` is safe, and `Deref` calls it: the offset of a `Near` is an
+//! [`InPlace`](puns::InPlace), which no code makes, so a `&Near` comes from `puns`, which checked
+//! its pointee (`view`, `from_bytes`), or from unsafe code of `nearest` that takes the obligation
+//! that `InPlace` states ("Values made by unsafe code"):
 //!
-//! - **Read.** A `&Near` exists only inside a region, whose writers put the pointee of each pointer
-//!   at its offset, a valid value behind its length, or inside bytes that `puns` checked with its
-//!   pointees (`view`), or that the caller of `view_unchecked` vouches `view` would accept. The
-//!   `&Near` is made from the buffer that holds both, so it has its provenance under tree borrows,
-//!   which Miri runs. Under stacked borrows, a reference to a `Near` gives access to its own bytes
-//!   only, and the read is undefined behavior: `nearest` relies on tree borrows here, as everywhere
-//!   it resolves a pointer from `&self`. The region or the bytes are borrowed with the `&Near`, so
-//!   the pointee is not written while it lives.
-//! - **Write.** A `Pin<&mut Near>` comes from a pinned view, which borrows the handle of the region
-//!   mutably, and a `Near` owns its pointee alone, so the pointee is reached only through the
-//!   result while it lives. The other requirements are those of a read.
+//! - **Read.** A region makes its values with its writers, which put the pointee of each pointer
+//!   at its offset, a valid value behind its length, and gives a `&T` to its root from its buffer
+//!   (`Deref` of `Region`), which has the provenance of the bytes of every pointee under tree
+//!   borrows, which Miri runs. The region is borrowed with the `&T`, so no pointee is written
+//!   while it lives. `view_unchecked` gives a `&T` for bytes that its caller vouches `view` would
+//!   accept. Under stacked borrows, a reference to a `Near` gives access to its own bytes only, and
+//!   the read is undefined behavior: `nearest` relies on tree borrows here, as everywhere it
+//!   resolves a pointer from `&self`.
+//! - **Write.** `target_mut` is `unsafe`: a `&mut Near` does not cover its pointee, which a check
+//!   may find shared. A `Pin<&mut Near>` comes from a pinned view, which borrows the handle of the
+//!   region mutably, and a `Near` that a region wrote owns its pointee alone, so the pointee is
+//!   reached only through the result while it lives. A `Near` is not `Unpin`, so safe code cannot
+//!   move one out of its place, which would move where its offset leads.
 //!
 //! The rules of a pointee other than its length, such as an `assert` or `cap == len`, are not
 //! needed by a read, and a region may hold a value that breaks one, as safe code can write it.
@@ -73,5 +77,8 @@ impl<O: Offset> Pointee<O> for str {
 #[repr(C)]
 pub struct ListLen<O: Offset> {
   cap: O,
+  /// Within `LIMIT` of 0, as its bits say in the byte order of `O`: a length past it is refused
+  /// where it is, and a negative one within it with the capacity, which it is not.
+  #[pun(valid(..=O::LIMIT, ((1u128 << (8 * size_of::<O>())) - O::LIMIT as u128)..))]
   len: O,
 }

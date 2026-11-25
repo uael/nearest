@@ -318,7 +318,11 @@ impl<T, S: Storage> Deref for Region<T, S> {
   type Target = T;
   fn deref(&self) -> &T {
     // SAFETY: a region holds a `T` at byte 0 of its buffer, aligned as a `u64` (the words of its
-    // memory), so for `T`, which is not more aligned (`fits`, on every way into a region).
+    // memory), so for `T`, which is not more aligned (`fits`, on every way into a region). The
+    // region upholds what `puns` requires of unsafe code that gives a reference to a value that
+    // holds an `InPlace` ("Values made by unsafe code" in `puns::InPlace`): every `Near` of the
+    // value leads to a valid pointee in the buffer, which its writers put there, and which is not
+    // written while the region is borrowed, and the reference has the provenance of the buffer.
     unsafe { &*self.base().cast() }
   }
 }

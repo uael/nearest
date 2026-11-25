@@ -204,7 +204,7 @@
 //! Every `#[flat]` type is also a [`puns::Pun`] type: its layout and its valid values are known
 //! at compile time. A [`Near`] is an eager aim of `puns` ([`puns::layout::Aim`]): its offset,
 //! and its pointee at the address of the pointer plus the offset. The loaders are the check of
-//! `puns` ([`puns::check`]), which checks a value that holds one with its pointee, and the
+//! `puns` ([`puns::check_compact`]), which checks a value that holds one with its pointee, and the
 //! pointees of the pointee, each where a deep copy writes it. So the bytes saved by one version of
 //! a program load as the next, in place, when they are a value of it:
 //!

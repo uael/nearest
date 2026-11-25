@@ -4,22 +4,10 @@
 //! of given values, each offset width and byte order), then every byte of it changed by a few
 //! masks, every truncation, a few extensions and an address that is not aligned: what `view`,
 //! `from_bytes` (at an odd address) and `view_with` (the least scratch that suffices) say of each
-//! is folded into a digest per image. `corpus.expected` holds the digests of the check of `puns`
-//! (`puns::check`), written with `NEAREST_CORPUS_WRITE=1`. The images are those of 0.8.1, byte for
-//! byte, and so are the records, but in two ways (`NEAREST_CORPUS_DUMP` writes them, to compare
-//! two versions):
-//!
-//! - The least scratch. `puns` checks in place a pointee that holds no pointer, when nothing waits
-//!   before it, and keeps each other pointer that waits, where 0.8.1 kept the rest of a list in
-//!   one entry: most images need fewer entries, and some invalid ones more, since `puns` finds
-//!   where bytes fail with every pointee waiting. In both, an entry waits for a pointer of its own
-//!   (see `Pending`).
-//! - The length of a list that is negative, within the `LIMIT` of its offset, is refused where the
-//!   length is, where 0.8.1 refused it where the list starts, at its capacity, as it refused a
-//!   length that does not fit.
-//!
-//! 0.8.1 gave the results of 0.7 (the code that `#[flat]` generated, before the one validator of
-//! `puns`), but for four errors at the second pointer of a `Call`, refused where it is.
+//! is folded into a digest per image. `corpus.expected` holds the digests that the checker of
+//! `nearest` 0.7 gave (the code that `#[flat]` generated, before the one validator of `puns`):
+//! the same accepts, the same errors at the same positions, the same scratch. Written with
+//! `NEAREST_CORPUS_WRITE=1` by this file run on that code.
 //!
 //! Under Miri, a fraction of the corpus runs, for the unsafe code that it reaches; the digests
 //! are compared natively.
@@ -314,8 +302,36 @@ fn corpus() -> Vec<(String, String)> {
 /// The expected digests, by name of image.
 const EXPECTED: &str = include_str!("corpus.expected");
 
+/// Where the results differ from those of 0.7, and why: an image, the index of a verdict in its
+/// record, what is said now, what 0.7 said.
+///
+/// An expression whose tag is changed to the one of `Call` (two pointers) where its bytes are the
+/// `i64` of a `Lit` then zeros: the second pointer is zero, which a `Near` (a `NonZero`) cannot
+/// be. The check of the value refuses it where it is; 0.7 queued both
+/// pointers and refused the first, whose bytes aim nowhere, when it followed it. Both refuse the
+/// bytes, each at a place where they stop being a value.
+const CHANGED: [(&str, usize, &str, &str); 4] = [
+  ("expr i64 2", 196, "Invalid(40)", "Invalid(32)"),
+  ("expr i64 2", 197, "Invalid(40)", "Invalid(32)"),
+  ("expr i64 4", 388, "Invalid(64)", "Invalid(56)"),
+  ("expr i64 4", 389, "Invalid(64)", "Invalid(56)"),
+];
+
+/// `record` as 0.7 would have written it: the changes of [`CHANGED`] undone, after checking that
+/// they are what is said now.
+fn as_in_0_7(name: &str, record: &str) -> String {
+  let mut verdicts: Vec<&str> = record.split(';').collect();
+  for (image, index, now, then) in CHANGED {
+    if image == name {
+      assert_eq!(verdicts[index], now, "{name}: verdict {index}");
+      verdicts[index] = then;
+    }
+  }
+  verdicts.join(";")
+}
+
 #[test]
-fn the_loaders_give_the_recorded_results() {
+fn the_loaders_give_the_results_of_0_7() {
   let corpus = corpus();
   // The records themselves, to compare two versions where the digests differ.
   if let Some(path) = std::env::var_os("NEAREST_CORPUS_DUMP") {
@@ -343,8 +359,9 @@ fn the_loaders_give_the_recorded_results() {
   assert_eq!(expected.len(), corpus.len(), "the corpus is not the one of the expected digests");
   for ((name, record), (expected_name, digest_and_len)) in corpus.iter().zip(&expected) {
     assert_eq!(name, expected_name);
-    let ours = format!("{:016x}\t{}", digest(record), record.len());
-    assert_eq!(&ours, digest_and_len, "{name}: not the recorded results");
+    let record = as_in_0_7(name, record);
+    let ours = format!("{:016x}\t{}", digest(&record), record.len());
+    assert_eq!(&ours, digest_and_len, "{name}: not the results of 0.7");
   }
 }
 

@@ -18,10 +18,10 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
              and $N others
      = note: required for `String` to implement `Pun`
 note: required by a bound in `nearest::puns::Fields::Type`
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a380061/puns/src/lib.rs:2316:23
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/711c134/puns/src/lib.rs:2341:23
      |
-2315 | pub unsafe trait Fields {
-2316 |   type Type: ?Sized + Pun;
+2340 | pub unsafe trait Fields {
+2341 |   type Type: ?Sized + Pun;
      |                       ^^^ required by this bound in `Fields::Type`
 
 error[E0277]: the trait bound `String: Scalar` is not satisfied
