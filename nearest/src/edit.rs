@@ -42,6 +42,16 @@ impl<'e, T> Raw<'e, T> {
     self.1.len()
   }
 
+  /// Notes that a `&mut` that reaches a `U` is handed out: unless `U` is plain data without
+  /// padding, an assignment through it writes its padding as uninitialized bytes, so the bytes
+  /// in use may no longer all be initialized (`Buf::init`).
+  fn handed<U: Flat>(&self) {
+    if !U::PLAIN {
+      // SAFETY: a handle's buffer is live, and this access ends with the statement.
+      unsafe { (*self.buf()).init = false }
+    }
+  }
+
   /// The `me` of the region's buffer, read through this handle. Every method reads it once and
   /// reaches the buffer only through it (I8).
   const fn buf(&self) -> *mut Buf {
@@ -83,6 +93,7 @@ impl<'e, T: Flat> Raw<'e, T> {
   where
     T: Copy,
   {
+    self.handed::<T>();
     // SAFETY: a `Copy` type has no `Near`, so assigning to it is sound.
     unsafe { self.place() }
   }
@@ -91,6 +102,7 @@ impl<'e, T: Flat> Raw<'e, T> {
   /// handle, so nothing can grow the buffer while it lives, and being pinned it gives no
   /// `&mut` to anything that contains a `Near`.
   pub fn pin(&mut self) -> Pin<&mut T> {
+    self.handed::<T>();
     // SAFETY: the value stays where it is while the handle is borrowed, and pinned it gives a
     // `&mut` only to what is `Unpin`, which has no pointers.
     unsafe { Pin::new_unchecked(self.place()) }
@@ -819,6 +831,7 @@ impl<T: Flat, O: Offset> Deref for ListEdit<'_, T, O> {
 
 impl<T: Flat + Copy, O: Offset> DerefMut for ListEdit<'_, T, O> {
   fn deref_mut(&mut self) -> &mut [T] {
+    self.0.handed::<T>();
     let (buf, list) = self.list();
     // SAFETY: the `len` elements are valid, have no pointers since `T: Copy`, and are borrowed
     // through this handle.

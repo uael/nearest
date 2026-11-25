@@ -226,12 +226,14 @@ fn quad(i: u8) -> [u8; 4] {
 
 /// Built, then edited every way that makes or moves a list block (pushes past the capacity,
 /// insertions, removals, `retain`, `swap`, a list moved from one place to another), compacted,
-/// cloned, loaded at an odd address, in a storage of its own and inline: aligned each time.
-fn lists_stay_aligned<O: nearest::Offset, S: nearest::Storage + Default>() {
-  let mut r = nearest::Region::<Bytes<O>, S>::new_in(
-    S::default(),
-    Bytes::new([quad(1)], [i32le::new(2)], [[1u8; 8]], [[3u8, 0]]),
-  );
+/// cloned, and loaded at an odd address: aligned each time.
+fn lists_stay_aligned<O: nearest::Offset>() {
+  let mut r = nearest::Region::<Bytes<O>>::new(Bytes::new(
+    [quad(1)],
+    [i32le::new(2)],
+    [[1u8; 8]],
+    [[3u8, 0]],
+  ));
   let base = |r: &Bytes<O>| (&raw const *r).addr();
   aligned(&r, base(&r));
   let e = r.edit();
@@ -248,14 +250,14 @@ fn lists_stay_aligned<O: nearest::Offset, S: nearest::Storage + Default>() {
   let old = e.quads().replace([quad(7), quad(8)]);
   e.quads().set(old);
   aligned(&r, base(&r));
-  let compact = nearest::Region::<Bytes<O>, S>::new_in(S::default(), &*r);
+  let compact = nearest::Region::<Bytes<O>>::new(&*r);
   aligned(&compact, base(&compact));
   let clone = compact.clone();
   aligned(&clone, base(&clone));
   let image = compact.as_bytes().unwrap();
   let mut odd = vec![0u8; image.len() + 1];
   odd[1..].copy_from_slice(image);
-  let loaded = nearest::Region::<Bytes<O>, S>::from_bytes(&odd[1..]).unwrap();
+  let loaded = nearest::Region::<Bytes<O>>::from_bytes(&odd[1..]).unwrap();
   aligned(&loaded, base(&loaded));
   let view = nearest::view::<Bytes<O>>(loaded.as_bytes().unwrap()).unwrap();
   aligned(view, base(view));
@@ -263,12 +265,11 @@ fn lists_stay_aligned<O: nearest::Offset, S: nearest::Storage + Default>() {
 
 #[test]
 fn the_elements_of_a_list_are_aligned_as_declared() {
-  lists_stay_aligned::<i16, nearest::Heap>();
-  lists_stay_aligned::<i32, nearest::Heap>();
-  lists_stay_aligned::<i32le, nearest::Heap>();
-  lists_stay_aligned::<i64, nearest::Heap>();
-  lists_stay_aligned::<i64, nearest::Inline<4096>>();
-  lists_stay_aligned::<nearest::puns::num::i64be, nearest::Inline<4096>>();
+  lists_stay_aligned::<i16>();
+  lists_stay_aligned::<i32>();
+  lists_stay_aligned::<i32le>();
+  lists_stay_aligned::<i64>();
+  lists_stay_aligned::<nearest::puns::num::i64be>();
 }
 
 // -------------------------------------------------------------------------------------------------

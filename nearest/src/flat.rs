@@ -1,48 +1,35 @@
 use core::{
+  alloc::{Allocator, Layout},
   marker::PhantomData,
   mem::{MaybeUninit, needs_drop},
   num::NonZero,
-  ptr, slice,
+  ptr::{self, NonNull},
+  slice,
 };
 
 use puns::Pun;
 
 use crate::{
-  Near, Offset, Storage,
+  Near, Offset,
   edit::{Handle, ListEdit, OptionEdit, Plain, PlainEdit, Raw, StrEdit},
   near::offset,
 };
 
-/// The alignment of a region: that of the words of its memory (a [`Storage`] gives
-/// `[MaybeUninit<u64>]`), so of byte 0 of its buffer and of the bytes that `as_bytes` returns. It
-/// is that of the target, not 8: 8 on x86-64, 4 on `i686`, 2 on `msp430`. A region holds no type
-/// more aligned ([`fits`]), and `view` wants an address so aligned. Every typed access of the
-/// buffer is at an address `ALIGN`-aligned plus a position aligned for the type, which is then
-/// aligned for it because the type is not more aligned than `ALIGN`.
-pub const ALIGN: usize = align_of::<u64>();
+/// The alignment of a region, 8 on every target: of its block, so of byte 0 and of the bytes
+/// that `as_bytes` returns, and the largest alignment of a position in it, that of a stored type
+/// or of the elements of a list (at most the width of its offset, 8). Positions and addresses
+/// then agree modulo 8, so a position aligned for a type is an address aligned for it, and a
+/// check by address (`view`, `puns`) is a check by position. The limits of a region and of an
+/// `Offset` are multiples of it, so that a position aligned up from below a limit stays below it.
+pub const ALIGN: usize = 8;
 
-/// The bytes of a word of memory.
-pub const WORD: usize = size_of::<u64>();
-
-/// The largest alignment of a position in a region: that of a stored type (at most [`ALIGN`]) or
-/// of the elements of a list (at most the width of its offset, at most 8). The limits of a region
-/// and of an `Offset` are multiples of it, so that a position aligned up from below a limit stays
-/// below it. It is about positions, never addresses: a position aligned to 8 is at an address
-/// aligned to `ALIGN` only.
-pub const GRAIN: usize = 8;
-
-const _: () = {
-  assert!(ALIGN.is_power_of_two() && ALIGN <= GRAIN, "a word is aligned to at most 8 bytes");
-  assert!(WORD == 8, "a word is 8 bytes");
-};
-
-/// The largest region with a `T` at its root, a multiple of [`GRAIN`]: what the pointers of the
+/// The largest region with a `T` at its root, a multiple of [`ALIGN`]: what the pointers of the
 /// root reach, and at most `isize::MAX` bytes, like any allocation. Every pointer below the root
 /// is at least as wide (see [`fits_behind`]), so every distance inside the region fits its
 /// pointer.
 #[expect(clippy::cast_possible_truncation, reason = "at most `isize::MAX`")]
 pub const fn limit<T: Flat>() -> usize {
-  let most = isize::MAX as u64 & !(GRAIN as u64 - 1);
+  let most = isize::MAX as u64 & !(ALIGN as u64 - 1);
   (if T::REACH < most { T::REACH } else { most }) as usize
 }
 
@@ -57,7 +44,7 @@ pub const fn distance(from: usize, to: usize) -> isize {
 }
 
 /// Whether a region can hold a `T` at an address aligned for it: `T` is not more aligned than the
-/// buffer, [`ALIGN`].
+/// block, [`ALIGN`].
 pub const fn aligned<T>() -> bool {
   align_of::<T>() <= ALIGN
 }
@@ -65,10 +52,7 @@ pub const fn aligned<T>() -> bool {
 /// Rejects, at compile time, types a region cannot hold.
 pub const fn fits<T>() {
   const {
-    assert!(
-      aligned::<T>(),
-      "a region holds only types aligned to at most `align_of::<u64>()`, the alignment of its words"
-    );
+    assert!(aligned::<T>(), "a region holds only types aligned to at most 8 bytes");
     assert!(size_of::<T>() != 0, "a region holds only types of non-zero size");
     assert!(!needs_drop::<T>(), "a region holds only types without drop glue");
   };
@@ -85,102 +69,102 @@ pub const fn fits_behind<T: Flat, O: Offset>() {
   };
 }
 
-/// The bytes of a region: the memory of its storage, of which the first `len` are in use.
+/// The layout of a block of `size` bytes: aligned to [`ALIGN`].
+const fn block(size: usize) -> Layout {
+  // SAFETY: `ALIGN` is a power of two, and `size` is at most the limit of a region, at most
+  // `isize::MAX` rounded down to a multiple of `ALIGN`.
+  unsafe { Layout::from_size_align_unchecked(size, ALIGN) }
+}
+
+/// The bytes of a region: a block of its allocator, of which the first `len` are in use.
 ///
-/// A storage may move with its region, so every use of the region through `&mut` attaches the
-/// storage first; the buffer then has its address, and grows it through `regrow`.
+/// A block does not move when its region moves, so the address of the bytes is kept. The
+/// allocator moves with the region, so its address (`alloc`) is written on every use of the
+/// region through `&mut` (`Region::bind`), before anything can grow the block.
 ///
-/// The region zeroes the memory itself, as it uses it, so a storage may hand out memory of any
+/// The region zeroes the block itself, as it uses it, so an allocator may hand out memory of any
 /// content: `cap` is the zeroed prefix, which `alloc` hands out without a call, and `mem` the
-/// whole memory.
+/// whole block.
 ///
 /// Invariants, also while unwinding: `len <= cap <= mem <= max`, so every distance fits every
 /// pointer of the region; the bytes in `[len, cap)` are zero, and those in `[cap, mem)`
-/// anything. While attached, `ptr` is valid for `mem` bytes, and `store` is the storage, of the
-/// type `regrow` was made for.
+/// anything. If `mem` is not zero, `ptr` is a block of the allocator of the region that fits
+/// `block(mem)`; if it is zero, the region has no block.
 pub struct Buf {
   /// Byte 0.
-  ptr: *mut u8,
+  ptr: NonNull<u8>,
   /// Bytes in use or zero: `alloc` grows nothing below it.
   cap: usize,
   len: usize,
-  /// Bytes of memory at `ptr`, at most `max`.
+  /// Bytes of the block at `ptr`, at most `max`.
   mem: usize,
   /// The limit of the region (see [`limit`]).
   max: usize,
-  /// The storage.
-  store: *mut (),
-  /// Grows the storage to a number of words, and attaches it again.
-  regrow: unsafe fn(&mut Buf, usize),
+  /// The end of the image that the region was loaded from, 0 if it was built: the capacity of
+  /// a list whose block starts before it is not trusted (see `List::read`).
+  pub(crate) loaded: usize,
+  /// The allocator of the region, where the region was when it was last bound.
+  pub(crate) alloc: *const (),
+  /// Grows the block to at least a number of bytes, through the allocator at `alloc`.
+  regrow: unsafe fn(&mut Buf, usize) -> bool,
   /// The address of this `Buf`, written by `Region::edit`. Every access of an edit goes
   /// through it, so that all of them have the same provenance (I8).
   pub(crate) me: *mut Buf,
-  /// The bytes are the compact image of the value: initialized, and what a deep copy writes.
-  pub(crate) compact: bool,
+  /// Every byte in use is initialized, which `as_bytes` needs. The region writes only
+  /// initialized bytes, and keeps the bytes of padding, but an assignment through a `&mut` writes
+  /// the padding of its value as uninitialized: handing out a `&mut` that reaches a type with
+  /// padding clears it (`Raw::handed`).
+  pub(crate) init: bool,
 }
 
-// SAFETY: `ptr` and `store` are the region's own storage and `me` the address of the `Buf`
-// itself, all used while the region is borrowed mutably; a region is `Send` or `Sync` as its
-// storage is.
+// SAFETY: `ptr` is the region's own block, and `alloc` and `me` the addresses of the region's
+// allocator and of the `Buf` itself, all used while the region is borrowed mutably; a region is
+// `Send` or `Sync` as its allocator is.
 unsafe impl Send for Buf {}
 // SAFETY: as above; nothing is written through a shared `Buf`.
 unsafe impl Sync for Buf {}
 
-/// `regrow` of a buffer that has no storage yet: nothing grows.
-const fn unattached(_: &mut Buf, _: usize) {}
-
-/// Asks the storage of `buf`, an `S`, for at least `words` words, and attaches it again: also
-/// if that unwinds, since the storage was borrowed anew and pointers into it are stale.
+/// Grows the block of `buf` to at least `bytes` bytes, at most its limit, through the `A` at
+/// `buf.alloc`, or allocates the first block: whether the allocator gave it. If it did not, the
+/// block is as before.
 ///
 /// # Safety
-/// `buf` is attached to an `S`.
-unsafe fn regrow<S: Storage>(buf: &mut Buf, words: usize) {
-  /// Attaches the storage again, as it is, if growing unwinds.
-  struct Again<'b, S: Storage>(&'b mut Buf, PhantomData<S>);
-  impl<S: Storage> Drop for Again<'_, S> {
-    fn drop(&mut self) {
-      // SAFETY: the buffer is still attached to the same storage, which is where it was.
-      unsafe { self.0.attach(self.0.store.cast::<S>(), 0) }
-    }
-  }
-  let store = buf.store.cast::<S>();
-  let again = Again::<S>(buf, PhantomData);
+/// `buf.alloc` is the allocator of the region, where it is now, an `A`, and `buf` holds a block
+/// of it if `mem` is not zero.
+unsafe fn regrow<A: Allocator>(buf: &mut Buf, bytes: usize) -> bool {
   // SAFETY: per the caller.
-  unsafe { again.0.attach(store, words) };
-  core::mem::forget(again);
+  let alloc = unsafe { &*buf.alloc.cast::<A>() };
+  let new = block(bytes);
+  let block = if buf.mem == 0 {
+    alloc.allocate(new)
+  } else {
+    // SAFETY: the block is of this allocator and fits `block(mem)`, and `mem < bytes`.
+    unsafe { alloc.grow(buf.ptr, block(buf.mem), new) }
+  };
+  let Ok(block) = block else { return false };
+  buf.ptr = block.cast();
+  // The block may be larger than asked: what is past the limit is not used, and `block(mem)`
+  // still fits it, since `bytes <= mem`.
+  buf.mem = block.len().min(buf.max);
+  true
 }
 
 impl Buf {
-  /// An empty buffer, attached to no storage, for a region of at most `max` bytes, a multiple
-  /// of [`GRAIN`] that every distance fits.
-  pub(crate) const fn new(max: usize) -> Self {
+  /// An empty buffer, with no block, for a region of at most `max` bytes, a multiple of
+  /// [`ALIGN`] that every distance fits, whose allocator is an `A`.
+  pub(crate) const fn new<A: Allocator>(max: usize) -> Self {
     Self {
-      ptr: ptr::null_mut(),
+      ptr: NonNull::dangling(),
       cap: 0,
       len: 0,
       mem: 0,
       max,
-      store: ptr::null_mut(),
-      regrow: unattached,
+      loaded: 0,
+      alloc: ptr::null(),
+      regrow: regrow::<A>,
       me: ptr::null_mut(),
-      compact: true,
+      init: true,
     }
-  }
-
-  /// Attaches the storage at `store`, where it is now, asking it for `words` words (0: its
-  /// memory as it is). `cap` and `len` are lengths, so they stay as they are when the storage
-  /// moves.
-  ///
-  /// # Safety
-  /// `store` is valid, its memory holds this buffer's `cap` bytes, and it is reached only
-  /// through this buffer, and stays where it is, while the buffer is used.
-  pub(crate) unsafe fn attach<S: Storage>(&mut self, store: *mut S, words: usize) {
-    // SAFETY: per the caller; this borrow of the storage ends with the statement.
-    let memory = unsafe { (*store).memory_mut(words) };
-    self.ptr = memory.as_mut_ptr().cast();
-    self.mem = memory.len().saturating_mul(WORD).min(self.max);
-    self.store = store.cast();
-    self.regrow = regrow::<S>;
   }
 
   /// Bytes in use.
@@ -190,12 +174,12 @@ impl Buf {
 
   /// Byte 0, for writing.
   pub(crate) const fn ptr(&self) -> *mut u8 {
-    self.ptr
+    self.ptr.as_ptr()
   }
 
   /// Byte 0, for reading.
   pub(crate) const fn base(&self) -> *const u8 {
-    self.ptr
+    self.ptr.as_ptr()
   }
 
   /// The limit of the region.
@@ -203,11 +187,16 @@ impl Buf {
     self.max
   }
 
+  /// The block and its layout, to give back to the allocator, if the region has one.
+  pub(crate) const fn block(&self) -> Option<(NonNull<u8>, Layout)> {
+    if self.mem == 0 { None } else { Some((self.ptr, block(self.mem))) }
+  }
+
   /// `size` zeroed bytes (bytes past `len` are never written) whose byte `inset` is aligned to
   /// `align`; returns their position.
   ///
   /// # Safety
-  /// The buffer is attached, and its storage is where it was then.
+  /// The buffer is bound, and its region is where it was then.
   #[inline]
   pub(crate) unsafe fn alloc(&mut self, size: usize, align: usize, inset: usize) -> usize {
     let at = align_up(self.len + inset, align) - inset;
@@ -220,54 +209,55 @@ impl Buf {
     at
   }
 
-  /// Makes `end` bytes available: zeroes the memory past `cap`, twice as much as is in use and at
-  /// least 64 bytes, asking the storage for more memory first if it is shorter than `end`.
-  /// Anything past the limit, or past what the storage gives, comes here and panics, before
+  /// Makes `end` bytes available: zeroes the block past `cap`, twice as much as is in use and at
+  /// least 64 bytes, asking the allocator for a larger block first if it is shorter than `end`.
+  /// Anything past the limit, or past what the allocator gives, comes here and panics, before
   /// anything changes.
   ///
   /// # Safety
   /// As for [`alloc`](Self::alloc).
   #[cold]
   unsafe fn grow(&mut self, end: usize) {
-    assert!(end <= self.max, "region exceeds what its pointers reach");
     // Not `clamp`: a limit below 64 (an `Offset` of the user's) is not a reason to panic.
     let want = end.max(self.cap.saturating_mul(2)).max(64).min(self.max);
     // SAFETY: forwarded.
-    assert!(unsafe { self.room(end, want) }, "region exceeds its storage");
+    unsafe { self.room(end, want) };
     let to = want.min(self.mem);
-    // SAFETY: `cap <= to <= mem`, and the buffer is attached.
-    unsafe { self.ptr.add(self.cap).write_bytes(0, to - self.cap) };
+    // SAFETY: `cap <= to <= mem`, within the block.
+    unsafe { self.ptr().add(self.cap).write_bytes(0, to - self.cap) };
     self.cap = to;
   }
 
-  /// Whether the memory holds `end` bytes, asking the storage for `want` if it does not.
+  /// Makes the block at least `end` bytes, asking the allocator for `want` if it is shorter.
+  ///
+  /// # Panics
+  /// If `end` is past the limit, or the allocator does not give the block.
   ///
   /// # Safety
   /// As for [`alloc`](Self::alloc).
-  unsafe fn room(&mut self, end: usize, want: usize) -> bool {
-    if end > self.mem && end <= self.max {
-      // SAFETY: forwarded.
-      unsafe { (self.regrow)(self, want.div_ceil(WORD)) };
-    }
-    end <= self.mem
+  pub(crate) unsafe fn room(&mut self, end: usize, want: usize) {
+    assert!(end <= self.max, "region exceeds what its pointers reach");
+    // SAFETY: forwarded.
+    let given = end <= self.mem || unsafe { (self.regrow)(self, want) };
+    assert!(given, "region exceeds what its allocator gives");
   }
 
-  /// Copies `len` bytes from `src` into the empty buffer, asking the storage for room first:
-  /// whether it had it. Nothing is written if not.
+  /// Copies `len` bytes from `src` into the empty buffer, the image of the region, asking the
+  /// allocator for a block first: whether it gave it. Nothing is written if not.
   ///
   /// # Safety
-  /// As for [`alloc`](Self::alloc); the buffer is empty, and `src` valid for reading `len` bytes
-  /// outside it.
+  /// As for [`alloc`](Self::alloc); the buffer is empty, `len` at most the limit, and `src`
+  /// valid for reading `len` bytes outside it.
   pub(crate) unsafe fn load(&mut self, src: *const u8, len: usize) -> bool {
-    // SAFETY: forwarded; the memory holds `len` bytes once there is room.
+    // SAFETY: forwarded; the block holds `len` bytes once given.
     unsafe {
-      if !self.room(len, len.min(self.max)) {
+      if len > self.mem && !(self.regrow)(self, len) {
         return false;
       }
-      ptr::copy_nonoverlapping(src, self.ptr, len);
+      ptr::copy_nonoverlapping(src, self.ptr(), len);
     }
     // What was zero past `len` still is.
-    (self.len, self.cap) = (len, self.cap.max(len));
+    (self.len, self.cap, self.loaded) = (len, self.cap.max(len), len);
     true
   }
 }
@@ -280,7 +270,7 @@ pub struct Sink {
 
 impl Sink {
   /// # Safety
-  /// `buf` points to a live, attached `Buf` while the sink is used, and every access to that
+  /// `buf` points to a live, bound `Buf` while the sink is used, and every access to that
   /// `Buf` meanwhile goes through `buf` (its `me` during an edit).
   pub(crate) const unsafe fn new(buf: *mut Buf) -> Self {
     Self { buf }
@@ -293,14 +283,8 @@ impl Sink {
   /// `size` bytes aligned to `align`; returns their position.
   #[inline]
   pub(crate) fn alloc(&mut self, size: usize, align: usize) -> usize {
-    // SAFETY: `buf` is live and attached per `new`, and this reborrow ends with the statement.
+    // SAFETY: `buf` is live and bound per `new`, and this reborrow ends with the statement.
     unsafe { (*self.buf).alloc(size, align, 0) }
-  }
-
-  /// Marks the bytes as not the compact image.
-  pub(crate) const fn loose(&mut self) {
-    // SAFETY: as for `alloc`.
-    unsafe { (*self.buf).compact = false }
   }
 
   /// # Safety
@@ -1012,7 +996,7 @@ impl<O: Offset> List<O> {
     let header = 2 * size_of::<O>();
     let bytes = size_of::<T>().saturating_mul(cap).saturating_add(header);
     let align = align_of::<T>().max(size_of::<O>());
-    // SAFETY: the sink's buffer is live and attached (`Sink::new`), and this reborrow ends with
+    // SAFETY: the sink's buffer is live and bound (`Sink::new`), and this reborrow ends with
     // the statement; then the header was just allocated, and `cap` fits an `O` because the
     // block is within the region.
     let start = unsafe {
@@ -1025,13 +1009,19 @@ impl<O: Offset> List<O> {
 
   /// The list the pointer at `at` points to.
   ///
+  /// The capacity of a block in the image that the region was loaded from is not trusted: the
+  /// check of the image claims the elements in use only, so the room after them may hold other
+  /// values. Such a list is full, and moves on its first push. The room of a block after the
+  /// image was made by the region.
+  ///
   /// # Safety
   /// `at` holds a `Near<[T], O>` in `buf`.
   pub unsafe fn read(buf: *mut Buf, at: usize) -> Self {
     // SAFETY: the pointer leads to a list header.
     unsafe {
       let head = aim::<O>(buf, at);
-      let (len, cap) = (read_len::<O>(buf, head), read_len::<O>(buf, head - size_of::<O>()));
+      let len = read_len::<O>(buf, head);
+      let cap = if head < (*buf).loaded { len } else { read_len::<O>(buf, head - size_of::<O>()) };
       Self { head, len, cap, _o: PhantomData }
     }
   }
@@ -1053,7 +1043,6 @@ impl<O: Offset> List<O> {
     }
     let cap = (self.cap * 2).max(4);
     let new = Self::new::<T>(sink, cap);
-    sink.loose();
     // SAFETY: per the caller, and the new block has room for the elements.
     unsafe {
       move_elems::<T>(sink.buf, self.elem::<T>(0), new.elem::<T>(0), self.len);
@@ -1114,16 +1103,12 @@ impl<O: Offset> List<O> {
     }
   }
 
-  /// Writes the header of a built list, `[cap][len]`, and links `at` to it. A list with spare
-  /// room is not part of a compact image.
+  /// Writes the header of a built list, `[cap][len]`, and links `at` to it.
   ///
   /// # Safety
   /// `self` is a block of `T`s in the sink's buffer whose first `len` elements are valid, and
   /// `at` holds a `Near<[T], O>` there.
   pub unsafe fn finish(&self, sink: &mut Sink, at: usize) {
-    if self.cap != self.len {
-      sink.loose();
-    }
     // SAFETY: per the caller.
     unsafe {
       sink.write_len::<O>(self.head - size_of::<O>(), self.cap);
@@ -1151,27 +1136,22 @@ pub unsafe fn make<T: Flat>(f: impl FnOnce(&mut Sink, usize)) -> impl Emit<T> {
 
 #[cfg(test)]
 mod tests {
-  use super::{ALIGN, aligned};
+  use super::aligned;
 
-  /// As aligned as an 8-byte word on x86-64; more than a `u64` on `i686` and `msp430`.
+  /// Aligned to 8, more than a `u64` on `i686` and `msp430`.
   #[repr(C, align(8))]
   struct Eight(u8);
 
-  /// More than a `u64` on every target.
+  /// More than 8.
   #[repr(C, align(16))]
   struct Sixteen(u8);
 
-  /// What `fits` accepts: no type more aligned than a `u64`, whatever the target. On `i686`
-  /// (Miri runs the library's tests there) a type aligned to 8 is refused at compile time.
+  /// What `fits` accepts: a type aligned to 8 at most, on every target, also where a `u64` is
+  /// aligned to less (Miri runs the library's tests on `i686`).
   #[test]
-  fn a_region_holds_types_aligned_as_its_words() {
-    assert_eq!(ALIGN, align_of::<u64>());
+  fn a_region_holds_types_aligned_to_8() {
     assert!(aligned::<u64>() && aligned::<f64>() && aligned::<i64>() && aligned::<u8>());
-    assert_eq!(aligned::<Eight>(), align_of::<u64>() == 8);
-    assert!(!aligned::<Sixteen>());
-    #[cfg(target_arch = "x86_64")]
     assert!(aligned::<Eight>());
-    #[cfg(target_arch = "x86")]
-    assert!(!aligned::<Eight>() && ALIGN == 4);
+    assert!(!aligned::<Sixteen>());
   }
 }

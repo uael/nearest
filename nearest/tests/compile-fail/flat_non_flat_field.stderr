@@ -18,7 +18,7 @@ error[E0277]: `String` is not a `Pun` type: `puns` does not know its layout and 
              and $N others
      = note: required for `String` to implement `Pun`
 note: required by a bound in `nearest::puns::Fields::Type`
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/205d543/puns/src/lib.rs:2406:23
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/ad42921/puns/src/lib.rs:2406:23
      |
 2405 | pub unsafe trait Fields {
 2406 |   type Type: ?Sized + Pun;

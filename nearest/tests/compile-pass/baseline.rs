@@ -55,8 +55,9 @@ fn main() {
   let _ = Region::new(A::new(1));
   let _ = Region::new(S::new(Near::new(1)));
 
-  let mut inline = Region::new_in(nearest::Inline::<256>::default(), Block::new(0, (), None));
-  inline.edit().insts().push(Inst::new(1, ()));
-  let moved = inline;
+  let mut bytes = [core::mem::MaybeUninit::uninit(); 256];
+  let mut fixed = Region::new_in(Block::new(0, (), None), nearest::Fixed::new(&mut bytes));
+  fixed.edit().insts().push(Inst::new(1, ()));
+  let moved = fixed;
   let _ = moved.insts.len();
 }

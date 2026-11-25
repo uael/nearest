@@ -41,7 +41,7 @@
 //!   reached only through the result while it lives. A `Near` is not `Unpin`, so safe code cannot
 //!   move one out of its place, which would move where its offset leads.
 //!
-//! The rules of a pointee other than its length, such as an `assert` or `cap == len`, are not
+//! The rules of a pointee other than its length, such as an `assert` or `len <= cap`, are not
 //! needed by a read, and a region may hold a value that breaks one, as safe code can write it.
 
 use puns::{Pun, Thin};
@@ -69,14 +69,18 @@ impl<O: Offset> Pointee<O> for str {
 
 /// What is stored before the elements of a list: its capacity, then its length, `O`s.
 ///
-/// A list in a region may have spare room, which the bytes of a region do not: in the image that
-/// loading checks, the capacity is the length (`assert`). No value of it is made: it is the type
-/// of what `puns` checks before the elements.
+/// A list in a region may have spare room after its length, so an image that a region saved may
+/// have it too: the capacity is at least the length, and within `LIMIT` of 0, so not negative
+/// (`assert`, `valid`). A region does not trust the capacity of a list of a loaded image (`List::read`), since the
+/// check claims only the elements in use. No value of it is made: it is the type of what `puns`
+/// checks before the elements.
 #[derive(Pun)]
 #[pun(bound(O: Pun))]
-#[pun(assert(cap as u128 == len as u128))]
+#[pun(assert(len as u128 <= cap as u128))]
 #[repr(C)]
 pub struct ListLen<O: Offset> {
+  /// Within `LIMIT` of 0, as its bits say in the byte order of `O`.
+  #[pun(valid(..=O::LIMIT))]
   cap: O,
   /// Within `LIMIT` of 0, as its bits say in the byte order of `O`: a length past it is refused
   /// where it is, and a negative one within it with the capacity, which it is not.

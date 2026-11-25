@@ -1,7 +1,7 @@
 //! The `serde` feature: a region is its bytes, checked when loaded.
 #![cfg(feature = "serde")]
 
-use nearest::{Inline, Near, Region, flat};
+use nearest::{Near, Region, flat};
 use serde_test::{Token, assert_de_tokens, assert_de_tokens_error, assert_ser_tokens};
 
 #[flat]
@@ -31,11 +31,13 @@ fn serializes_as_its_bytes() {
   assert_ser_tokens(&r, &[Token::Bytes(image(&r))]);
 }
 
+/// The new name is after the kids of the kid that holds it, out of the order of a copy: the
+/// bytes of the region do not load back, so it serializes as a copy.
 #[test]
 fn an_edited_region_serializes_as_its_compact_copy() {
   let mut r = tree();
   r.edit().kids().at(0).name().set("renamed");
-  assert!(r.as_bytes().is_none());
+  assert!(nearest::view::<Tree>(r.as_bytes().unwrap()).is_err());
   assert_ser_tokens(&r, &[Token::Bytes(image(&r))]);
 }
 
@@ -67,20 +69,6 @@ fn invalid_bytes_are_an_error() {
   assert_de_tokens_error::<Region<Tree>>(
     &[Token::Str("x")],
     "invalid type: string \"x\", expected the bytes of a region",
-  );
-}
-
-#[test]
-fn any_storage_with_default() {
-  let r = tree();
-  let bytes = image(&r);
-  let inline: Region<Tree, Inline<256>> =
-    serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
-  assert_eq!(*inline, *r);
-  assert_eq!(inline.as_bytes(), Some(bytes));
-  assert_de_tokens_error::<Region<Tree, Inline<16>>>(
-    &[Token::Bytes(bytes)],
-    "region bytes larger than the storage",
   );
 }
 

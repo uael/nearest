@@ -42,10 +42,10 @@ drop(tail);
 // Compact. A copy into a new region keeps only what is reachable.
 r = Region::new(&*r);
 
-// Save and load. A compact region is its own image; loading checks the bytes.
+// Save and load. The bytes of a region are its image; loading checks them.
 let bytes = r.as_bytes().unwrap();
 let copy = Region::<Block>::from_bytes(bytes)?;
-// A memory-mapped file, or any slice aligned as a region is (as a `u64`), is read in place.
+// A memory-mapped file, or any slice aligned as a region is (to 8 bytes), is read in place.
 let block: &Block = nearest::view(map)?;
 ```
 
@@ -86,9 +86,9 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | Item | |
 |---|---|
 | `#[flat]` | makes a struct or enum storable; generates constructors and the handle |
-| `Region<T, S = Heap>` | the buffer, in a storage: `new`, `new_in`, `edit`, `as_bytes`, `from_bytes`, `byte_len`; `unsafe` `from_bytes_unchecked` |
+| `Region<T, A = Global>` | the buffer, a block of an allocator: `new`, `new_in`, `edit`, `reserve`, `as_bytes`, `from_bytes`, `from_bytes_in`, `byte_len`; `unsafe` `from_bytes_unchecked_in` |
 | `view` | a `const` function: the value at the start of a slice, checked and read in place; `unsafe` `view_unchecked` |
-| `Storage`, `Heap`, `Inline<N>` | where a region keeps its bytes (an `unsafe` trait), the heap (`Heap::with_capacity`), `N` bytes inside the region |
+| `Fixed<'a>` | an allocator over a buffer that it borrows, without a heap |
 | `Near<T, O = i32>` | the pointer; builders `Near::new(e)` and `Near::from_iter(iter)`; `as_pin_mut`, `iter_pin_mut` in a pinned view |
 | `Offset` | the integer a `Near` keeps its distance in: `i16`, `i32`, `i64`, `i32le`.. of `puns::num`, or a type of yours (an `unsafe` trait) |
 | `puns` | the crate [`puns`](https://docs.rs/puns), re-exported: its layouts check the values of a region; `num` has numbers of a fixed byte order |
@@ -97,7 +97,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 | `OptionEdit<'e, T>` | the handle of an `Option<Near<T>>`: `as_mut`, `insert`, `take`, `set`, `replace`, `update` |
 | `StrEdit<'e>` | the handle of a `Near<str>`: `set`, `replace`, `update` |
 | `Old<'e, T>` | a value that left its place: write it anywhere to move it there |
-| `Error` | the error of every loader: `Invalid(puns::Error)`, `StorageFull` |
+| `Error` | the error of every loader: `Invalid(puns::Error)`, `Alloc` |
 | `Flat`, `Emit<T>` | "may live in a region", "can be written as a `T`" |
 
 Anything that can be written as a `T` is accepted wherever a `T` is built: a value, a copy
@@ -188,7 +188,7 @@ struct Table { name: Near<str, i32le>, rows: Near<[u16le], i32le> }
 Every `#[flat]` type is a [`puns`](https://docs.rs/puns) type too, and a `Near` holds an eager
 aim of `puns`: its offset, and its pointee at the address of the pointer plus the offset, which
 `puns` checks with the value that holds the pointer. The loaders check bytes with `puns`, pointees
-included, and that they are compact. So the bytes saved by a program load in its next version,
+included, and that the pointees are in the order of a copy. So the bytes saved by a program load in its next version,
 in place, when they are a value of it:
 
 ```rust
@@ -209,37 +209,39 @@ and refused when loaded).
 
 ## Bytes
 
-`as_bytes` returns the compact image of a region, the bytes a deep copy writes, borrowed: a
-region is compact until it is edited, and a copy, `Region::new(&*r)`, always is. `from_bytes`
-copies bytes into a new region and checks them there; `nearest::view` checks a slice, such as a
+`as_bytes` returns the bytes in use of a region, borrowed: the value, what it reaches, and what
+edits left behind. It is `None` once a `&mut` to a type with padding was handed out, since an
+assignment writes padding as uninitialized bytes. `from_bytes` copies bytes into a new region,
+checks them there, and keeps them as they are; `nearest::view` checks a slice, such as a
 memory-mapped file, and reads it in place, in a `const` too. Checking accepts the images of valid
 values whose pointees are in the order of a copy, with bytes that no pointer reaches between
 them, in one pass, in safe code, without recursion with the depth of the data, panics or memory
 from you: each value as its layout says (`puns`), its rules included. So the pointees of a loaded
 image form a tree, which editing it in place relies on: two pointers to one pointee, a pointee
-that overlaps a value, and a cycle are refused. Every loader returns `Result<_, Error>`:
-`Error::Invalid` says what `puns` found, and `Error::StorageFull` that a valid image is larger
-than the storage of `from_bytes`. For bytes you
-trust, or check yourself, `from_bytes_unchecked` and `view_unchecked` skip the check and are
-`unsafe`. An offset or a length is valid only as its
-`Offset` writes it: an `i64` that does not fit `isize` on a 32-bit target is invalid. The bytes
-hold the layout of the target, its values in the byte order of their types, and distances and
-lengths as their `Offset` writes them: native-endian for `i16`, `i32` and `i64`, or as their
-names say for the offsets of `puns::num`.
+that overlaps a value, and a cycle are refused. Edits may move pointees out of that order: before
+saving bytes that must load back as a region, check them with `view`, or save a copy,
+`Region::new(&*r)`, which is in that order and holds only what is reachable. Every loader returns
+`Result<_, Error>`: `Error::Invalid` says what `puns` found, and `Error::Alloc` that the
+allocator did not give a block for the bytes. For bytes you trust, or check yourself,
+`from_bytes_unchecked_in` and `view_unchecked` skip the check and are `unsafe`. An offset or a
+length is valid only as its `Offset` writes it: an `i64` that does not fit `isize` on a 32-bit
+target is invalid. The bytes hold the layout of the target, its values in the byte order of their
+types, and distances and lengths as their `Offset` writes them: native-endian for `i16`, `i32`
+and `i64`, or as their names say for the offsets of `puns::num`.
 
-## Storage
+## Allocators
 
-A region keeps its buffer in a storage. `Region<T>` is on the `Heap`, where it grows as
-needed; `Inline<N>` keeps it in `N` bytes inside the `Region` value, with no heap, and growing
-past them panics (`from_bytes` returns an error). Other memory, an arena or a memory-mapped
-file, is a storage of your own: the `unsafe` trait `Storage` asks for two accessors to its
-memory, the second of which grows it when asked for more, if it can. A region in any storage
-is built with `new_in`, or with `from_bytes`; everything else is the same.
+A region keeps its buffer in one block of an allocator, aligned to 8 bytes on every target.
+`Region<T>` is in the global allocator, where it grows as needed (`reserve` makes room up front);
+`Fixed` is an allocator over a buffer of yours, with no heap, and growing past it panics
+(`from_bytes_in` returns an error). Any other `Allocator` works the same. A region in any
+allocator is built with `new_in`, or loaded with `from_bytes_in`; everything else is the same.
 
 ```rust
-let mut r = Region::new_in(Inline::<256>::default(), Block::new(0, (), None));
+let mut bytes = [MaybeUninit::uninit(); 256];
+let mut r = Region::new_in(Block::new(0, (), None), Fixed::new(&mut bytes));
 r.edit().insts().push(Inst::new(1, ()));
-let moved = r;                                       // the bytes move with it
+let moved = r;                                       // the block stays in `bytes`
 ```
 
 ## Safety model
@@ -257,15 +259,15 @@ let moved = r;                                       // the bytes move with it
 - No pointer is made from an integer. Miri runs the tests with Tree Borrows and strict
   provenance.
 
-Stored types must be no more aligned than a `u64` (the words of a region's memory: 8 bytes on
-x86-64, 4 on `i686`), and have non-zero size and no drop glue (checked at compile time). Miri runs
-the tests on x86-64, on `i686` (32 bits) and on `s390x` (big-endian). A region holds at most what
-the pointers of its root reach (2 GiB by default), or what its storage gives. The specification is
+Stored types must be aligned to at most 8 bytes, on every target, and have non-zero size and no
+drop glue (checked at compile time). Miri runs the tests on x86-64, on `i686` (32 bits) and on
+`s390x` (big-endian). A region holds at most what the pointers of its root reach (2 GiB by
+default), or what its allocator gives. The specification is
 [`nearest/CLAUDE.md`](nearest/CLAUDE.md).
 
 ## Getting started
 
-Stable Rust (1.99 or later, as `puns`), `#![no_std]`, no dependencies besides the macro and
+Stable Rust (1.100 or later, for `core::alloc::Allocator`), `#![no_std]`, no dependencies besides the macro and
 [`puns`](https://docs.rs/puns), here at a commit of its repository, whose aims are not released
 yet.
 
@@ -273,9 +275,9 @@ yet.
 cargo add nearest
 ```
 
-The default feature `alloc` provides the heap. Without it (`default-features = false`) the
-crate needs no allocator: regions live in other storage, and `Heap` (so `Region<T>`) is not
-available. Every loader is, since checking takes no memory.
+The default feature `alloc` provides the global allocator as the default of `Region<T>`. Without
+it (`default-features = false`) the crate needs no heap: a region names its allocator, such as
+`Fixed`. Every loader is available, since checking takes no memory.
 
 The opt-in feature `serde` (with `alloc`) makes a `Region` `Serialize` and `Deserialize` as its
 bytes, checked when loaded, like `as_bytes` and `from_bytes`.

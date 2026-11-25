@@ -6,10 +6,12 @@ use crate::{
 };
 
 /// Why bytes could not be loaded: the error of [`view`] and
-/// [`Region::from_bytes`](crate::Region::from_bytes).
+/// [`Region::from_bytes_in`](crate::Region::from_bytes_in).
 ///
 /// ```
-/// use nearest::{Error, Inline, Near, Region, flat, puns};
+/// use core::mem::MaybeUninit;
+///
+/// use nearest::{Error, Fixed, Near, Region, flat, puns};
 ///
 /// #[flat]
 /// struct Msg { id: u8, body: Near<str> }
@@ -18,9 +20,10 @@ use crate::{
 /// let bytes = r.as_bytes().unwrap();
 /// let cut = Region::<Msg>::from_bytes(&bytes[..bytes.len() - 1]);
 /// assert_eq!(cut.err(), Some(Error::Invalid(puns::Error::Validity))); // the text, cut short
-/// let small = Region::<Msg, Inline<8>>::from_bytes(bytes);
-/// assert_eq!(small.err(), Some(Error::StorageFull)); // a valid image, larger than 8 bytes
-/// assert_eq!(Error::StorageFull.to_string(), "region bytes larger than the storage");
+/// let mut small = [MaybeUninit::uninit(); 8];
+/// let full = Region::<Msg, _>::from_bytes_in(bytes, Fixed::new(&mut small));
+/// assert_eq!(full.err(), Some(Error::Alloc)); // a valid image, larger than 8 bytes
+/// assert_eq!(Error::Alloc.to_string(), "the allocator did not give the block of the region");
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -28,15 +31,15 @@ pub enum Error {
   /// ([`puns::from_head`]). [`puns::Error::Size`] also for bytes longer than the limit of the
   /// root (see [`Offset`](crate::Offset)).
   Invalid(puns::Error),
-  /// The bytes are a valid image, larger than the storage of `from_bytes`.
-  StorageFull,
+  /// The allocator did not give the block of the region.
+  Alloc,
 }
 
 impl fmt::Display for Error {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
       Self::Invalid(error) => write!(f, "invalid region bytes: {error}"),
-      Self::StorageFull => f.write_str("region bytes larger than the storage"),
+      Self::Alloc => f.write_str("the allocator did not give the block of the region"),
     }
   }
 }

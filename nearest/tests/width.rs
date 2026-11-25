@@ -3,12 +3,13 @@
 //! generic over the width; the limit a width sets; mixed widths; byte orders.
 
 use std::{
+  mem::MaybeUninit,
   num::NonZero,
   panic::{AssertUnwindSafe, catch_unwind},
 };
 
 use nearest::{
-  Edit, Error, Heap, Inline, Near, Offset, Region, flat,
+  Edit, Error, Fixed, Near, Offset, Region, flat,
   puns::{Error::Validity, Pun, layout::Endian, num},
 };
 
@@ -193,8 +194,9 @@ fn edit<O: Offset>() {
   let compact = Region::new(&*r);
   assert!(compact.byte_len() < r.byte_len());
   assert_eq!(compact, r);
-  // Into another region, of another storage: a copy.
-  let mut other = Region::new_in(Inline::<4096>::default(), leaf::<O>(0, ""));
+  // Into another region, of another allocator: a copy.
+  let mut bytes = vec![MaybeUninit::uninit(); 4096];
+  let mut other = Region::new_in(leaf::<O>(0, ""), Fixed::new(&mut bytes));
   let e = r.edit();
   let moved = e.kids().remove(0);
   other.edit().kids().push(moved);
@@ -423,9 +425,12 @@ fn the_size_limit_panics_and_leaves_a_valid_region() {
   assert_eq!(compact[..], r[..]);
 }
 
+/// A block larger than the limit, as `Fixed` gives the whole buffer: the region uses none of it
+/// past the limit.
 #[test]
-fn capacity_past_the_size_limit_is_not_used() {
-  let mut r = Region::<Small>::new_in(Heap::with_capacity(2 * LIMIT), Near::from_iter([0u32]));
+fn a_block_past_the_size_limit_is_not_used() {
+  let mut bytes = vec![MaybeUninit::uninit(); 2 * LIMIT];
+  let mut r = Region::<Small, _>::new_in(Near::from_iter([0u32]), Fixed::new(&mut bytes));
   let full = catch_unwind(AssertUnwindSafe(|| {
     for i in 0..LIMIT as u32 {
       r.edit().push(i);
@@ -493,17 +498,14 @@ struct Big {
 #[ignore = "builds a region of more than 2 GiB; CI runs it in release"]
 fn a_region_past_2_gib() {
   let n = (1usize << 31) + 1000;
-  let mut r = Region::new_in(
-    Heap::with_capacity(n + 4096),
-    Big::new(Near::from_iter(std::iter::repeat_n(7u8, n)), "end"),
-  );
+  let mut r = Region::new(Big::new(Near::from_iter(std::iter::repeat_n(7u8, n)), "end"));
   assert!(r.byte_len() > n);
   assert_eq!((r.data.len(), r.data[n - 1], &*r.tail), (n, 7, "end"));
   let e = r.edit();
   e.data()[n - 1] = 8;
   e.tail().set("moved");
   assert_eq!((r.data[n - 1], &*r.tail), (8, "moved"));
-  let copy = Region::new_in(Heap::with_capacity(r.byte_len()), &*r);
+  let copy = Region::new(&*r);
   let bytes = copy.as_bytes().unwrap();
   let big = nearest::view::<Big>(bytes).unwrap();
   assert_eq!((big.data.len(), big.data[n - 1], &*big.tail), (n, 8, "moved"));
@@ -532,15 +534,18 @@ fn integers_wider_than_isize_are_invalid() {
   assert_eq!(Region::<Near<u8, i64>>::from_bytes(&far).err(), Some(Error::Invalid(Validity)));
   assert_eq!(view_in_words::<Near<u8, i64>>(&far), Err(Error::Invalid(Validity)));
   assert_eq!(view_in_words::<Near<u8, i64>>(bytes), Ok(()));
-  // The length and the capacity of a list, and the length of a text.
+  // The length of a list, and of a text. A capacity is at least the length, and a region does
+  // not read the capacity of a loaded list, so a large one is valid.
   let list = Region::<Near<[u8], i64>>::new(Near::from_iter([1u8, 2]));
   let bytes = list.as_bytes().unwrap();
   let len = usize::try_from(i64::from_ne_bytes(bytes[..8].try_into().unwrap())).unwrap();
   assert_eq!(Region::<Near<[u8], i64>>::from_bytes(bytes).map(|r| r.len()), Ok(2));
-  for at in [len, len - 8] {
-    let bad = with_i64(bytes, at, HIGH + 2);
-    assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&bad), Err(Error::Invalid(_))), "{at}");
-  }
+  let bad = with_i64(bytes, len, HIGH + 2);
+  assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&bad), Err(Error::Invalid(_))));
+  let room = with_i64(bytes, len - 8, HIGH + 2);
+  let mut loaded = Region::<Near<[u8], i64>>::from_bytes(&room).unwrap();
+  loaded.edit().push(3); // moves the list: its capacity is not trusted
+  assert_eq!(loaded[..], [1, 2, 3]);
   let both = with_i64(&with_i64(bytes, len, HIGH + 2), len - 8, HIGH + 2);
   assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&both), Err(Error::Invalid(_))));
   let text = Region::<Near<str, i64>>::new("hi");
