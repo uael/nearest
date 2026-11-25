@@ -86,7 +86,13 @@ unsafe impl Worklist for Stack {
 /// way into a region, it rejects at compile time the types a region cannot hold, behind pointers
 /// too, as writing them does (`Flat::store`).
 pub fn check<T: Flat, W: Worklist + ?Sized>(bytes: &[u8], todo: &mut W) -> Result<(), Error> {
-  fits::<T>();
+  // The check of `puns`, for a `T` that a region holds. `puns` refuses at compile time a `T` more
+  // aligned than the bytes, as `fits` does: the evaluation of a constant stops at its first
+  // refusal, so `fits` refuses it alone, with the message of a build.
+  let check_compact: fn(&[u8], &mut W) -> Result<(), Failure> = const {
+    fits::<T>();
+    puns::check_compact::<T, ALIGN, W>
+  };
   // A load refuses at compile time what a build refuses: the stores of a value of `T`, which this
   // instantiates, assert at every depth where a pointer may lead (`fits_behind`). A constant
   // cannot hold that assertion: the types that a recursive type reaches lead back to it, a cycle
@@ -95,7 +101,7 @@ pub fn check<T: Flat, W: Worklist + ?Sized>(bytes: &[u8], todo: &mut W) -> Resul
   if bytes.len() < size_of::<T>() || bytes.len() > limit::<T>() {
     return Err(Error::Invalid(0));
   }
-  match puns::check_compact::<T, ALIGN, W>(bytes, todo) {
+  match check_compact(bytes, todo) {
     Ok(()) => Ok(()),
     Err(Failure { error: puns::Error::Limit, .. }) => Err(Error::ScratchFull),
     Err(Failure { at, .. }) => Err(Error::Invalid(at)),
