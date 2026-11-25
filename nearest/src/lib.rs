@@ -2,7 +2,7 @@
 //!
 //! A [`Region<T>`] keeps a `T` and everything it points to in one buffer. A pointer is a
 //! [`Near<T>`]: 4 bytes (or 2, or 8: see [Pointer widths](#pointer-widths)) holding the distance
-//! from its own address to its target. So copying the buffer copies the whole value (`Clone` is
+//! from its own address to its pointee. So copying the buffer copies the whole value (`Clone` is
 //! a `memcpy`), reading is plain `&T` with `Near` dereferencing like `Box`, and the bytes mean
 //! the same at any address, so a region can be written out and read back.
 //!
@@ -137,7 +137,7 @@
 //! handle of a `#[flat]` type gives a `Pin<&mut T>` in which several places are borrowed
 //! together, for reading, writing plain data and assigning values without pointers; nothing
 //! is pushed, built or moved through it. `project()` returns the fields, pinned;
-//! [`Near::as_pin_mut`] goes to the target of a pointer and `iter_pin_mut` to the elements of a
+//! [`Near::as_pin_mut`] goes to the pointee of a pointer and `iter_pin_mut` to the elements of a
 //! list.
 //!
 //! ```
@@ -202,7 +202,7 @@
 //! # One version read as another
 //!
 //! Every `#[flat]` type is also a [`puns::Pun`] type: its layout and its valid values are known
-//! at compile time. A [`Near`] is an eager aim of `puns` ([`puns::layout::Aim`]): its offset,
+//! at compile time. A [`Near`] holds an eager aim of `puns` ([`puns::layout::Aim`]): its offset,
 //! and its pointee at the address of the pointer plus the offset. The loaders are the check of
 //! `puns` ([`puns::check_compact`]), which checks a value that holds one with its pointee, and the
 //! pointees of the pointee, each where a deep copy writes it. So the bytes saved by one version of
@@ -344,7 +344,7 @@
 //! - A `Near` has no constructor and is not `Clone`: it only exists inside a region.
 //! - No safe API gives a `&mut T` for a `T` that contains a `Near`; such places are reached
 //!   through handles, which are unsized, so they cannot be swapped or assigned through.
-//! - A region is a tree: builders make fresh targets, `&T` copies, and the only moves are
+//! - A region is a tree: builders make fresh pointees, `&T` copies, and the only moves are
 //!   [`Old`] (used at most once) and list operations. Bytes no longer reachable are never
 //!   written again, so an `Old` stays intact for the whole edit, which it keeps borrowed.
 //! - A handle holds a position, not an address, so it stays valid when the buffer grows; real
@@ -395,7 +395,7 @@ pub use near::{Near, Offset};
 ///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
 ///   named after it in snake case (`project_` for a variant called `Project`), or as
 ///   `#[flat(rename = "name")]` on the variant says. A parameter
-///   for a field written `Near<X>` takes a builder of `X` and allocates the target (a list or
+///   for a field written `Near<X>` takes a builder of `X` and allocates the pointee (a list or
 ///   string builder if `X` is a slice or `str`); one for a field of plain data marked
 ///   `#[flat(into)]` takes `impl Into<FieldType>`;
 /// - for structs with fields, `XInit`, next to `X`: the same builders as the fields of a struct,
@@ -472,32 +472,30 @@ pub use nearest_derive::flat;
 /// numbers of a fixed byte order ([`puns::num`]) and the `Pun` of `#[pun(..)]` are those of the
 /// version that `nearest` uses.
 pub use puns;
-/// One entry of scratch memory for checking bytes: a pointer still to check.
+/// One entry of scratch memory for checking bytes: a pointer, or the rest of a list, to check.
 ///
-/// [`view_with`] and [`Region::from_bytes_with`] take a slice of them. `bytes.len() / 4` entries
-/// are enough for any bytes (`bytes.len() / 2` with 2-byte pointers, `Near<_, i16>`): each entry
-/// waits for a pointer of its own in the image. Most data needs far fewer, or none: the check
-/// follows pointers in place, a few deep, and keeps in scratch the pointers that wait past those.
-/// An entry is 24 bytes on a 64-bit target, 12 on a 32-bit one.
+/// [`view_with`] and [`Region::from_bytes_with`] take a slice of them.
+///
+/// `bytes.len() / 4` entries are enough for any bytes (`bytes.len() / 2` with 2-byte pointers,
+/// `Near<_, i16>`): each entry waits for its own bytes of the image, at least as many as a
+/// pointer has (a pointer, or the start of the next element of a list, which holds one), so an
+/// image that fits a storage of `N` bytes never needs more than `N / 4`. Most data needs far
+/// fewer: about as many as the pointers that wait at once while the walk goes down the deepest
+/// path. An entry is 24 bytes on a 64-bit target, 12 on a 32-bit one.
 ///
 /// ```
 /// use nearest::{Error, Near, Pending, Region, flat};
 ///
 /// #[flat]
-/// #[derive(Debug, PartialEq)]
-/// enum Expr { Lit(i64), Neg(Near<Expr>) }
+/// struct Msg { id: u8, body: Near<str> }
 ///
-/// let mut r = Region::new(Expr::Lit(1));
-/// for _ in 0..8 {
-///   r.edit().update(Expr::neg); // one pointer deeper
-/// }
-/// let compact = Region::new(&*r);
-/// let bytes = compact.as_bytes().unwrap();
+/// let r = Region::new(Msg::new(1, "hi"));
+/// let bytes = r.as_bytes().unwrap();
 /// let mut scratch = [Pending::default(); 8];
-/// let back = Region::<Expr>::from_bytes_with(bytes, &mut scratch)?;
-/// assert_eq!(*back, *r);
+/// let back = Region::<Msg>::from_bytes_with(bytes, &mut scratch)?;
+/// assert_eq!(&*back.body, "hi");
 /// // Too little scratch is not an invalid image: the check could not finish.
-/// assert_eq!(Region::<Expr>::from_bytes_with(bytes, &mut []).err(), Some(Error::ScratchFull));
+/// assert_eq!(Region::<Msg>::from_bytes_with(bytes, &mut []).err(), Some(Error::ScratchFull));
 /// # Ok::<(), nearest::Error>(())
 /// ```
 pub use puns::Pending;
@@ -513,7 +511,7 @@ pub use storage::{Inline, Storage};
 /// handle or an [`Old`] names them, as in
 /// `fn first<'a, 'e>(b: &'a mut Edit<'e, Block>) -> &'a mut Edit<'e, Inst>`.
 ///
-/// For plain data it is `T` itself; for `Near<T>` it is the handle of the target; for lists,
+/// For plain data it is `T` itself; for `Near<T>` it is the handle of the pointee; for lists,
 /// optional pointers and strings it is [`ListEdit`], [`OptionEdit`] and [`StrEdit`]; for
 /// `#[flat]` types it is generated.
 ///
@@ -553,7 +551,7 @@ pub mod __private {
   }
 
   /// What a constructor takes for a field written `Near<..>`: for `Near<T>` a builder of the
-  /// target, which it allocates; for a list or a string, a builder of the pointer itself.
+  /// pointee, which it allocates; for a list or a string, a builder of the pointer itself.
   pub trait Pointer: Flat {
     /// What the parameter builds.
     type Arg: Flat;

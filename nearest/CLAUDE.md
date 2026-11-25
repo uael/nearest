@@ -8,7 +8,7 @@ toolchain, releases and style are in the root `CLAUDE.md`. The examples are the 
 ## Idea
 
 A `Region<T>` keeps a `T` and everything it points to in one buffer. A pointer is a `Near<T, O>`:
-the distance from its own address to its target, an `O` (`i32`, 4 bytes, by default; `i16` or
+the distance from its own address to its pointee, an `O` (`i32`, 4 bytes, by default; `i16` or
 `i64`). So copying the buffer copies the value (`Clone` is a `memcpy`), reading is plain `&T`
 (`Near` derefs like `Box`), and the bytes mean the same at any address (a region is saved and loaded
 as bytes). Stable Rust, `#![no_std]`, no dependency but the macro and `puns` (and `serde`,
@@ -16,11 +16,11 @@ optional). Aliasing, lifetimes, moves and the tree shape are enforced by types; 
 for the rest.
 
 `puns` (type punning proven at compile time, same owner) knows the layout and the valid values of
-every stored type: `#[flat]` derives `puns::Pun`, and so does `Near`, with an eager aim of `puns`
-at its pointee (see Pointers and `puns`). So the loaders check bytes with `puns` alone, pointees
-included (`puns::check_compact`), and the numbers of a fixed byte order of `puns::num` make the bytes of a
-region the same on every machine. `puns` is a git dependency, pinned to a commit: its aims are not
-released.
+every stored type: `#[flat]` derives `puns::Pun`, and so does `Near`, with an eager aim of `puns` at
+its pointee (see Pointers and `puns`). So the loaders check bytes with `puns` alone, pointees
+included (`puns::check_compact`), and the numbers of a fixed byte order of `puns::num` make the
+bytes of a region the same on every machine. `puns` is a git dependency, pinned to a commit: its
+aims are not released.
 
 ## Public surface
 
@@ -29,7 +29,7 @@ released.
 - `nearest::puns`: the crate `puns`, re-exported, so that `puns::num` and the derive are those of
   the version that `nearest` uses.
 - `trait Flat: puns::Pun + Sized + 'static`: `type Edit<'e>: ?Sized + Handle<'e, Self::Value>`,
-  `type Value: Flat` (what its handle writes: `Self`, the target's for `Near<T>`), `type Ref<'a,
+  `type Value: Flat` (what its handle writes: `Self`, the pointee's for `Near<T>`), `type Ref<'a,
   'e>` (what getters give: `&'a mut Edit<'e, Self>`, a `Plain` for plain data); the rest is
   hidden. `trait Emit<T>`: all hidden; "can
   be written as a `T`". `type Edit<'e, T> = <T as Flat>::Edit<'e>`: the handle of a place
@@ -67,7 +67,7 @@ Trait impls: `Region`: `Deref`, `Clone` (`S: Default`), `Debug`, `Display`, `Par
 with `serde`, `Serialize` and `Deserialize` (`S: Default`). `Near`: `Deref`, `Debug`,
 `Display`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, and
 `IntoIterator` for `&Near<[T]>`; `Debug`, `Display` and the comparisons forward to the value or
-the target. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, `Display`,
+the pointee. Handles: `Deref`, and `DerefMut` for plain data. `Error`: `Debug`, `Display`,
 `core::error::Error`, `Clone`, `Copy`, `PartialEq`, `Eq`. `Pending`: `Default`, `Clone`, `Copy`,
 `Debug`.
 
@@ -97,18 +97,18 @@ Features:
 | `u8`..`u64`, `i8`..`i64`, `f32`, `f64`, `bool`, `char`, `NonZero<_>` of those integers | `PlainEdit<'e, Self>` |
 | the numbers of `puns::num`: `u16le`..`u128be`, `i16le`..`i128be`, `f32le`..`f64be` (byte arrays, every value valid), `u8c<V>`, `u8in<MIN, MAX>`, `u16lec<V>`..`u128bec<V>` (checked as `puns::try_pun` checks them) | `PlainEdit<'e, Self>` |
 | `[T; N]`, `T: Flat + Copy`, `N > 0` | `PlainEdit<'e, Self>` |
-| `Near<T, O>`, `T: Flat` | `Edit<'e, T>`: the handle is the target's |
+| `Near<T, O>`, `T: Flat` | `Edit<'e, T>`: the handle is the pointee's |
 | `Near<[T], O>`, `T: Flat` | `ListEdit<'e, T, O>` |
 | `Near<str, O>` | `StrEdit<'e, O>` |
 | `Option<Near<T, O>>`, `T: Flat` | `OptionEdit<'e, T, O>` (an `O`, `None` is 0) |
 | `#[flat]` types | generated |
 
 `Flat: 'static`: a stored type has no lifetime. Alignment at most `ALIGN` (that of a `u64`, see
-Layout), non-zero size and no drop glue are checked at compile time by `fits`, a `const` block
-that every use instantiates (building, editing, checking bytes, the unchecked loaders); the
-alignment through `aligned::<T>()`, which a unit test of the library checks on each Miri target. Every use of a pointer also instantiates `fits_behind`: its target holds
-no narrower pointer (see Layout). Plain data means `T: Copy`; a `Copy` type cannot contain a `Near`,
-so it is safe to hand out as `&mut T`.
+Layout), non-zero size and no drop glue are checked at compile time by `fits`, a `const` block that
+every use instantiates (building, editing, checking bytes, the unchecked loaders); the alignment
+through `aligned::<T>()`, which a unit test of the library checks on each Miri target. Every use of
+a pointer also instantiates `fits_behind`: its pointee holds no narrower pointer (see Layout). Plain
+data means `T: Copy`; a `Copy` type cannot contain a `Near`, so it is safe to hand out as `&mut T`.
 
 ## Layout
 
@@ -121,7 +121,7 @@ so it is safe to hand out as `&mut T`.
   type, and no stored type is more aligned than `ALIGN` (`fits`), so its address is aligned for
   it; offsets and lengths, whose positions may be aligned more than their addresses, are read
   and written unaligned (`read_unaligned`, `Sink::write`).
-- `Near<T, O>`: `NonZero<O>`, target address minus own address. Below, `w` is `size_of::<O>()`.
+- `Near<T, O>`: `NonZero<O>`, pointee address minus own address. Below, `w` is `size_of::<O>()`.
 - `Near<str, O>` points at an `O` length, `w`-aligned; the bytes follow.
 - `Near<[T], O>` points at an `O` length; the elements follow at `+w`, an `O` capacity sits at
   `-w`. The elements are aligned to `max(w, align_of::<T>())` and the header `[cap][len]` takes
@@ -203,19 +203,20 @@ Truncation cannot be reached otherwise: a dereference, an edit and a copy read o
 region wrote (`from_isize` of a distance or a length within `LIMIT`) or that a loader checked;
 the unchecked loaders ask for bytes that the checker would accept.
 
-`near::offset::<O>()`, a `const` block, checks the layout half at compile time (2, 4 or 8
-bytes, so at most `GRAIN`; `NonZero` and `Option<NonZero>` of that size, `NonZero` of that alignment; `LIMIT` a
-multiple of 8 that the integers of that size reach). Every function that reads or writes the
-bytes of an `O` calls it: `fits_behind`, `aim`, `read_len`, `Sink::link`, `Sink::write_len`,
-`moved`, the `None` of `Option<Near>`, and the loaders, through the `store` of the type they load
-(`bytes::check`), which reaches `fits_behind` for every pointer of the type, at every depth. `LIMIT` defaults to `2^(8 * size - 1) - 8`, the largest multiple
-of 8 of a signed integer of that size (`iN::MAX & !7` for the three integers).
+`near::offset::<O>()`, a `const` block, checks the layout half at compile time (2, 4 or 8 bytes, so
+at most `GRAIN`; `NonZero` and `Option<NonZero>` of that size, `NonZero` of that alignment; `LIMIT`
+a multiple of 8 that the integers of that size reach). Every function that reads or writes the bytes
+of an `O` calls it: `fits_behind`, `aim`, `read_len`, `Sink::link`, `Sink::write_len`, `moved`, the
+`None` of `Option<Near>`, and the loaders, through the `store` of the type they load
+(`bytes::check`), which reaches `fits_behind` for every pointer of the type, at every depth. `LIMIT`
+defaults to `2^(8 * size - 1) - 8`, the largest multiple of 8 of a signed integer of that size
+(`iN::MAX & !7` for the three integers).
 
 ## Pointers and `puns`
 
 `Near<T, O>` derives `puns::Pun` (`near.rs`): a `repr(transparent)` struct of its offset, an
 `InPlace<O::NonZero>` (so zero is not a `Near`, and `puns` makes no `Near`), with a named eager
-aim, `#[pun(pointer(mut target: <T as Pointee<O>>::Target = off as u128))]`: the pointee starts
+aim, `#[pun(pointer(mut pointee: <T as Pointee<O>>::Pointee))]`: the pointee starts
 at the address of the pointer plus the offset, read as the layout of `O::NonZero` says.
 `aim::Pointee<O>` maps the `T` of the three pointers to their pointees, `puns::Pointee` types:
 
@@ -229,24 +230,23 @@ A `Thin<T, M>` stores the metadata of a pointer to `T` before it: for a list or 
 stored right before the elements (its last integer is the length, read as its layout says; a
 negative one is refused), the pointer aimed at the length, and the elements aligned to their
 alignment and to the size of the length; nothing for a sized `T`. That is the format of 0.8 (see
-Layout), byte for byte. `ListLen<O>` is a `#[repr(C)]` struct of the capacity and the length,
-whose rule `cap == len` a loaded image keeps, and whose length is within `LIMIT` of 0
-(`#[pun(valid(..))]`), so that a check refuses a length past it where the length is and a
-negative one within it with the capacity, as 0.8 did. `aim::Pointee<O>` exists because the format
-puts a capacity before the length of a list and none before the length of a text: a `Thin<T, M>`
-of every `T` with one `M` cannot say both. The `Pun` of a `Near` does not evaluate
-`fits_behind`, which a read of `puns` does not need: the loaders instantiate `Flat::store`, a
-function pointer to it (see Bytes), as every other way into a region does. A constant of `Flat` cannot hold
-the assertion: the types that a recursive type reaches lead back to it, a cycle of constants that
-Rust refuses (E0391).
+Layout), byte for byte. `ListLen<O>` is a `#[repr(C)]` struct of the capacity and the length, whose
+rule `cap == len` a loaded image keeps, and whose length is within `LIMIT` of 0
+(`#[pun(valid(..))]`), so that a check refuses a length past it where the length is and a negative
+one within it with the capacity, as 0.8 did. `aim::Pointee<O>` exists because the format puts a
+capacity before the length of a list and none before the length of a text: a `Thin<T, M>` of every
+`T` with one `M` cannot say both. The `Pun` of a `Near` does not evaluate `fits_behind`, which a
+read of `puns` does not need: the loaders instantiate `Flat::store`, a function pointer to it (see
+Bytes), as every other way into a region does. A constant of `Flat` cannot hold the assertion: the
+types that a recursive type reaches lead back to it, a cycle of constants that Rust refuses (E0391).
 
-`puns` reads the pointee: the aim is named, so the derive writes `Near::target`, safe, and
-`Near::target_mut`, `unsafe`, which make the `&T`, the `&[T]` or the `&str`. `Deref` calls
-`target` with no `unsafe` block: a `&Near` comes from a check of `puns` or from the region, whose
+`puns` reads the pointee: the aim is named, so the derive writes `Near::pointee`, safe, and
+`Near::pointee_mut`, `unsafe`, which make the `&T`, the `&[T]` or the `&str`. `Deref` calls
+`pointee` with no `unsafe` block: a `&Near` comes from a check of `puns` or from the region, whose
 `Deref` takes the obligation that `puns::InPlace` states for unsafe code that gives a reference to
 a value that holds one (a region holds each pointee at its offset, and the reference has the
 provenance of the buffer under Tree Borrows). The pinned view (`as_pin_mut`, `iter_pin_mut`)
-calls `target_mut`, one `unsafe` block each, whose `// SAFETY:` is the contract of "Reading a
+calls `pointee_mut`, one `unsafe` block each, whose `// SAFETY:` is the contract of "Reading a
 pointee" in `aim.rs` (a `Near` owns its pointee alone).
 `Deref` requires only what the read needs, `T: Pun`; so a generic type that derives `Debug` or
 `PartialEq` over a `Near<T>` bounds `T: Pun` itself (`Pair`, `Lst`, `Tree` in
@@ -325,7 +325,7 @@ Only what cannot be known before:
 ## Invariants
 
 - **I1 — only in a region.** `Near` has no constructor and is not `Clone`/`Copy`: one exists
-  only inside a region, and a `&Near` always has its target at the stored offset.
+  only inside a region, and a `&Near` always has its pointee at the stored offset.
 - **I2 — never `&mut` to a pointer.** No safe API yields `&mut T` for a `T` containing a `Near`.
   Such places are reached through handles, which are unsized: they cannot be swapped, moved out
   of or assigned through.
@@ -333,7 +333,7 @@ Only what cannot be known before:
   region. So one handle is usable at a time, no `&T` into the buffer is live while a handle can
   allocate, and a `&mut` to plain data from a handle is unique. This makes growing the buffer
   during an edit sound.
-- **I4 — a tree.** Every target has exactly one owning pointer. Builders make fresh targets,
+- **I4 — a tree.** Every pointee has exactly one owning pointer. Builders make fresh pointees,
   `&T` copies deeply, and the only moves are `Old` (affine, one use) and list operations.
 - **I5 — append only.** Nothing in the buffer is freed, and bytes no longer reachable from the
   root are never written again; positions stay valid when the buffer grows. So an `Old` stays
@@ -389,11 +389,11 @@ Miri: assertions carry it. The assumptions, and what holds each:
 | The memory of `Inline<N>` is aligned as a `u64` (`Inline::memory*`) | `#[repr(C, align(8))]`, `const` assertion against `align_of::<u64>()` |
 | An offset is 2, 4 or 8 bytes, so its block is at most `GRAIN`-aligned (`List::new`, `list`) | `near::offset` (`const`) |
 | Offsets and lengths may sit at addresses less aligned than their positions (`i64` lengths on `i686`) | read and written unaligned only (`aim`, `read_len`, `Sink::write`, and `puns`, which reads an integer byte by byte); Miri on `i686` |
-| The integer of an offset fits `isize` (`aim`, `read_len`, and the address that `Near::target` computes) | Valid offsets: the loaders refuse an `O` that leads out of the bytes or counts past them, so past `LIMIT`, for every `Offset`; `integers_wider_than_isize_are_invalid` (Miri on `i686`), `offsets_that_from_isize_does_not_make_are_invalid` (every target); 16 bits: the same code, not run |
+| The integer of an offset fits `isize` (`aim`, `read_len`, and the address that `Near::pointee` computes) | Valid offsets: the loaders refuse an `O` that leads out of the bytes or counts past them, so past `LIMIT`, for every `Offset`; `integers_wider_than_isize_are_invalid` (Miri on `i686`), `offsets_that_from_isize_does_not_make_are_invalid` (every target); 16 bits: the same code, not run |
 | A region is at most `isize::MAX` bytes, so a distance fits `isize` (`distance`, `wrapping_offset`) | `limit` caps at `isize::MAX & !7`, from `isize::MAX` of the target |
 | `usize` is at least 16 bits (`limit`, positions) | Rust supports no narrower `usize`; built for `msp430` (and `puns`, whose assumptions of `usize` are in its crate docs) |
 | The bytes of an offset are a two's complement integer in the byte order of its layout, which `to_isize` reads (`puns` reads it so) | the contract of `Offset` (`unsafe`); the layouts of `i16`, `i32`, `i64`, from the target; `contract` (`tests/width.rs`) for every offset of the tests, Miri on `i686` and `s390x` |
-| The first element of a list is at a position that is a multiple of `max(align_of::<T>(), w)` (the slice that `Near::target` makes, aligned for `T`) | `List::new`, and the alignment of the aim of a `Thin`, which `puns` checks at load; `tests/layouts.rs` under Miri on `i686` |
+| The first element of a list is at a position that is a multiple of `max(align_of::<T>(), w)` (the slice that `Near::pointee` makes, aligned for `T`) | `List::new`, and the alignment of the aim of a `Thin`, which `puns` checks at load; `tests/layouts.rs` under Miri on `i686` |
 | An image written with the offsets and the numbers of a fixed byte order is the same on every machine (`examples/ir.rs`, `ir.image`) | `tests/ir.rs` under Miri on `s390x` compares it byte for byte |
 | The byte order of `i16`, `i32`, `i64` and of stored numbers is the target's (`plain!`'s `from_ne_bytes`, the images) | no `unsafe` code depends on it; Miri on `s390x` runs the tests of the library, of offsets and of every storage big-endian; the tests write expected bytes with `to_ne_bytes` |
 
@@ -411,7 +411,7 @@ of the place. It holds no address into the buffer, so it survives reallocation; 
 (`&T` from `Deref`, `&mut` plain data) borrow the handle and so end before the next allocation
 (I3). `ListEdit`, `OptionEdit`, `StrEdit`, `PlainEdit` and generated handles wrap `Raw`.
 `Flat::edit(buf, at)` (hidden) builds a place's handle; for `Near<T>` it reads the offset and
-returns the target's. Every handle implements `Handle<'e, Value>` (`set`, `replace`, `update`,
+returns the pointee's. Every handle implements `Handle<'e, Value>` (`set`, `replace`, `update`,
 the same functions as its own methods: `set` through the trait compiles to the machine code of
 `set` on the handle), the bound of `Flat::Edit`.
 
@@ -487,7 +487,7 @@ definition).
   case. They return `impl Emit<X>` (see Building).
 - `XInit<__F0, ..>`: for a struct with fields, a struct (tuple-like for a tuple struct) with the
   fields of `X`, each of a type parameter bounded as the parameter of `new` is (a builder of the
-  field, of the target of a pointer, `impl Into` with `#[flat(into)]`), all with the visibility of
+  field, of the pointee of a pointer, `impl Into` with `#[flat(into)]`), all with the visibility of
   `X`, as `new` takes every field. It is `Emit<X>`, writing each field at its offset as `new`
   does: the same machine code (an `XInit` and `X::new` of the same fields compile to identical
   functions), and the same bytes (`init_structs_name_the_fields`). The names are the point: a
@@ -522,13 +522,13 @@ pub fn replace(&mut self, value: impl Emit<T>) -> Old<'e, T>  // `mem::replace(p
 pub fn update<'a, E: Emit<T>>(&'a mut self, f: impl FnOnce(Old<'a, T>) -> E)
 ```
 
-`OptionEdit` also has `take`, which returns the target instead of the pointer (`replace` returns
+`OptionEdit` also has `take`, which returns the pointee instead of the pointer (`replace` returns
 the old `Option<Near<T>>`). `replace` and `update` share `Raw::swap_in`.
 
 - `set` keeps the old bytes of the place on the stack while the new value is written and puts
   them back if that unwinds (I7). It allocates nothing for the old value.
 - `replace` moves the old value to `size_of::<T>()` fresh bytes (`detach`: pointers re-aimed,
-  targets stay), writes the new value (a guard moves the old one back on unwind), and returns
+  pointees stay), writes the new value (a guard moves the old one back on unwind), and returns
   an `Old` designating the moved value.
 - `Old<'e, T>` comes from `replace`, `update`, `ListEdit::remove`, `OptionEdit::take`. It is
   `Emit<T>`: written into its own region (same `me`) it moves (`size_of::<T>()` bytes, pointers
@@ -573,7 +573,7 @@ panics.
 Constructors are lazy: nothing is written until the builder reaches a region. Types without
 pointers can also be built with a plain literal. Pointers are transparent where unambiguous: a
 constructor parameter for a field written `Near<X>` takes a builder of `X` and allocates the
-target (`Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2)))`); if `X` is a slice or `str` it takes
+pointee (`Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2)))`); if `X` is a slice or `str` it takes
 a list or string builder. The same for `Near<X, O>`: builders are generic over the width, which
 the place gives. The macro recognizes the field by the name `Near`; the hidden trait
 `Pointer` (`<FieldType as Pointer>::Arg`) then decides from the type, so `X` may be an alias; a
@@ -594,7 +594,7 @@ values without pointers, several places are borrowed together through `Pin`:
   nothing grows the buffer while a pin, which holds an address, lives. Nothing is pushed, built
   or moved through a pin.
 - `X::project(self: Pin<&mut X>) -> XPin<'_>`: a struct with the fields of `X`, or an enum with
-  its variants, each field `Pin<&'a mut Field>`. `Near::as_pin_mut` pins a target,
+  its variants, each field `Pin<&'a mut Field>`. `Near::as_pin_mut` pins a pointee,
   `Near::<[T]>::iter_pin_mut` (also on `ListEdit`) the elements; `core` has
   `Option::as_pin_mut`.
 - `Near` holds a `PhantomPinned`. A stored type is `Unpin` exactly when its fields are: the
@@ -685,10 +685,10 @@ error: they check, ask the storage for room (`Buf::load`), and copy only if they
 
 ## Bytes
 
-The compact image of a value is what a deep copy writes: the root at 0, then every target in the
+The compact image of a value is what a deep copy writes: the root at 0, then every pointee in the
 order the copy reaches it (depth first, fields in declaration order, list elements in order),
 each at the next position aligned for it; lists have `cap == len`; nothing follows the last
-target. Builders write the same image.
+pointee. Builders write the same image.
 
 ```rust
 pub fn as_bytes(&self) -> Option<&[u8]>                                      // Region
@@ -740,10 +740,10 @@ Padding is not looked at. Before `puns`, `check` refuses at offset 0 bytes short
 longer than its limit, and instantiates `Flat::store` of `T` (a function pointer to it), so that a
 load refuses at compile time, at every depth, the types that a build refuses (`fits_behind`).
 
-After `Ok`, every value is in bounds and valid, every pointer aims at its pointee, and the
-address: the slice is aligned to `ALIGN` (`view`), every pointee aligned for its types at
-positions of a region (`puns::check_compact` with `ALIGN`), and no stored type more aligned than `ALIGN`
-(`fits`). That is what the cast relies on.
+After `Ok`, every value is in bounds and valid, every pointer aims at its pointee, and the address:
+the slice is aligned to `ALIGN` (`view`), every pointee aligned for its types at positions of a
+region (`puns::check_compact` with `ALIGN`), and no stored type more aligned than `ALIGN` (`fits`).
+That is what the cast relies on.
 
 Where the bytes stop being a value (`Error::Invalid(at)`) is where `puns` says (`puns::Failure`),
 recorded as the check runs, in one pass: the innermost scalar, tag or struct whose check fails
@@ -817,7 +817,7 @@ Mechanics:
 - Copies and moves are the hidden methods of `Flat`, which `#[flat]` writes per type and
   `flat.rs` for numbers and pointers. A deep copy (`write_copy`) copies `PLAIN` values as bytes
   and calls `store` on others: each field at its offset (the tag of an enum, then the fields of
-  its variant), and for a pointer, the target allocated as the pointer says (one value, a list
+  its variant), and for a pointer, the pointee allocated as the pointer says (one value, a list
   block `[cap][len]` as `List::new` makes it, text), copied the same way, then the offset;
   depth first and in the order of the fields, which is the compact image. Padding is not written,
   so it keeps what the buffer held there: zeros in new capacity (so a compact copy has zero

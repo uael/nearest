@@ -31,7 +31,7 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
       .map(|f| match take_args(&mut f.attrs, Place::Field)?.into {
         Some(span) if is_pointer(&f.ty) => {
           let msg = "`into` is for plain data: the parameter of a pointer takes a builder of \
-                     its target";
+                     its pointee";
           Err(Error::new(span, msg))
         }
         into => Ok(into.is_some()),
@@ -111,19 +111,18 @@ fn expand(attr: TokenStream, mut input: DeriveInput) -> syn::Result<TokenStream>
   let (p_impl, p_ty, p_where) = pin_g.split_for_impl();
 
   // A constructor: `make` around one `emit` per field, after an optional tag. A field written
-  // `Near<..>` takes what `Pointer` says: for `Near<X>` (or `Near<X, O>`) a builder of `X`,
-  // whose target the constructor allocates.
-  // A field marked `#[flat(into)]` takes `impl Into<FieldType>`.
+  // `Near<..>` takes what `Pointer` says: for `Near<X>` (or `Near<X, O>`) a builder of `X`, whose
+  // pointee the constructor allocates. A field marked `#[flat(into)]` takes `impl Into<FieldType>`.
   // What the parameter of the field `f` takes, and how its value `p` is written: for a field
-  // written `Near<X>` (or `Near<X, O>`) a builder of `X`, whose target is allocated; for one marked
-  // `#[flat(into)]` anything that converts to the field; else a builder of the field.
+  // written `Near<X>` (or `Near<X, O>`) a builder of `X`, whose pointee is allocated; for one
+  // marked `#[flat(into)]` anything that converts to the field; else a builder of the field.
   let param = |f: &Field, into: bool, p: &Ident| {
     let ty = &f.ty;
-    match near_target(ty) {
+    match near_pointee(ty) {
       _ if into => {
         (quote!(::core::convert::Into<#ty>), quote!(::core::convert::Into::<#ty>::into(#p)))
       }
-      // A type parameter is a sized target; naming it lets the argument infer it.
+      // A type parameter is a sized pointee; naming it lets the argument infer it.
       Some(Type::Path(x)) if type_params.iter().any(|t| x.path.is_ident(*t)) => {
         (quote!(::nearest::Emit<#x>), quote!(<#ty>::new(#p)))
       }
@@ -703,14 +702,14 @@ fn take_args(attrs: &mut Vec<Attribute>, place: Place) -> syn::Result<Args> {
 
 /// `X` if `ty` is written `Near<X>` or `Near<X, O>`: any path ending in `Near` with one or two
 /// type arguments.
-fn near_target(ty: &Type) -> Option<&Type> {
+fn near_pointee(ty: &Type) -> Option<&Type> {
   type_arg(ty, "Near", 2)
 }
 
 /// Whether `ty` is written as a pointer, `Near<..>` (a list and a string too) or
 /// `Option<Near<..>>`.
 fn is_pointer(ty: &Type) -> bool {
-  near_target(ty).or_else(|| type_arg(ty, "Option", 1).and_then(near_target)).is_some()
+  near_pointee(ty).or_else(|| type_arg(ty, "Option", 1).and_then(near_pointee)).is_some()
 }
 
 /// `X` if `ty` is written `name<X, ..>`: any path ending in `name` with at least one and at most

@@ -311,15 +311,15 @@ impl Sink {
     unsafe { (*self.buf).ptr().add(at).cast::<P>().write_unaligned(v) }
   }
 
-  /// Points the pointer of `O` at `at` to `target`.
+  /// Points the pointer of `O` at `at` to `pointee`.
   ///
   /// # Safety
   /// `at` holds a pointer field of `O`.
   #[inline]
-  pub(crate) unsafe fn link<O: Offset>(&mut self, at: usize, target: usize) {
+  pub(crate) unsafe fn link<O: Offset>(&mut self, at: usize, pointee: usize) {
     offset::<O>();
     // SAFETY: forwarded; the distance fits `O` because the region is within its limit.
-    unsafe { self.write(at, O::from_isize(distance(at, target))) }
+    unsafe { self.write(at, O::from_isize(distance(at, pointee))) }
   }
 
   /// Writes the length of a list or a string, an `O`, at `at`.
@@ -362,7 +362,7 @@ unsafe fn read_len<O: Offset>(buf: *mut Buf, at: usize) -> usize {
 /// |---|---|
 /// | `u8`..`u64`, `i8`..`i64`, `f32`, `f64`, `bool`, `char`, `NonZero` integers, `puns::num` | [`PlainEdit<'e, Self>`] |
 /// | `[T; N]`, `T: Flat + Copy` | [`PlainEdit<'e, Self>`] |
-/// | `Near<T, O>` | `Edit<'e, T>`, the target's handle |
+/// | `Near<T, O>` | `Edit<'e, T>`, the pointee's handle |
 /// | `Near<[T], O>` | [`ListEdit<'e, T, O>`] |
 /// | `Near<str, O>` | [`StrEdit<'e, O>`] |
 /// | `Option<Near<T, O>>` | [`OptionEdit<'e, T, O>`] |
@@ -401,8 +401,8 @@ pub unsafe trait Flat: Pun + Sized + 'static {
   /// [`Edit`](crate::Edit).
   type Edit<'e>: ?Sized + Handle<'e, Self::Value> + 'e;
 
-  /// What a handle of a place of `Self` writes: `Self`, but what the target writes for
-  /// `Near<T, O>`, whose handle is the target's.
+  /// What a handle of a place of `Self` writes: `Self`, but what the pointee writes for
+  /// `Near<T, O>`, whose handle is the pointee's.
   type Value: Flat;
 
   /// What the getters of handles (field methods, `at`, `push`, `as_mut`, `Region::edit`, ..) give
@@ -433,7 +433,7 @@ pub unsafe trait Flat: Pun + Sized + 'static {
   unsafe fn edit<'a, 'e: 'a>(buf: *mut Buf, at: usize) -> &'a mut Self::Edit<'e>;
 
   /// Writes a deep copy of `self` at `at`: each field where it is, and for each pointer a copy of
-  /// its target, allocated depth first in the order of the fields, which is the compact image.
+  /// its pointee, allocated depth first in the order of the fields, which is the compact image.
   /// Padding is not written, so it keeps the bytes that the buffer held there, which are
   /// initialized.
   ///
@@ -491,7 +491,7 @@ unsafe fn shift<T: Flat>(buf: *mut Buf, at: usize, n: usize, d: isize) {
   if T::PLAIN {
     return;
   }
-  // SAFETY: per the caller, each a valid value of the buffer; the targets did not move, so each
+  // SAFETY: per the caller, each a valid value of the buffer; the pointees did not move, so each
   // new distance is within the region.
   unsafe {
     let base = (*buf).ptr();
@@ -517,7 +517,7 @@ pub unsafe fn stash<T: Flat>(buf: *mut Buf, at: usize) -> MaybeUninit<T> {
 /// Writes at `to` the `T` that `stash` took from `from`, re-aiming its pointers.
 ///
 /// # Safety
-/// `kept` is the stash of a `T` at `from` in `buf`, whose targets have not moved, and `to` is
+/// `kept` is the stash of a `T` at `from` in `buf`, whose pointees have not moved, and `to` is
 /// allocated for a `T`.
 pub unsafe fn unstash<T: Flat>(buf: *mut Buf, kept: &MaybeUninit<T>, from: usize, to: usize) {
   // SAFETY: per the caller.
@@ -556,8 +556,8 @@ pub unsafe fn detach<T: Flat>(buf: *mut Buf, at: usize) -> usize {
 /// # Safety
 /// `n` `T`s are at `from` in `buf`, and `to` is allocated for `n` of them.
 pub unsafe fn move_elems<T: Flat>(buf: *mut Buf, from: usize, to: usize, n: usize) {
-  // SAFETY: per the caller; a pointer's target is not one of the moved values (a value owns its
-  // targets, elsewhere), so it does not move.
+  // SAFETY: per the caller; a pointer's pointee is not one of the moved values (a value owns its
+  // pointees, elsewhere), so it does not move.
   unsafe {
     let p = (*buf).ptr();
     ptr::copy(p.add(from), p.add(to), n * size_of::<T>());
@@ -691,7 +691,7 @@ unsafe impl<T: Flat + Copy, const N: usize> Flat for [T; N] {
   unsafe fn shift(_: *mut u8, _: usize, _: isize) {}
 }
 
-// SAFETY: copies the target.
+// SAFETY: copies the pointee.
 unsafe impl<T: Flat, O: Offset> Flat for Near<T, O> {
   type Edit<'e> = T::Edit<'e>;
   type Value = T::Value;
@@ -707,8 +707,8 @@ unsafe impl<T: Flat, O: Offset> Flat for Near<T, O> {
   }
   unsafe fn store(&self, sink: &mut Sink, at: usize) {
     fits_behind::<T, O>();
-    // SAFETY: the caller allocated `at` for a `Near`; the target is allocated before the source is
-    // read, and the source is not in the sink's buffer, nor is its target.
+    // SAFETY: the caller allocated `at` for a `Near`; the pointee is allocated before the source is
+    // read, and the source is not in the sink's buffer, nor is its pointee.
     unsafe {
       let t = sink.alloc(size_of::<T>(), align_of::<T>());
       write_copy(&**self, sink, t);
@@ -845,7 +845,7 @@ unsafe fn copy_str<O: Offset>(sink: &mut Sink, at: usize, s: &str) {
 /// | `#[flat]` types | the generated constructors |
 ///
 /// Constructor parameters for fields written `Near<X>` take a builder of `X` and allocate the
-/// target themselves.
+/// pointee themselves.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -906,7 +906,7 @@ unsafe impl<T: Flat> Emit<T> for &T {
 /// Builder made by [`Near::new`].
 pub struct New<E>(pub E);
 
-// SAFETY: allocates and writes the target, then links to it.
+// SAFETY: allocates and writes the pointee, then links to it.
 unsafe impl<T: Flat, O: Offset, E: Emit<T>> Emit<Near<T, O>> for New<E> {
   unsafe fn emit(self, sink: &mut Sink, at: usize) {
     fits_behind::<T, O>();

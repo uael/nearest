@@ -47,10 +47,11 @@ use crate::{
 #[pun(bound(T: Pointee<O> + Pun, O: Pun))]
 #[repr(transparent)]
 pub struct Near<T: ?Sized, O: Offset = i32> {
-  /// The distance from the pointer to its pointee, an eager aim of `puns` at the pointee that
-  /// [`Pointee`] maps `T` to (`aim`), as the layout of `O::NonZero` says. An `InPlace`, so that a
-  /// `Near` has no constructor. `puns` reads the pointee (`target`, `target_mut`).
-  #[pun(pointer(mut target: <T as Pointee<O>>::Target = off as u128))]
+  /// The distance from the pointer to its pointee, the field of an eager aim of `puns` at the
+  /// pointee that [`Pointee`] maps `T` to (`aim`), read as the layout of `O::NonZero` says. An
+  /// `InPlace`, so that a `Near` has no constructor. `puns` reads the pointee (`pointee`,
+  /// `pointee_mut`).
+  #[pun(pointer(mut pointee: <T as Pointee<O>>::Pointee))]
   pub(crate) off: InPlace<O::NonZero>,
   _t: PhantomData<T>,
   _pin: PhantomPinned,
@@ -401,7 +402,7 @@ impl<T: Flat, O: Offset> Near<T, O> {
     New(value)
   }
 
-  /// The target, pinned: the way down in a pinned view (see `pin` on handles).
+  /// The pointee, pinned: the way down in a pinned view (see `pin` on handles).
   ///
   /// ```
   /// use core::pin::Pin;
@@ -423,12 +424,12 @@ impl<T: Flat, O: Offset> Near<T, O> {
   pub const fn as_pin_mut(self: Pin<&mut Self>) -> Pin<&mut T> {
     offset::<O>();
     // SAFETY: A `Near` is in a region, which holds its pointee at its offset, in the buffer that
-    // the `&mut` comes from, so it has its provenance under tree borrows, as `target_mut`
-    // requires ("Reading a pointee" in `aim`). A `Near` owns its target alone, and a pinned view
-    // borrows the handle that it comes from, so the target is reached only through the result,
+    // the `&mut` comes from, so it has its provenance under tree borrows, as `pointee_mut`
+    // requires ("Reading a pointee" in `aim`). A `Near` owns its pointee alone, and a pinned view
+    // borrows the handle that it comes from, so the pointee is reached only through the result,
     // and nothing grows the buffer, which would move it, while the pin lives. The pointer is not
     // moved out of the pin.
-    unsafe { Pin::new_unchecked(Self::target_mut(Pin::get_unchecked_mut(self))) }
+    unsafe { Pin::new_unchecked(Self::pointee_mut(Pin::get_unchecked_mut(self))) }
   }
 }
 
@@ -470,7 +471,7 @@ impl<T: Flat, O: Offset> Near<[T], O> {
     offset::<O>();
     // SAFETY: As for `Near::as_pin_mut`; the elements are disjoint and stay where they are.
     unsafe {
-      (Self::target_mut(Pin::get_unchecked_mut(self)).iter_mut())
+      (Self::pointee_mut(Pin::get_unchecked_mut(self)).iter_mut())
         .map(|element| Pin::new_unchecked(element))
     }
   }
@@ -482,7 +483,7 @@ impl<T: ?Sized + Pointee<O> + Pun, O: Offset> Deref for Near<T, O> {
   type Target = T;
   #[inline]
   fn deref(&self) -> &T {
-    self.target()
+    self.pointee()
   }
 }
 
@@ -516,7 +517,7 @@ where
   }
 }
 
-/// Shows the target, as the target does: a string or a number.
+/// Shows the pointee, as the pointee does: a string or a number.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};

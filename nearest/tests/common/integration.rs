@@ -424,7 +424,7 @@ fn into_parameters() {
   assert_eq!((l.items[0].id, &*l.items[0].name, &l.items[1]), (3, "y", &*s));
 }
 
-/// The target of a pointer field may be written through an alias.
+/// The pointee of a pointer field may be written through an alias.
 #[flat]
 struct ViaAlias {
   bytes: Near<Bytes>,
@@ -557,7 +557,7 @@ fn near_traits() {
   let e = Region::new_in(Store::default(), Expr::neg(Expr::Lit(1)));
   let Expr::Neg(x) = &*e else { unreachable!() };
   assert_eq!((format!("{x:?}"), x == x), ("Lit(1)".into(), true));
-  // `Display` shows the target.
+  // `Display` shows the pointee.
   let d = Region::new_in(Store::default(), Pair::<Near<u64>, Near<str>>::new(Near::new(42), "text"));
   assert_eq!(format!("{} {:>6}", d.first, d.second), "42   text");
 }
@@ -804,7 +804,7 @@ fn option_handles() {
   next.as_mut().unwrap().next().insert(Block::new(3, (), None));
   assert_eq!(b.next.as_ref().map(|n| (n.id, ops(n))), Some((2, vec![1])));
   assert_eq!(b.next.as_ref().unwrap().next.as_ref().unwrap().id, 3);
-  // `insert` over a target replaces it.
+  // `insert` over a pointee replaces it.
   b.edit().next().insert(Block::new(4, (), None));
   assert_eq!(b.next.as_ref().map(|n| (n.id, n.next.is_none())), Some((4, true)));
   b.edit().next().set(None);
@@ -1292,12 +1292,12 @@ fn malformed_images_are_rejected() {
   assert_eq!(ok(&image), Ok("(-1 + 2)".into()));
   let (l, r) = (4, 8); // the two pointers of the root `Add`
   let mut shared = image.clone();
-  put(&mut shared, r, word(&image, l) - 4); // both pointers to the same target
+  put(&mut shared, r, word(&image, l) - 4); // both pointers to the same pointee
   assert!(ok(&shared).is_err());
   let mut cycle = image.clone();
   put(&mut cycle, l, -4); // a pointer back to the root
   assert!(ok(&cycle).is_err());
-  let mut swapped = image.clone(); // valid targets in the wrong order
+  let mut swapped = image.clone(); // valid pointees in the wrong order
   put(&mut swapped, l, word(&image, r) + 4);
   put(&mut swapped, r, word(&image, l) - 4);
   assert!(ok(&swapped).is_err());

@@ -8,7 +8,7 @@
 **Self-relative pointers in one buffer. Clone is `memcpy`.**
 
 A `Region<T>` keeps a `T` and everything it points to in one buffer. A pointer is a `Near<T>`:
-4 bytes (or 2, or 8) holding the distance from its own address to its target. So copying the
+4 bytes (or 2, or 8) holding the distance from its own address to its pointee. So copying the
 buffer copies the whole value, reading is plain `&T` with `Near` dereferencing like `Box`, and
 the bytes mean the same at any address, so a region can be written out and read back.
 
@@ -104,7 +104,7 @@ if let ExprMut::Neg(x) = e.as_mut() && let ExprMut::Add(args) = x.as_mut() {
 Anything that can be written as a `T` is accepted wherever a `T` is built: a value, a copy
 (`&T`, from any region), a move (`Old`), a list literal (`[a, b]`, `(a, b)`, `()`), a slice, an
 iterator, a string, or a generated constructor. A constructor parameter for a field written
-`Near<X>` takes a builder of `X` and allocates the target; `Near::new(x)` builds a pointer
+`Near<X>` takes a builder of `X` and allocates the pointee; `Near::new(x)` builds a pointer
 where one is expected (optional pointers, lists of pointers). For a struct, `XInit` takes the same
 builders by name, in any order: `FuncInit { name: "f", blocks: () }` is `Func::new("f", ())`.
 
@@ -186,8 +186,8 @@ struct Table { name: Near<str, i32le>, rows: Near<[u16le], i32le> }
 
 ## One version read as another
 
-Every `#[flat]` type is a [`puns`](https://docs.rs/puns) type too, and a `Near` is an eager aim
-of `puns`: its offset, and its pointee at the address of the pointer plus the offset, which
+Every `#[flat]` type is a [`puns`](https://docs.rs/puns) type too, and a `Near` holds an eager
+aim of `puns`: its offset, and its pointee at the address of the pointer plus the offset, which
 `puns` checks with the value that holds the pointer. The loaders check bytes with `puns`, pointees
 included, and that they are compact. So the bytes saved by a program load in its next version,
 in place, when they are a value of it:
@@ -250,7 +250,7 @@ let moved = r;                                       // the bytes move with it
 - A `Near` has no constructor and is not `Clone`: it only exists inside a region.
 - No safe API gives a `&mut T` for a `T` that contains a `Near`; such places are reached
   through handles, which are unsized, so they cannot be swapped or assigned through.
-- A region is a tree: builders make fresh targets, `&T` copies, and the only moves are `Old`
+- A region is a tree: builders make fresh pointees, `&T` copies, and the only moves are `Old`
   (used at most once) and list operations. Bytes that are no longer reachable are never
   written again, so an `Old` stays intact for as long as the edit lasts.
 - A handle holds a position, not an address, so it stays valid when the buffer grows. Every

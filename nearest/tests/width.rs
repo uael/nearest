@@ -109,9 +109,9 @@ const fn bytes_of<O: Offset>(o: &O) -> &[u8] {
 }
 
 /// The contract of `Offset`, on values: the bytes are the integer in two's complement in the byte
-/// order that its layout says, which `to_isize` reads; a round trip within `LIMIT`; zero is the zero
-/// bytes and nothing else is; the `NonZero` is the same bytes, and `None` of it is zero. This is
-/// what `puns` relies on when it reads a pointer of one offset as a pointer of another.
+/// order that its layout says, which `to_isize` reads; a round trip within `LIMIT`; zero is the
+/// zero bytes and nothing else is; the `NonZero` is the same bytes, and `None` of it is zero. This
+/// is what `puns` relies on when it reads a pointer of one offset as a pointer of another.
 fn contract<O: Ordered>() {
   let w = size_of::<O>();
   let limit = i64::try_from(O::LIMIT).unwrap();
@@ -274,14 +274,7 @@ fn bytes<O: Offset>() {
   assert_eq!(nearest::view::<Tree<O>>(image), Ok(&*r));
   let mut scratch = vec![Pending::default(); image.len() / size_of::<O>().min(4)];
   assert_eq!(nearest::view_with::<Tree<O>>(image, &mut scratch), Ok(&*r));
-  // Too little scratch for pointers deeper than the check follows in place: it could not finish.
-  let mut deep = Region::new(Expr::<O>::Lit(1));
-  for _ in 0..8 {
-    deep.edit().update(Expr::neg);
-  }
-  let deep = Region::new(&*deep);
-  let none = Region::<Expr<O>>::from_bytes_with(deep.as_bytes().unwrap(), &mut []);
-  assert_eq!(none.err(), Some(Error::ScratchFull));
+  assert_eq!(Region::<Tree<O>>::from_bytes_with(image, &mut []).err(), Some(Error::ScratchFull));
   // Cut, padded, or a pointer one byte off.
   let cut = &image[..image.len() - 1];
   assert!(matches!(Region::<Tree<O>>::from_bytes(cut), Err(Error::Invalid(_))));
@@ -615,7 +608,7 @@ fn offsets_that_from_isize_does_not_make_are_invalid() {
 // ---------------------------------------------------------------------------------------------
 // Offsets of the same width and byte order read each other's regions
 
-/// The image of a `Tree<A>` read as a `Tree<B>` with `nearest::view`: the same targets, since both
+/// The image of a `Tree<A>` read as a `Tree<B>` with `nearest::view`: the same pointees, since both
 /// offsets are the same two's complement integer of the same bytes (the contract of `Offset`).
 fn read_as<A: Offset, B: Offset>() {
   let r = tree::<A>();

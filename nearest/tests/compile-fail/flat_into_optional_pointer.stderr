@@ -1,4 +1,4 @@
-error: `into` is for plain data: the parameter of a pointer takes a builder of its target
+error: `into` is for plain data: the parameter of a pointer takes a builder of its pointee
  --> tests/compile-fail/flat_into_optional_pointer.rs:5:26
   |
 5 | struct S { a: u8, #[flat(into)] next: Option<nearest::Near<S>> }

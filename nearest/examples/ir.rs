@@ -2,7 +2,7 @@
 //! instructions, trees of expressions and a table of strings, declared once with `#[flat]`.
 //!
 //! A region keeps a value and everything it points to in one buffer, where a pointer is the
-//! distance from its own address to its target: the bytes of the region are the value, wherever
+//! distance from its own address to its pointee: the bytes of the region are the value, wherever
 //! they are. So the IR is saved by writing those bytes to a file, and read back by looking at
 //! them in place (a mapped file): no parsing, no allocation, nothing built node by node. The
 //! numbers of `puns` (re-exported as `nearest::puns`) make the bytes the same on every machine,
@@ -20,7 +20,7 @@
 //! | what a loaded file must be                  | all of the above: `nearest::view`              |
 //!
 //! When a file is loaded, what is checked is what bytes do not prove: that every pointer aims
-//! where a copy of the value would have put its target (hence in bounds, aligned, a tree, without
+//! where a copy of the value would have put its pointee (hence in bounds, aligned, a tree, without
 //! a gap), tags of enums, UTF-8, lengths, the magic number and the rules. What cannot be invalid
 //! (a list of numbers) is not looked at, however long.
 //!

@@ -4,21 +4,21 @@ error[E0080]: evaluation panicked: a rule casts the integer fields of its struct
      | #[derive(Pun)]
      |          --- in this derive macro expansion
 ...
-     |   #[pun(pointer(mut target: <T as Pointee<O>>::Target = off as u128))]
-     |                                                         ^^^ evaluation of `nearest::near::_::<impl nearest::puns::Pun for nearest::Near<str, Three>>::LAYOUT::{constant#1}::{constant#0}` failed inside this call
+     |   pub(crate) off: InPlace<O::NonZero>,
+     |              ^^^ evaluation of `nearest::near::_::<impl nearest::puns::Pun for nearest::Near<str, Three>>::LAYOUT::{constant#1}::{constant#0}` failed inside this call
      |
 note: inside `Op::load_as::<NonZeroThree>`
     --> $RUST/core/src/panic.rs
      |
      = note: the failure occurred here
      |
-    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/711c134/puns/src/layout.rs:5419:7
+    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/90c1d09/puns/src/layout.rs:5446:7
      |
-5419 | /       panic!(
-5420 | |         "a rule casts the integer fields of its struct, and this field is not one (a \
-5421 | |          floating-point number, a `bool`, a `char` or an enum is not): read its bytes with \
-5422 | |          `le(offset, size)` or `be(offset, size)`"
-5423 | |       )
+5446 | /       panic!(
+5447 | |         "a rule casts the integer fields of its struct, and this field is not one (a \
+5448 | |          floating-point number, a `bool`, a `char` or an enum is not): read its bytes with \
+5449 | |          `le(offset, size)` or `be(offset, size)`"
+5450 | |       )
      | |_______- in this macro invocation
 
 note: erroneous constant encountered

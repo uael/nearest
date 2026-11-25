@@ -79,9 +79,9 @@ unsafe impl Worklist for Stack {
 
 /// Checks that `bytes`, at any address, are the compact image of a valid `T` once at an address
 /// aligned as a region is: what `puns` checks without a reference, with a stack that does not grow
-/// with the data ([`puns::check_compact`]), every value and every pointee valid, each pointee where a deep
-/// copy writes it (depth first, in the order of the fields, at the next position aligned for it),
-/// and nothing after the last one. That gives no sharing, no overlap, no cycle and no gap. The
+/// with the data ([`puns::check_compact`]), every value and every pointee valid, each pointee where
+/// a deep copy writes it (depth first, in the order of the fields, at the next position aligned for
+/// it), and nothing after the last one. That gives no sharing, no overlap, no cycle and no gap. The
 /// pointees that wait are kept in `todo` ([`Error::ScratchFull`] if it runs out first). Like every
 /// way into a region, it rejects at compile time the types a region cannot hold, behind pointers
 /// too, as writing them does (`Flat::store`).

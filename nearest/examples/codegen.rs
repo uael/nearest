@@ -5,8 +5,8 @@
 //! ```
 //!
 //! and look for their names in the `codegen.s` that it writes under `target/release` (`find target
-//! -name codegen.s`). The check of a region is the check of `puns` (`puns::check`), which keeps
-//! the pointers still to follow in the scratch of the caller.
+//! -name codegen.s`). The check of a region is the compact check of `puns`
+//! (`puns::check_compact`), which keeps the pointers still to follow in the scratch of the caller.
 #![expect(
   clippy::no_mangle_with_rust_abi,
   reason = "the code of the Rust ABI is what is measured; `no_mangle` only names it in the assembly"

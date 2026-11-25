@@ -20,8 +20,8 @@
 //!
 //! # Reading a pointee
 //!
-//! `puns` reads the pointee of a pointer, with the methods `Near::target` and `Near::target_mut`
-//! that its derive writes. `target` is safe, and `Deref` calls it: the offset of a `Near` is an
+//! `puns` reads the pointee of a pointer, with the methods `Near::pointee` and `Near::pointee_mut`
+//! that its derive writes. `pointee` is safe, and `Deref` calls it: the offset of a `Near` is an
 //! [`InPlace`](puns::InPlace), which no code makes, so a `&Near` comes from `puns`, which checked
 //! its pointee (`view`, `from_bytes`), or from unsafe code of `nearest` that takes the obligation
 //! that `InPlace` states ("Values made by unsafe code"):
@@ -34,7 +34,7 @@
 //!   accept. Under stacked borrows, a reference to a `Near` gives access to its own bytes only, and
 //!   the read is undefined behavior: `nearest` relies on tree borrows here, as everywhere it
 //!   resolves a pointer from `&self`.
-//! - **Write.** `target_mut` is `unsafe`: a `&mut Near` does not cover its pointee, which a check
+//! - **Write.** `pointee_mut` is `unsafe`: a `&mut Near` does not cover its pointee, which a check
 //!   may find shared. A `Pin<&mut Near>` comes from a pinned view, which borrows the handle of the
 //!   region mutably, and a `Near` that a region wrote owns its pointee alone, so the pointee is
 //!   reached only through the result while it lives. A `Near` is not `Unpin`, so safe code cannot
@@ -51,19 +51,19 @@ use crate::Offset;
 /// value is `Self`.
 pub trait Pointee<O: Offset> {
   /// The pointee.
-  type Target: ?Sized + puns::Pointee<Value = Self>;
+  type Pointee: ?Sized + puns::Pointee<Value = Self>;
 }
 
 impl<T: Pun, O: Offset> Pointee<O> for T {
-  type Target = T;
+  type Pointee = T;
 }
 
 impl<T: Pun, O: Offset> Pointee<O> for [T] {
-  type Target = Thin<[T], ListLen<O>>;
+  type Pointee = Thin<[T], ListLen<O>>;
 }
 
 impl<O: Offset> Pointee<O> for str {
-  type Target = Thin<str, O>;
+  type Pointee = Thin<str, O>;
 }
 
 /// What is stored before the elements of a list: its capacity, then its length, `O`s.
