@@ -1,6 +1,11 @@
 //! The `serde` feature: a region is its bytes, checked when loaded.
 #![cfg(feature = "serde")]
 
+use std::{
+  alloc::{AllocError, Allocator, Global, Layout},
+  ptr::NonNull,
+};
+
 use nearest::{Near, Region, flat};
 use serde_test::{Token, assert_de_tokens, assert_de_tokens_error, assert_ser_tokens};
 
@@ -52,6 +57,40 @@ fn deserializes_from_every_form_of_bytes() {
   seq.extend(bytes.iter().map(|&b| Token::U8(b)));
   seq.push(Token::SeqEnd);
   assert_de_tokens(&r, &seq);
+}
+
+/// The global allocator, but for blocks of `N` bytes at most: an allocator with a default value
+/// other than `Global`, which a region deserializes into.
+#[derive(Default)]
+struct AtMost<const N: usize>;
+
+// SAFETY: every block is a block of `Global`, given and freed with the layout it was asked with.
+unsafe impl<const N: usize> Allocator for AtMost<N> {
+  fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+    if layout.size() > N {
+      return Err(AllocError);
+    }
+    Global.allocate(layout)
+  }
+
+  unsafe fn deallocate(&self, block: NonNull<u8>, layout: Layout) {
+    // SAFETY: a block of `Global`, which fits `layout`.
+    unsafe { Global.deallocate(block, layout) }
+  }
+}
+
+#[test]
+fn deserializes_into_any_allocator_with_a_default() {
+  let r = tree();
+  let bytes = image(&r);
+  let loaded: Region<Tree, AtMost<256>> =
+    serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+  assert_eq!(*loaded, *r);
+  assert_eq!(loaded.as_bytes(), Some(bytes));
+  assert_de_tokens_error::<Region<Tree, AtMost<16>>>(
+    &[Token::Bytes(bytes)],
+    "the allocator did not give the block of the region",
+  );
 }
 
 #[test]
