@@ -326,22 +326,23 @@ pub fn main() {
     Region::<Function>::from_bytes(&bad).err()
   };
   let place = |part: &u8| (&raw const *part).addr() - bytes.as_ptr().addr();
-  let refused = Some(Error::Invalid(puns::Error::Validity));
+  // Refused where the check finds it: a field, the value of a rule, a pointer, a tag, a text.
+  let refused = |at: usize| Some(Error::Invalid(puns::Error::Validity { at }));
   // The magic number, the version, and the rule of the function.
-  assert_eq!(invalid(0, b'Q'), refused);
-  assert_eq!(invalid(4, 2), refused);
-  assert_eq!(invalid(6, 5), refused);
+  assert_eq!(invalid(0, b'Q'), refused(0));
+  assert_eq!(invalid(4, 2), refused(4));
+  assert_eq!(invalid(6, 5), refused(0));
   // A pointer that aims elsewhere: the name, one byte further, where its length is not aligned.
-  assert_eq!(invalid(10, bytes[10] + 1), refused);
+  assert_eq!(invalid(10, bytes[10] + 1), refused(10));
   // A tag that is not one: the end of the first block, an operation of the second.
   let end = place(puns::head_ref::<End, u8>(&loaded.blocks[0].end));
-  assert_eq!(invalid(end, 3), refused);
+  assert_eq!(invalid(end, 3), refused(end));
   let Inst::Bin(_, op, ..) = &loaded.blocks[1].body[0] else { panic!("not what was written") };
   let op = place(puns::pun_ref::<Op, u8>(op));
-  assert_eq!(invalid(op, 4), refused);
+  assert_eq!(invalid(op, 4), refused(op));
   // A label that is not UTF-8.
   let label = place(&loaded.blocks[3].label.as_bytes()[0]);
-  assert_eq!(invalid(label, 0xff), refused);
+  assert_eq!(invalid(label, 0xff), refused(label));
   // Cut short; with something after it, which no pointer reaches, it is the same function.
   assert!(Region::<Function>::from_bytes(&bytes[..size - 1]).is_err());
   let mut long = bytes.to_vec();

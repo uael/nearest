@@ -233,7 +233,8 @@
 //! assert_eq!(eval(new), -1);
 //! // The other way, a `Mul` is no `Expr`: refused where its tag is.
 //! let mul = Region::new(NewExpr::mul(NewExpr::Lit(2), NewExpr::Lit(3)));
-//! assert_eq!(nearest::view::<Expr>(mul.as_bytes().unwrap()).err(), Some(Error::Invalid(Validity)));
+//! let refused = Some(Error::Invalid(Validity { at: 0 }));
+//! assert_eq!(nearest::view::<Expr>(mul.as_bytes().unwrap()).err(), refused);
 //! ```
 //!
 //! What `#[pun(..)]` says of a type, `valid(..)` of a field and `assert(..)` of a struct, are
@@ -252,7 +253,7 @@
 //!
 //! let backwards = Region::new(Span::new(2, 1)); // built: rules are not checked here
 //! let bytes = backwards.as_bytes().unwrap();
-//! assert_eq!(Region::<Span>::from_bytes(bytes).err(), Some(Error::Invalid(Validity)));
+//! assert_eq!(Region::<Span>::from_bytes(bytes).err(), Some(Error::Invalid(Validity { at: 0 })));
 //! assert!(Region::<Span>::from_bytes(Region::new(Span::new(1, 2)).as_bytes().unwrap()).is_ok());
 //! ```
 //!

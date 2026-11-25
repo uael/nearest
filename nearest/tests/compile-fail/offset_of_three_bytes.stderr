@@ -12,7 +12,7 @@ note: inside `Op::load_as::<NonZeroThree>`
      |
      = note: the failure occurred here
      |
-    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/5636a26/puns/src/layout.rs:5498:7
+    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/6906ef1/puns/src/layout.rs:5498:7
      |
 5498 | /       panic!(
 5499 | |         "a rule casts the integer fields of its struct, and this field is not one (a \

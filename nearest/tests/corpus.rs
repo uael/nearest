@@ -383,7 +383,7 @@ fn rules_are_checked_at_load() {
   ] {
     let mut bad = image.clone();
     bad[at] = value;
-    let refused = Some(Error::Invalid(Validity));
+    let refused = Some(Error::Invalid(Validity { at: error }));
     assert_eq!(Region::<Checked>::from_bytes(&bad).err(), refused, "at {at}, the rule at {error}");
   }
 }

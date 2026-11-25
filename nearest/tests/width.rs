@@ -284,14 +284,20 @@ fn bytes<O: Offset>() {
   for n in [1, -1] {
     let mut bad = image.to_vec();
     put::<O>(&mut bad, name, int::<O>(image, name) + n);
-    assert_eq!(Region::<Tree<O>>::from_bytes(&bad).err(), Some(Error::Invalid(Validity)));
+    assert_eq!(
+      Region::<Tree<O>>::from_bytes(&bad).err(),
+      Some(Error::Invalid(Validity { at: name }))
+    );
   }
   // A negative length is as bad as one too long.
   let text = Region::<Near<str, O>>::new("hi");
   let mut bad = text.as_bytes().unwrap().to_vec();
   let w = size_of::<O>();
   put::<O>(&mut bad, w, -1);
-  assert_eq!(Region::<Near<str, O>>::from_bytes(&bad).err(), Some(Error::Invalid(Validity)));
+  assert_eq!(
+    Region::<Near<str, O>>::from_bytes(&bad).err(),
+    Some(Error::Invalid(Validity { at: 0 }))
+  );
 }
 
 /// Each test with each offset. Under Miri, the tests that build and check regions run with seven
@@ -531,8 +537,9 @@ fn integers_wider_than_isize_are_invalid() {
   let bytes = r.as_bytes().unwrap();
   assert_eq!(bytes, [&8i64.to_ne_bytes()[..], &[7]].concat());
   let far = with_i64(bytes, 0, HIGH + 8);
-  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&far).err(), Some(Error::Invalid(Validity)));
-  assert_eq!(view_in_words::<Near<u8, i64>>(&far), Err(Error::Invalid(Validity)));
+  let refused = Error::Invalid(Validity { at: 0 });
+  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&far).err(), Some(refused));
+  assert_eq!(view_in_words::<Near<u8, i64>>(&far), Err(refused));
   assert_eq!(view_in_words::<Near<u8, i64>>(bytes), Ok(()));
   // The length of a list, and of a text. A capacity is at least the length, and a region does
   // not read the capacity of a loaded list, so a large one is valid.
@@ -551,10 +558,10 @@ fn integers_wider_than_isize_are_invalid() {
   let text = Region::<Near<str, i64>>::new("hi");
   let bytes = text.as_bytes().unwrap();
   let bad = with_i64(bytes, 8, HIGH + 2);
-  assert_eq!(Region::<Near<str, i64>>::from_bytes(&bad).err(), Some(Error::Invalid(Validity)));
+  assert_eq!(Region::<Near<str, i64>>::from_bytes(&bad).err(), Some(refused));
   // Nor any `i64` that is not what `from_isize` makes: the most negative one.
   let low = with_i64(r.as_bytes().unwrap(), 0, i64::MIN);
-  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&low).err(), Some(Error::Invalid(Validity)));
+  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&low).err(), Some(refused));
 }
 
 /// `nearest::view` of `bytes`, copied to words: an address aligned as a region is.
@@ -607,7 +614,8 @@ fn offsets_that_from_isize_does_not_make_are_invalid() {
   assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(bytes).map(|r| **r), Ok(7));
   let mut far = bytes.to_vec();
   far[..4].copy_from_slice(&((1 << 20) + 4i32).to_ne_bytes()); // past `LIMIT`
-  assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(&far).err(), Some(Error::Invalid(Validity)));
+  let refused = Some(Error::Invalid(Validity { at: 0 }));
+  assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(&far).err(), refused);
 }
 
 // ---------------------------------------------------------------------------------------------

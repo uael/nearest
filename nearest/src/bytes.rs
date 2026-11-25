@@ -19,7 +19,8 @@ use crate::{
 /// let r = Region::new(Msg::new(1, "hi"));
 /// let bytes = r.as_bytes().unwrap();
 /// let cut = Region::<Msg>::from_bytes(&bytes[..bytes.len() - 1]);
-/// assert_eq!(cut.err(), Some(Error::Invalid(puns::Error::Validity))); // the text, cut short
+/// // The text, cut short: refused at its pointer, after the byte of `id`.
+/// assert_eq!(cut.err(), Some(Error::Invalid(puns::Error::Validity { at: 4 })));
 /// let mut small = [MaybeUninit::uninit(); 8];
 /// let full = Region::<Msg, _>::from_bytes_in(bytes, Fixed::new(&mut small));
 /// assert_eq!(full.err(), Some(Error::Alloc)); // a valid image, larger than 8 bytes
