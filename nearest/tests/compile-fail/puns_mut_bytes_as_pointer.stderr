@@ -1,13 +1,13 @@
 error[E0080]: evaluation panicked:
               cannot pun: the source or the target holds an eager aim, whose pointee is checked with it and read without a check: a write through a `&mut` could move it away from that pointee.
 
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/94eb0a3/puns/src/lib.rs:3603:5
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a681173/puns/src/lib.rs:3603:5
      |
 3603 |     Self::require(Self::eager_mut());
      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `nearest::puns::Plan::<[u8], nearest::Near<u32>>::TRY_MUT` failed inside this call
      |
 note: inside `puns::Plan::<[u8], Near<u32>>::require`
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/94eb0a3/puns/src/lib.rs:3467:7
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a681173/puns/src/lib.rs:3467:7
      |
 3467 |       message.panic();
      |       ^^^^^^^^^^^^^^^
@@ -16,19 +16,19 @@ note: inside `puns::Message::panic`
      |
      = note: the failure occurred here
      |
-    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/94eb0a3/puns/src/lib.rs:3793:5
+    ::: /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a681173/puns/src/lib.rs:3793:5
      |
 3793 |     panic!("{}", unsafe { core::str::from_utf8_unchecked(this.bytes.split_at(this.len).0) })
      |     ---------------------------------------------------------------------------------------- in this macro invocation
 
 note: erroneous constant encountered
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/94eb0a3/puns/src/lib.rs:4798:11
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a681173/puns/src/lib.rs:4798:11
      |
 4798 |   const { Plan::<[u8], D>::TRY_MUT };
      |           ^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: erroneous constant encountered
-    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/94eb0a3/puns/src/lib.rs:4798:3
+    --> /home/runner/.cargo/git/checkouts/puns-d339d9f67c1777da/a681173/puns/src/lib.rs:4798:3
      |
 4798 |   const { Plan::<[u8], D>::TRY_MUT };
      |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
