@@ -188,8 +188,8 @@ struct Table { name: Near<str, i32le>, rows: Near<[u16le], i32le> }
 Every `#[flat]` type is a [`puns`](https://docs.rs/puns) type too, and a `Near` holds an eager
 aim of `puns`: its offset, and its pointee at the address of the pointer plus the offset, which
 `puns` checks with the value that holds the pointer. The loaders check bytes with `puns`, pointees
-included, and that the pointees are in the order of a copy. So the bytes saved by a program load in its next version,
-in place, when they are a value of it:
+included, and that the pointees are in the order of a copy. So the bytes saved by a program load
+in its next version, in place, when they are a value of it:
 
 ```rust
 #[flat]

@@ -444,8 +444,8 @@ impl<T: ?Sized + Pointee<O> + Pun, O: Offset> Near<T, O> {
   /// # Safety
   ///
   /// The caller must ensure that, for the lifetime of the result, the bytes of the pointee are
-  /// accessed only through it, and that what it writes leaves a valid `T`: a `&mut Near` does not
-  /// make its pointee exclusive, since a check may find it shared ("Reading a pointee" in `aim`).
+  /// accessed only through it, and that what it writes leaves a valid `T`: a `&mut Near` borrows
+  /// the bytes of the pointer, not those of its pointee ("Reading a pointee" in `aim`).
   const unsafe fn pointee_mut(&mut self) -> &mut T {
     // SAFETY: A `Near` is in a region, or where `puns` checked it, with a valid pointee at its
     // offset, and a pointer made from `self` has the provenance of the bytes of the pointee under

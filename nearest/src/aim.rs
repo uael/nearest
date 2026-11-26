@@ -35,11 +35,12 @@
 //!   accept. Under stacked borrows, a reference to a `Near` gives access to its own bytes only, and
 //!   the read is undefined behavior: `nearest` relies on tree borrows here, as everywhere it
 //!   resolves a pointer from `&self`.
-//! - **Write.** `pointee_mut` is `unsafe`: a `&mut Near` does not cover its pointee, which a check
-//!   may find shared. A `Pin<&mut Near>` comes from a pinned view, which borrows the handle of the
-//!   region mutably, and a `Near` that a region wrote owns its pointee alone, so the pointee is
-//!   reached only through the result while it lives. A `Near` is not `Unpin`, so safe code cannot
-//!   move one out of its place, which would move where its offset leads.
+//! - **Write.** `pointee_mut` is `unsafe`: a `&mut Near` borrows the bytes of the pointer, not
+//!   those of its pointee. A `Pin<&mut Near>` comes from a pinned view, which borrows the handle
+//!   of the region mutably, and a `Near` of a region owns its pointee alone, as the region wrote
+//!   it or as the check of `puns` found it, in the order of a copy. So the pointee is reached only
+//!   through the result while it lives. A `Near` is not `Unpin`, so safe code cannot move one out
+//!   of its place, which would move where its offset leads.
 //!
 //! The rules of a pointee other than its length, such as an `assert` or `len <= cap`, are not
 //! needed by a read, and a region may hold a value that breaks one, as safe code can write it.

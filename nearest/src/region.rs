@@ -240,9 +240,9 @@ impl<T: Flat, A: Allocator> Region<T, A> {
   /// [`view`](crate::view) checks them. Nothing is rearranged: edits append after the image. The
   /// check of `puns` requires the pointees in the order of a copy, so that each is reached by
   /// one pointer, which the edits of a region rely on: what [`as_bytes`](Self::as_bytes)
-  /// returns for a region that was built, with gaps that no pointer reaches too. A value whose
-  /// pointees are shared, or out of that order, is read with `view` and copied:
-  /// `Region::new_in(nearest::view::<T>(bytes)?, alloc)`.
+  /// returns for a region that was built, with gaps that no pointer reaches too. Bytes whose
+  /// pointees are shared, or out of that order, are refused, as `view` refuses them: save a copy
+  /// of an edited region, `Region::new(&*r)`, which is in that order.
   ///
   /// # Errors
   /// In this order: [`Error::Invalid`] with [`puns::Error::Size`] for fewer bytes than a `T` or
