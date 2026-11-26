@@ -42,6 +42,16 @@ impl<'e, T> Raw<'e, T> {
     self.1.len()
   }
 
+  /// Notes that a `&mut` that reaches a `U` is handed out: unless `U` is plain data without
+  /// padding, an assignment through it writes its padding as uninitialized bytes, so the bytes
+  /// in use may no longer all be initialized (`Buf::init`).
+  fn handed<U: Flat>(&self) {
+    if !U::PLAIN {
+      // SAFETY: a handle's buffer is live, and this access ends with the statement.
+      unsafe { (*self.buf()).init = false }
+    }
+  }
+
   /// The `me` of the region's buffer, read through this handle. Every method reads it once and
   /// reaches the buffer only through it (I8).
   const fn buf(&self) -> *mut Buf {
@@ -83,6 +93,7 @@ impl<'e, T: Flat> Raw<'e, T> {
   where
     T: Copy,
   {
+    self.handed::<T>();
     // SAFETY: a `Copy` type has no `Near`, so assigning to it is sound.
     unsafe { self.place() }
   }
@@ -91,6 +102,7 @@ impl<'e, T: Flat> Raw<'e, T> {
   /// handle, so nothing can grow the buffer while it lives, and being pinned it gives no
   /// `&mut` to anything that contains a `Near`.
   pub fn pin(&mut self) -> Pin<&mut T> {
+    self.handed::<T>();
     // SAFETY: the value stays where it is while the handle is borrowed, and pinned it gives a
     // `&mut` only to what is `Unpin`, which has no pointers.
     unsafe { Pin::new_unchecked(self.place()) }
@@ -224,7 +236,7 @@ impl<'e, T: Flat> Raw<'e, T> {
 /// use nearest::{Edit, Emit, Flat, Handle, Near, Region, flat};
 ///
 /// /// Writes `value` over the place, whatever it holds (`Value` is `T`, but what a pointer's
-/// /// target is for a pointer, whose handle is the target's).
+/// /// pointee is for a pointer, whose handle is the pointee's).
 /// fn reset<T: Flat>(place: &mut Edit<'_, T>, value: impl Emit<T::Value>) {
 ///   place.set(value);
 /// }
@@ -421,7 +433,7 @@ pub struct Old<'e, T> {
 }
 
 // SAFETY: in its own region the value moves: its bytes are copied with re-aimed pointers, and
-// nothing else owns its targets (I4, I5). Anywhere else it is a deep copy from its own region,
+// nothing else owns its pointees (I4, I5). Anywhere else it is a deep copy from its own region,
 // which is borrowed for `'e` and where nothing writes over it (I5).
 unsafe impl<T: Flat> Emit<T> for Old<'_, T> {
   unsafe fn emit(self, sink: &mut Sink, at: usize) {
@@ -819,6 +831,7 @@ impl<T: Flat, O: Offset> Deref for ListEdit<'_, T, O> {
 
 impl<T: Flat + Copy, O: Offset> DerefMut for ListEdit<'_, T, O> {
   fn deref_mut(&mut self) -> &mut [T] {
+    self.0.handed::<T>();
     let (buf, list) = self.list();
     // SAFETY: the `len` elements are valid, have no pointers since `T: Copy`, and are borrowed
     // through this handle.
@@ -851,7 +864,7 @@ impl<'e, T: Flat, O: Offset> OptionEdit<'e, T, O> {
     unsafe { &mut *(ptr::from_mut(raw) as *mut Self) }
   }
 
-  /// The handle of the target, if there is one.
+  /// The handle of the pointee, if there is one.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -871,8 +884,8 @@ impl<'e, T: Flat, O: Offset> OptionEdit<'e, T, O> {
     self.0.get().is_some().then(|| T::reference(unsafe { self.0.field::<Near<T, O>>(0) }))
   }
 
-  /// Points to a new target written from `value`, like [`Option::insert`]; returns its handle.
-  /// A previous target is no longer reachable.
+  /// Points to a new pointee written from `value`, like [`Option::insert`]; returns its handle.
+  /// A previous pointee is no longer reachable.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -887,7 +900,7 @@ impl<'e, T: Flat, O: Offset> OptionEdit<'e, T, O> {
   pub fn insert(&mut self, value: impl Emit<T>) -> T::Ref<'_, 'e> {
     fits_behind::<T, O>();
     let (buf, at) = (self.0.buf(), self.0.at());
-    // SAFETY: `buf` is the edit's `me`; the target is complete before the pointer is written,
+    // SAFETY: `buf` is the edit's `me`; the pointee is complete before the pointer is written,
     // and the new handle borrows this one.
     unsafe {
       let mut sink = Sink::new(buf);
@@ -898,7 +911,7 @@ impl<'e, T: Flat, O: Offset> OptionEdit<'e, T, O> {
     }
   }
 
-  /// Takes the target out, leaving `None`, like [`Option::take`].
+  /// Takes the pointee out, leaving `None`, like [`Option::take`].
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -918,9 +931,9 @@ impl<'e, T: Flat, O: Offset> OptionEdit<'e, T, O> {
     self.0.get().is_some().then(|| {
       // SAFETY: the place holds a pointer to a `T`, which nothing reaches once it is cleared.
       unsafe {
-        let target = aim::<O>(buf, at);
+        let pointee = aim::<O>(buf, at);
         Sink::new(buf).write(at, O::from_isize(0));
-        Old { buf, at: target, _e: PhantomData }
+        Old { buf, at: pointee, _e: PhantomData }
       }
     })
   }
@@ -942,7 +955,7 @@ impl<'e, T: Flat, O: Offset> OptionEdit<'e, T, O> {
   }
 
   /// Replaces the pointer with `value` and returns the old one, like `mem::replace`; `take`
-  /// returns the target instead.
+  /// returns the pointee instead.
   pub fn replace(&mut self, value: impl Emit<Option<Near<T, O>>>) -> Old<'e, Option<Near<T, O>>> {
     self.0.replace(value)
   }

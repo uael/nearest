@@ -1,11 +1,13 @@
 //! What `nearest` takes from the layouts of `puns`: numbers of a fixed byte order in a region, a
-//! value that holds pointers read as plain data, optional pointers, generic types, the alignment
-//! of the elements of a list, and the rules of `#[pun(..)]`, checked at load.
+//! value that holds pointers read as plain data, and from bytes once `puns` checked its pointees,
+//! optional pointers, generic types, the alignment of the elements of a list, and the rules of
+//! `#[pun(..)]`, checked at load.
 
 use nearest::{
   Flat, Near, Region, flat,
   puns::{
     self,
+    Error::Validity,
     num::{i16be, i32le, u16le, u32le},
   },
 };
@@ -13,12 +15,11 @@ use nearest::{
 // -------------------------------------------------------------------------------------------------
 // Generic types
 
-/// Two generic types that hold each other: the bounds that the derive would find go round in a
-/// circle (`Ping<O>` is `Pun` if the pointer to `Pong<O>` is, which is if `Pong<O>` is...), so
-/// they are told: none but the ones that the types declare.
+/// Two generic types that hold each other: the bounds that the derive of `Pun` would find go round
+/// in a circle (`Ping<O>` is `Pun` if the pointer to `Pong<O>` is, which is if `Pong<O>` is...), so
+/// `#[flat]` gives it none but the ones of the types, where `O` is `Pun`.
 #[flat]
 #[derive(Debug, PartialEq, Eq)]
-#[pun(bound())]
 struct Ping<O: nearest::Offset> {
   id: u8,
   pongs: Near<[Pong<O>], O>,
@@ -26,14 +27,14 @@ struct Ping<O: nearest::Offset> {
 
 #[flat]
 #[derive(Debug, PartialEq, Eq)]
-#[pun(bound())]
 enum Pong<O: nearest::Offset> {
   End(bool),
   Ping(Near<Ping<O>, O>),
 }
 
-/// A generic type whose parameter is what it holds: the derive finds its bounds (and `#[flat]`
-/// its own: the parameter is `Flat`).
+/// A generic type whose parameter is what it holds. `Debug` and `PartialEq` read the pointees,
+/// whose `Deref` reads with `puns`, which requires the parameter to be `Pun`: `#[flat]` bounds it
+/// on the type, so the impls that the derives of `core` write have the bound.
 #[flat]
 #[derive(Debug, PartialEq, Eq)]
 struct Boxed<T> {
@@ -50,12 +51,13 @@ fn generic_types() {
   let flags = Region::new(Boxed::<bool>::new(1, true, [false, true]));
   let bytes: &Boxed<u8> = nearest::view(flags.as_bytes().unwrap()).unwrap();
   assert_eq!((bytes.id, *bytes.value, &bytes.more[..]), (1, 1, &[0, 1][..]));
-  // A `u8` of 2 is no `bool`: refused where it is.
+  // A `u8` of 2 is no `bool`: refused where the pointee is.
   let two = Region::new(Boxed::<u8>::new(1, 2, [0]));
-  let at = (&raw const *two.value).addr() - two.as_bytes().unwrap().as_ptr().addr();
+  let bytes = two.as_bytes().unwrap();
+  let at = (&raw const *two.value).addr() - bytes.as_ptr().addr();
   assert_eq!(
-    nearest::view::<Boxed<bool>>(two.as_bytes().unwrap()).err(),
-    Some(nearest::Error::Invalid(at))
+    nearest::view::<Boxed<bool>>(bytes).err(),
+    Some(nearest::Error::Invalid(Validity { at }))
   );
 }
 
@@ -88,7 +90,7 @@ fn numbers_of_a_byte_order_in_a_region() {
   t.rows().push(u16le::new(0xffff));
   let sum = r.rows.iter().map(|row| u32::from(row.get())).sum::<u32>();
   assert_eq!((r.count.get(), sum), (3, 0x0102 + 3 + 0xffff));
-  const { assert!(<u32le as Flat>::PLAIN && <u32le as Flat>::ANY && <i16be as Flat>::ANY) };
+  const { assert!(<u32le as Flat>::PLAIN && <i16be as Flat>::PLAIN) };
 }
 
 /// A value that holds pointers is read as plain data: an offset is initialized bytes.
@@ -99,6 +101,51 @@ fn pointers_are_read_as_bytes() {
   assert_eq!(puns::head_ref::<Table, u8>(&r), &1);
   assert_eq!(puns::tail_ref::<Table, i32le>(&r).get(), 11);
   assert_eq!(puns::try_pun_ref::<Table, Flagged>(&r).map(|f| f.set), Ok(true));
+}
+
+/// Two pointers, which `puns` reads from bytes once it checked their pointees.
+#[flat]
+#[derive(Debug, PartialEq, Eq)]
+struct Two {
+  a: Near<u32, i32le>,
+  b: Near<u32, i32le>,
+}
+
+/// `puns` reads a value that holds pointers from bytes as it reads any value, once it checked
+/// every pointee (`Deref` then reads them). Without its compact check, it does not require the
+/// image to be compact: two pointers may share a pointee, which a region refuses, since an edit of
+/// one pointee through a `&mut` would be seen through the other pointer.
+#[test]
+fn puns_reads_pointers_from_bytes_once_it_checked_their_pointees() {
+  let r = Region::new(Two::new(7, 9));
+  let image = r.as_bytes().unwrap();
+  let (two, _) = puns::from_head::<Two>(image).unwrap();
+  assert_eq!((*two.a, *two.b), (7, 9));
+  // In words: an address aligned as a region is, for the pointees.
+  let in_words = |bytes: &[u8], f: &dyn Fn(&[u8])| {
+    let mut words = vec![0u64; bytes.len().div_ceil(8)];
+    // SAFETY: the words hold at least `bytes.len()` bytes, all initialized.
+    let at =
+      unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), bytes.len()) };
+    at.copy_from_slice(bytes);
+    f(at);
+  };
+  // `b` aims at the pointee of `a`: two pointers to one pointee, which `puns` refuses where `b`
+  // is, since the pointees of a check form a tree.
+  let at = core::mem::offset_of!(Two, b);
+  let a_target = i32::from_le_bytes(image[..4].try_into().unwrap());
+  let b = a_target - i32::try_from(at).unwrap();
+  let shared = [&image[..at], &b.to_le_bytes(), &image[at + 4..]].concat();
+  in_words(&shared, &|bytes| {
+    assert_eq!(puns::from_head::<Two>(bytes).err(), Some(Validity { at }));
+    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid(Validity { at })));
+  });
+  // `b` aims past the bytes: invalid for both, where `b` is.
+  let far = [&image[..at], &1000i32.to_le_bytes(), &image[at + 4..]].concat();
+  in_words(&far, &|bytes| {
+    assert_eq!(puns::from_head::<Two>(bytes).err(), Some(Validity { at }));
+    assert_eq!(nearest::view::<Two>(bytes).err(), Some(nearest::Error::Invalid(Validity { at })));
+  });
 }
 
 /// A flag, then any bytes.
@@ -143,9 +190,10 @@ fn optional_pointers() {
   assert_eq!(named.more[0].owner, None);
   // One that is null is not: refused where the pointer is.
   let anonymous = Region::new(Maybe::new(2, None, ()));
+  let at = core::mem::offset_of!(Named, owner);
   assert_eq!(
     nearest::view::<Named>(anonymous.as_bytes().unwrap()).err(),
-    Some(nearest::Error::Invalid(core::mem::offset_of!(Named, owner)))
+    Some(nearest::Error::Invalid(Validity { at }))
   );
 }
 
@@ -181,12 +229,14 @@ fn quad(i: u8) -> [u8; 4] {
 
 /// Built, then edited every way that makes or moves a list block (pushes past the capacity,
 /// insertions, removals, `retain`, `swap`, a list moved from one place to another), compacted,
-/// cloned, loaded at an odd address, in a storage of its own and inline: aligned each time.
-fn lists_stay_aligned<O: nearest::Offset, S: nearest::Storage + Default>() {
-  let mut r = nearest::Region::<Bytes<O>, S>::new_in(
-    S::default(),
-    Bytes::new([quad(1)], [i32le::new(2)], [[1u8; 8]], [[3u8, 0]]),
-  );
+/// cloned, and loaded at an odd address: aligned each time.
+fn lists_stay_aligned<O: nearest::Offset>() {
+  let mut r = nearest::Region::<Bytes<O>>::new(Bytes::new(
+    [quad(1)],
+    [i32le::new(2)],
+    [[1u8; 8]],
+    [[3u8, 0]],
+  ));
   let base = |r: &Bytes<O>| (&raw const *r).addr();
   aligned(&r, base(&r));
   let e = r.edit();
@@ -203,14 +253,14 @@ fn lists_stay_aligned<O: nearest::Offset, S: nearest::Storage + Default>() {
   let old = e.quads().replace([quad(7), quad(8)]);
   e.quads().set(old);
   aligned(&r, base(&r));
-  let compact = nearest::Region::<Bytes<O>, S>::new_in(S::default(), &*r);
+  let compact = nearest::Region::<Bytes<O>>::new(&*r);
   aligned(&compact, base(&compact));
   let clone = compact.clone();
   aligned(&clone, base(&clone));
   let image = compact.as_bytes().unwrap();
   let mut odd = vec![0u8; image.len() + 1];
   odd[1..].copy_from_slice(image);
-  let loaded = nearest::Region::<Bytes<O>, S>::from_bytes(&odd[1..]).unwrap();
+  let loaded = nearest::Region::<Bytes<O>>::from_bytes(&odd[1..]).unwrap();
   aligned(&loaded, base(&loaded));
   let view = nearest::view::<Bytes<O>>(loaded.as_bytes().unwrap()).unwrap();
   aligned(view, base(view));
@@ -218,12 +268,11 @@ fn lists_stay_aligned<O: nearest::Offset, S: nearest::Storage + Default>() {
 
 #[test]
 fn the_elements_of_a_list_are_aligned_as_declared() {
-  lists_stay_aligned::<i16, nearest::Heap>();
-  lists_stay_aligned::<i32, nearest::Heap>();
-  lists_stay_aligned::<i32le, nearest::Heap>();
-  lists_stay_aligned::<i64, nearest::Heap>();
-  lists_stay_aligned::<i64, nearest::Inline<4096>>();
-  lists_stay_aligned::<nearest::puns::num::i64be, nearest::Inline<4096>>();
+  lists_stay_aligned::<i16>();
+  lists_stay_aligned::<i32>();
+  lists_stay_aligned::<i32le>();
+  lists_stay_aligned::<i64>();
+  lists_stay_aligned::<nearest::puns::num::i64be>();
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -262,7 +311,7 @@ struct Book {
 }
 
 /// A value that breaks a rule of its type, and holds pointers, is copied and moved as any
-/// other (`Flat::store` and `shift` do not read its rules, which `check` asks `puns` about):
+/// other (`Flat::store` and `shift` do not read its rules, which `puns` checks at load):
 /// compacted, moved in its list (`insert`, `swap`, `retain`, `replace` and `set`), copied into
 /// another region, and still the value it was (under Miri on every target of CI).
 #[test]
@@ -305,11 +354,22 @@ fn a_value_that_breaks_a_rule_is_saved_not_loaded() {
   // Built and edited without a check: the rules are requirements, not guarantees.
   let mut bad = Region::new(Spans::new([span(1, 2), span(5, 3)]));
   let image = bad.as_bytes().unwrap().to_vec();
-  let at = (&raw const bad.spans[1]).addr() - bad.as_bytes().unwrap().as_ptr().addr();
-  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(at)));
+  // Refused where the span is, for a rule of the type, or where the field is.
+  let place =
+    |r: &Region<Spans>, part: *const u8| part.addr() - r.as_bytes().unwrap().as_ptr().addr();
+  let at = place(&bad, (&raw const bad.spans[1]).cast());
+  assert_eq!(
+    Region::<Spans>::from_bytes(&image).err(),
+    Some(nearest::Error::Invalid(Validity { at }))
+  );
   *bad.edit().spans().at(1).hi() = u16le::new(1000);
   *bad.edit().spans().at(1).lo() = u16le::new(0);
-  let image = Region::new(&*bad).as_bytes().unwrap().to_vec();
-  // `valid(..1000)` of `hi`: where it is.
-  assert_eq!(Region::<Spans>::from_bytes(&image).err(), Some(nearest::Error::Invalid(at + 2)));
+  let copy = Region::new(&*bad);
+  let image = copy.as_bytes().unwrap().to_vec();
+  // `valid(..1000)` of `hi`.
+  let at = place(&copy, (&raw const copy.spans[1].hi).cast());
+  assert_eq!(
+    Region::<Spans>::from_bytes(&image).err(),
+    Some(nearest::Error::Invalid(Validity { at }))
+  );
 }

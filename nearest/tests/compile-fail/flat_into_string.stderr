@@ -1,4 +1,4 @@
-error: `into` is for plain data: the parameter of a pointer takes a builder of its target
+error: `into` is for plain data: the parameter of a pointer takes a builder of its pointee
  --> tests/compile-fail/flat_into_string.rs:5:19
   |
 5 | enum E { A(#[flat(into)] nearest::Near<str>) }

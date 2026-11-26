@@ -9,8 +9,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # In five jobs, each under a minute: the tests, the compile-fail cases, the features (without
-  # `alloc`, `serde`) and the examples, a region past 2 GiB, the benchmarks.
+  # In seven jobs, each of at most about 45 seconds: the tests in two, the compile-fail cases in
+  # two, the features (without `alloc`, `serde`), a region past 2 GiB, the benchmarks and the
+  # examples.
   test:
     name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -18,23 +19,43 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `cargo test --all` in two: the compile-fail cases (trybuild builds each program) apart.
-          - name: all
-            run: cargo test --all -- --skip compile_fail
-          - name: compile-fail
-            run: cargo test -p nearest --test compile_fail
-          - name: features, examples
+          # `cargo test --all` in four: the unit tests, the doc tests and the two allocators; the
+          # examples, which it builds, and every other test file, so that a new one runs; the
+          # compile-fail cases (trybuild builds each program) in two halves (the two tests of
+          # `compile_fail.rs`).
+          - name: all, 1 of 2
+            id: all-1
+            run: >-
+              cargo test --workspace --lib --bins && cargo test --workspace --doc &&
+              cargo test -p nearest --test integration --test user_alloc
+          - name: all, 2 of 2
+            id: all-2
+            run: >-
+              cargo test -p nearest --examples $(for file in nearest/tests/*.rs; do
+              case $(basename $file .rs) in (compile_fail | integration | user_alloc) ;;
+              (*) echo --test $(basename $file .rs) ;; esac; done)
+          - name: compile-fail, 1 of 2
+            id: compile-fail-1
+            run: cargo test -p nearest --test compile_fail -- --exact a_to_o_but_f
+          - name: compile-fail, 2 of 2
+            id: compile-fail-2
+            run: cargo test -p nearest --test compile_fail -- --exact the_others
+          - name: features
+            id: features
             run: >-
               cargo test -p nearest --no-default-features --lib --test no_alloc &&
               cargo test -p nearest --features serde --test serde &&
-              cargo test -p nearest --features serde --doc &&
-              cargo run --example expr && cargo run --example passes && cargo run --example ir
+              cargo test -p nearest --features serde --doc
           # A region past 2 GiB, with 8-byte pointers: about 4 GB of memory, seconds in release.
           - name: past 2 GiB
+            id: past-2-gib
             run: cargo test --release -p nearest --test width -- --ignored
-          # The benchmarks, once each.
-          - name: benchmarks
-            run: cargo bench --bench region -- --test
+          # The benchmarks, once each, and the examples.
+          - name: benchmarks, examples
+            id: benchmarks
+            run: >-
+              cargo bench --bench region -- --test &&
+              cargo run --example expr && cargo run --example passes && cargo run --example ir
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -42,7 +63,8 @@ jobs:
           toolchain: 1.100.0
       - uses: Swatinem/rust-cache@v2
         with:
-          key: test-${{ matrix.name }}
+          # Not the name: a key of a cache has no comma.
+          key: test-${{ matrix.id }}
       - run: ${{ matrix.run }}
 
   clippy:
@@ -58,6 +80,9 @@ jobs:
       - run: cargo clippy --workspace --tests --examples --benches -- -D warnings
       - run: cargo clippy -p nearest --no-default-features --lib --test no_alloc -- -D warnings
 
+  # Two jobs, since each installs a toolchain: a target without `std` or an allocator, on which
+  # nothing may need either, and a 16-bit one, whose `core` is built from source on the pinned
+  # nightly.
   no_std:
     name: No std, no alloc
     runs-on: ubuntu-latest
@@ -68,14 +93,21 @@ jobs:
           toolchain: 1.100.0
           targets: thumbv7em-none-eabihf
       - uses: Swatinem/rust-cache@v2
-      # A target without `std` or an allocator: nothing may need either.
       - run: cargo build -p nearest --no-default-features --target thumbv7em-none-eabihf
-      # A 16-bit target, whose `core` is built from source on the pinned nightly.
+
+  sixteen_bits:
+    name: No std, no alloc, 16 bits
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-11-17
+    steps:
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-11-17
           components: rust-src
-      - run: cargo +nightly-2026-11-17 build -p nearest --no-default-features -Zbuild-std=core --target msp430-none-elf
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p nearest --no-default-features -Zbuild-std=core --target msp430-none-elf
 
   fmt:
     name: Format
@@ -89,18 +121,18 @@ jobs:
           components: rustfmt
       - run: cargo +nightly-2026-11-17 fmt --all -- --check
 
-  # The `rust-version` of the crates (1.99, that of `puns`): the library, and the tests that use
+  # The `rust-version` of the crates (1.100, for `core::alloc::Allocator`): the library, and the tests that use
   # it the most. `RUSTUP_TOOLCHAIN` takes precedence over `rust-toolchain`.
   msrv:
     name: Minimum Rust version
     runs-on: ubuntu-latest
     env:
-      RUSTUP_TOOLCHAIN: 1.99.0
+      RUSTUP_TOOLCHAIN: 1.100.0
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.99.0
+          toolchain: 1.100.0
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv
@@ -123,14 +155,15 @@ jobs:
   # provenance: one job for each run, side by side, each of at most a minute, build included.
   # The time that Miri reports is not the one that passes: read the times of the jobs.
   #
-  # On x86-64, every test that Miri runs. The tests of `tests/common/integration.rs` run in three
-  # storages (`integration`: the heap, `inline`, `user_storage`): the corruptions and the models,
-  # the heaviest, under Miri for the heap only (the check of bytes and the edits do not depend
-  # on the storage; all three run them natively). On the targets where what the code assumes of
-  # x86-64 does not hold, what the target can change: on `i686` (32 bits: a `u64` aligned to 4,
-  # an `isize` narrower than an `i64`) the library, the offsets and every storage; on `s390x`
-  # (big-endian) the offsets and the image of `examples/ir.rs`, byte for byte. A test added to
-  # `tests/common/integration.rs` runs in the jobs named after the storages. `tests/ir.rs` writes a
+  # On x86-64, every test that Miri runs. The tests of `tests/common/integration.rs` run in two
+  # allocators (`integration`: the global one, `user_alloc`, which also tests `Fixed`): the
+  # corruptions and the models, the heaviest, under Miri for the global allocator only (the check
+  # of bytes and the edits do not depend on the allocator; both run them natively). On the
+  # targets where what the code assumes of x86-64 does not hold, what the target can change: on
+  # `i686` (32 bits: a `u64` aligned to 4, an `isize` narrower than an `i64`) the library, the
+  # offsets and both allocators; on `s390x` (big-endian) the offsets and the image of
+  # `examples/ir.rs`, byte for byte. A test added to `tests/common/integration.rs` runs in the
+  # jobs named after the allocators. `tests/ir.rs` writes a
   # file: `-Zmiri-disable-isolation`, for its job only (`flags`).
   miri:
     name: Miri (${{ matrix.where }}, ${{ matrix.name }})
@@ -157,7 +190,7 @@ jobs:
             name: limits
             tests: >-
               --test width -- --exact the_size_limit_panics_and_leaves_a_valid_region
-              capacity_past_the_size_limit_is_not_used bytes_past_the_size_limit_are_invalid
+              a_block_past_the_size_limit_is_not_used bytes_past_the_size_limit_are_invalid
           # Without `alloc`.
           - where: x86-64
             name: no alloc
@@ -170,18 +203,22 @@ jobs:
             tests: --test ir
             flags: -Zmiri-disable-isolation
           - where: x86-64
-            name: width, 1 of 3
+            name: width, 1 of 4
             tests: >-
-              --test width -- w16:: w32:: w64:: be32:: i64be::
+              --test width -- w16:: w32:: w64::
           - where: x86-64
-            name: width, 2 of 3
+            name: width, 2 of 4
+            tests: >-
+              --test width -- be32:: i64be::
+          - where: x86-64
+            name: width, 3 of 4
             tests: >-
               --test width -- be16:: be64:: i16be:: i16le:: i32be:: byte_orders
           - where: x86-64
-            name: width, 3 of 3
+            name: width, 4 of 4
             tests: >-
               --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
-              --skip capacity_past_the_size_limit_is_not_used
+              --skip a_block_past_the_size_limit_is_not_used
               --skip bytes_past_the_size_limit_are_invalid
               --skip w16:: --skip w32:: --skip w64:: --skip be32:: --skip i64be::
               --skip be16:: --skip be64:: --skip i16be:: --skip i16le:: --skip i32be::
@@ -207,42 +244,9 @@ jobs:
               --test integration -- --exact moves_in_a_tree random_edits_match_a_model
               random_expression_rewrites_match_a_model
           - where: x86-64
-            name: inline, 1 of 2
+            name: user allocator
             tests: >-
-              --test inline -- --exact
-              a_panic_in_a_list_operation_leaves_a_valid_list a_panic_leaves_the_old_value a_region_is_aligned_as_its_words a_region_moves_with_its_storage
-              a_value_overwrites_every_pointer a_very_deep_value_is_checked_without_recursion build_and_read builders_compose
-              builders_write_the_compact_image bytes_round_trip compaction constructors_box_pointer_fields
-              enum_handles enums_generics_and_nesting every_emit_source every_primitive
-              full_inline_storage
-          - where: x86-64
-            name: inline, 2 of 2
-            tests: >-
-              --test inline -- --exact --skip small_corruptions_are_rejected_or_harmless
-              --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
-              --skip noise_is_rejected_without_panicking
-              --skip random_expression_rewrites_match_a_model
-              --skip a_panic_in_a_list_operation_leaves_a_valid_list
-              --skip a_panic_leaves_the_old_value
-              --skip a_region_is_aligned_as_its_words
-              --skip a_region_moves_with_its_storage
-              --skip a_value_overwrites_every_pointer
-              --skip a_very_deep_value_is_checked_without_recursion
-              --skip build_and_read
-              --skip builders_compose
-              --skip builders_write_the_compact_image
-              --skip bytes_round_trip
-              --skip compaction
-              --skip constructors_box_pointer_fields
-              --skip enum_handles
-              --skip enums_generics_and_nesting
-              --skip every_emit_source
-              --skip every_primitive
-              --skip full_inline_storage
-          - where: x86-64
-            name: user storage
-            tests: >-
-              --test user_storage -- --exact --skip small_corruptions_are_rejected_or_harmless
+              --test user_alloc -- --exact --skip small_corruptions_are_rejected_or_harmless
               --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
               --skip noise_is_rejected_without_panicking
               --skip random_expression_rewrites_match_a_model
@@ -255,7 +259,7 @@ jobs:
             name: limits
             tests: >-
               --test width -- --exact the_size_limit_panics_and_leaves_a_valid_region
-              capacity_past_the_size_limit_is_not_used bytes_past_the_size_limit_are_invalid
+              a_block_past_the_size_limit_is_not_used bytes_past_the_size_limit_are_invalid
           - where: 32 bits
             target: i686-unknown-linux-gnu
             name: layouts, corpus
@@ -275,7 +279,7 @@ jobs:
             name: width, 3 of 3
             tests: >-
               --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
-              --skip capacity_past_the_size_limit_is_not_used
+              --skip a_block_past_the_size_limit_is_not_used
               --skip bytes_past_the_size_limit_are_invalid
               --skip w16:: --skip w32:: --skip w64:: --skip be32:: --skip i64be::
               --skip be16:: --skip be64:: --skip i16be:: --skip i16le:: --skip i32be::
@@ -290,44 +294,9 @@ jobs:
               --skip random_expression_rewrites_match_a_model
           - where: 32 bits
             target: i686-unknown-linux-gnu
-            name: inline, 1 of 2
+            name: user allocator
             tests: >-
-              --test inline -- --exact
-              a_panic_in_a_list_operation_leaves_a_valid_list a_panic_leaves_the_old_value a_region_is_aligned_as_its_words a_region_moves_with_its_storage
-              a_value_overwrites_every_pointer a_very_deep_value_is_checked_without_recursion build_and_read builders_compose
-              builders_write_the_compact_image bytes_round_trip compaction constructors_box_pointer_fields
-              enum_handles enums_generics_and_nesting every_emit_source every_primitive
-              full_inline_storage
-          - where: 32 bits
-            target: i686-unknown-linux-gnu
-            name: inline, 2 of 2
-            tests: >-
-              --test inline -- --exact --skip small_corruptions_are_rejected_or_harmless
-              --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
-              --skip noise_is_rejected_without_panicking
-              --skip random_expression_rewrites_match_a_model
-              --skip a_panic_in_a_list_operation_leaves_a_valid_list
-              --skip a_panic_leaves_the_old_value
-              --skip a_region_is_aligned_as_its_words
-              --skip a_region_moves_with_its_storage
-              --skip a_value_overwrites_every_pointer
-              --skip a_very_deep_value_is_checked_without_recursion
-              --skip build_and_read
-              --skip builders_compose
-              --skip builders_write_the_compact_image
-              --skip bytes_round_trip
-              --skip compaction
-              --skip constructors_box_pointer_fields
-              --skip enum_handles
-              --skip enums_generics_and_nesting
-              --skip every_emit_source
-              --skip every_primitive
-              --skip full_inline_storage
-          - where: 32 bits
-            target: i686-unknown-linux-gnu
-            name: user storage
-            tests: >-
-              --test user_storage -- --exact --skip small_corruptions_are_rejected_or_harmless
+              --test user_alloc -- --exact --skip small_corruptions_are_rejected_or_harmless
               --skip moves_in_a_tree --skip random_edits_match_a_model --skip size_hint_may_lie
               --skip noise_is_rejected_without_panicking
               --skip random_expression_rewrites_match_a_model
@@ -360,7 +329,7 @@ jobs:
             name: width, 4 of 4
             tests: >-
               --test width -- --skip the_size_limit_panics_and_leaves_a_valid_region
-              --skip capacity_past_the_size_limit_is_not_used
+              --skip a_block_past_the_size_limit_is_not_used
               --skip bytes_past_the_size_limit_are_invalid
               --skip w16:: --skip w32:: --skip w64:: --skip be32:: --skip i64be::
               --skip be16:: --skip be64:: --skip i16be:: --skip i16le:: --skip i32be::

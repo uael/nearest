@@ -7,9 +7,32 @@ use std::{
 
 use nearest::{Edit, Emit, Flat, Near, flat};
 
-/// A region in the storage under test, `Store`: the heap (`integration.rs`), inline
-/// (`inline.rs`) or a storage written here (`user_storage.rs`).
+/// A region in the allocator under test, `Store`: the global allocator (`integration.rs`), or an
+/// allocator written in the test (`user_alloc.rs`).
 type Region<T> = nearest::Region<T, Store>;
+
+/// A new region holding `value`, in a new `Store`.
+fn region<T: Flat>(value: impl Emit<T>) -> Region<T> {
+  nearest::Region::new_in(value, Store::default())
+}
+
+/// The loaders of a region, in a new `Store`.
+trait Load: Sized {
+  fn load(bytes: &[u8]) -> Result<Self, nearest::Error>;
+  /// # Safety
+  /// As for `nearest::Region::from_bytes_unchecked_in`.
+  unsafe fn load_unchecked(bytes: &[u8]) -> Self;
+}
+
+impl<T: Flat> Load for Region<T> {
+  fn load(bytes: &[u8]) -> Result<Self, nearest::Error> {
+    nearest::Region::from_bytes_in(bytes, Store::default())
+  }
+  unsafe fn load_unchecked(bytes: &[u8]) -> Self {
+    // SAFETY: per the caller.
+    unsafe { nearest::Region::from_bytes_unchecked_in(bytes, Store::default()) }
+  }
+}
 
 #[flat]
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -112,6 +135,8 @@ enum Stmt {
   Gen(u8),
 }
 
+// `Debug` and `PartialEq` read the pointees, through `Deref`, which reads with `puns`: a parameter
+// behind a pointer is `Pun`, which `#[flat]` states on the type.
 #[flat]
 #[derive(Debug, PartialEq)]
 struct Pair<A, B> {
@@ -195,7 +220,7 @@ mod private {
 }
 
 fn func() -> Region<Func> {
-  Region::new_in(Store::default(), Func::new(
+  region(Func::new(
     "main",
     Block::new(
       0,
@@ -251,8 +276,8 @@ fn build_and_read() {
   let next = f.entry.next.as_ref().unwrap();
   assert_eq!((next.id, &next.insts[0].args[..]), (1, &[0, 1, 2, 3, 4][..]));
   assert!(next.next.is_none());
-  assert_eq!(*Region::new_in(Store::default(), 7u32), 7);
-  assert_eq!(*Region::new_in(Store::default(), Pad { a: 1, b: 2 }), Pad { a: 1, b: 2 });
+  assert_eq!(*region(7u32), 7);
+  assert_eq!(*region(Pad { a: 1, b: 2 }), Pad { a: 1, b: 2 });
 }
 
 #[test]
@@ -274,9 +299,9 @@ fn every_primitive() {
     n: NonZero::new(9).unwrap(),
     o: NonZero::new(-1).unwrap(),
   };
-  let r = Region::new_in(Store::default(), &p);
+  let r = region(&p);
   assert_eq!(*r, p);
-  let q = Region::new_in(Store::default(), Prims::new(
+  let q = region(Prims::new(
     1u8,
     2u16,
     3u32,
@@ -298,18 +323,18 @@ fn every_primitive() {
   const { assert!(!Prims::PLAIN && !Pad::PLAIN && !Func::PLAIN && !Expr::PLAIN && !Shape::PLAIN) };
   const { assert!(!<Near<u8>>::PLAIN && !<Option<Near<u8>>>::PLAIN && !<Near<str>>::PLAIN) };
   assert_eq!(
-    *Region::new_in(Store::default(), Rgb { r: 1, g: 2, b: 3, c: Color::Blue }),
+    *region(Rgb { r: 1, g: 2, b: 3, c: Color::Blue }),
     Rgb { r: 1, g: 2, b: 3, c: Color::Blue }
   );
-  let lists = Region::new_in(Store::default(), Lst::<Prims>::new([&p, &p]));
+  let lists = region(Lst::<Prims>::new([&p, &p]));
   assert_eq!(lists.items[1], p);
 }
 
 /// `XInit` names the fields of a struct, in any order, and writes what `X::new` writes.
 #[test]
 fn init_structs_name_the_fields() {
-  let positional = Region::new_in(Store::default(), Func::new("f", Block::new(1, [Inst::new(2, [3])], None), true));
-  let named = Region::new_in(Store::default(), FuncInit {
+  let positional = region(Func::new("f", Block::new(1, [Inst::new(2, [3])], None), true));
+  let named = region(FuncInit {
     flag: true,
     entry: BlockInit { next: None, insts: [InstInit { args: [3], op: 2 }], id: 1 },
     name: "f",
@@ -321,7 +346,7 @@ fn init_structs_name_the_fields() {
 fn every_emit_source() {
   let other = func();
   let v = [5u32, 6, 7];
-  let r = Region::new_in(Store::default(), Block::new(
+  let r = region(Block::new(
     9, // a value
     (
       Inst::new(1, &v[..]),                                   // a slice copy
@@ -341,39 +366,39 @@ fn every_emit_source() {
   assert_eq!(**r.next.as_ref().unwrap(), *other.entry);
 
   // Tuples mix builders, values and copies; lists of lists; lists of pointers.
-  let inst = Region::new_in(Store::default(), Inst::new(8, [9]));
-  let mixed = Region::new_in(Store::default(), Block::new(
+  let inst = region(Inst::new(8, [9]));
+  let mixed = region(Block::new(
     0,
     (Inst::new(1, ()), &*inst, Inst::new(3, Near::from_iter(None::<u32>))),
     None,
   ));
   assert_eq!(ops(&mixed), [1, 8, 3]);
-  let t12 = Region::new_in(Store::default(), Inst::new(0, (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)));
+  let t12 = region(Inst::new(0, (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)));
   assert_eq!(t12.args.iter().sum::<u32>(), 78);
-  let nested = Region::new_in(Store::default(), Lst::<Near<[u8]>>::new(([1u8], (), [2, 3])));
+  let nested = region(Lst::<Near<[u8]>>::new(([1u8], (), [2, 3])));
   assert_eq!(nested.items.iter().map(|l| l.len()).collect::<Vec<_>>(), [1, 0, 2]);
   let ptrs =
-    Region::new_in(Store::default(), Lst::<Near<Expr>>::new((Near::new(Expr::Lit(1)), Near::new(&*inst_expr()))));
+    region(Lst::<Near<Expr>>::new((Near::new(Expr::Lit(1)), Near::new(&*inst_expr()))));
   assert_eq!(ptrs.items.iter().map(|e| eval(e)).collect::<Vec<_>>(), [1, -2]);
 
   // `Near::new` writes `Option<Near<T>>`; `None` is a value.
-  let e = Region::new_in(Store::default(), Stmt::r#return(Near::new(Expr::Lit(1))));
+  let e = region(Stmt::r#return(Near::new(Expr::Lit(1))));
   assert!(matches!(&*e, Stmt::Return { value: Some(v) } if **v == Expr::Lit(1)));
-  let e = Region::new_in(Store::default(), Stmt::r#return(None));
+  let e = region(Stmt::r#return(None));
   assert_eq!(*e, Stmt::Return { value: None });
   // Keywords, including those reserved by the edition, become raw identifiers.
-  assert_eq!(*Region::new_in(Store::default(), Stmt::r#gen(3)), Stmt::Gen(3));
+  assert_eq!(*region(Stmt::r#gen(3)), Stmt::Gen(3));
 
   // Text, including non-ASCII.
-  let s = Region::new_in(Store::default(), Stmt::r#let("héllo, 世界 🦀", Expr::Lit(0)));
+  let s = region(Stmt::r#let("héllo, 世界 🦀", Expr::Lit(0)));
   let Stmt::Let(name, _) = &*s else { unreachable!() };
   assert_eq!(&**name, "héllo, 世界 🦀");
   assert_eq!(name.chars().count(), 11);
-  assert_eq!(&**Region::new_in(Store::default(), Pair::<u8, Near<str>>::new(0, "")).second, "");
+  assert_eq!(&**region(Pair::<u8, Near<str>>::new(0, "")).second, "");
 }
 
 fn inst_expr() -> Region<Expr> {
-  Region::new_in(Store::default(), Expr::neg(Expr::Lit(2)))
+  region(Expr::neg(Expr::Lit(2)))
 }
 
 type Bytes = [u8];
@@ -410,19 +435,19 @@ enum Figure {
 #[test]
 fn into_parameters() {
   let one = NonZero::new(1u8).unwrap();
-  let s = Region::new_in(Store::default(), Sample::new(7u8, 1.5f32, one, "s"));
+  let s = region(Sample::new(7u8, 1.5f32, one, "s"));
   assert_eq!((s.id, s.ratio, s.count.get(), &*s.name), (7, 1.5, 1, "s"));
-  let r = Region::new_in(Store::default(), Figure::rect(2u16, 3, Near::new(Figure::disc(4u8))));
+  let r = region(Figure::rect(2u16, 3, Near::new(Figure::disc(4u8))));
   assert!(matches!(&*r, Figure::Rect { w: 2, h: 3, next: Some(n) } if **n == Figure::Circle(4)));
   // The values themselves, a copy and handles work as before.
-  let mut l = Region::new_in(Store::default(), Lst::<Sample>::new([Sample::new(1u64, 2.0, NonZero::<u32>::MIN, "x")]));
+  let mut l = region(Lst::<Sample>::new([Sample::new(1u64, 2.0, NonZero::<u32>::MIN, "x")]));
   let items = l.edit().items();
   items.push(&*s);
   items.at(0).set(Sample::new(3u32, 4.0f32, one, "y"));
   assert_eq!((l.items[0].id, &*l.items[0].name, &l.items[1]), (3, "y", &*s));
 }
 
-/// The target of a pointer field may be written through an alias.
+/// The pointee of a pointer field may be written through an alias.
 #[flat]
 struct ViaAlias {
   bytes: Near<Bytes>,
@@ -432,23 +457,23 @@ struct ViaAlias {
 
 #[test]
 fn constructors_box_pointer_fields() {
-  let a = Region::new_in(Store::default(), ViaAlias::new([1, 2], "t", Expr::neg(Expr::Lit(3))));
+  let a = region(ViaAlias::new([1, 2], "t", Expr::neg(Expr::Lit(3))));
   assert_eq!((&a.bytes[..], &*a.text, show(&a.expr)), (&[1, 2][..], "t", "-3".to_owned()));
 
   // A `Near<X>` field takes a builder of `X`: a value, a copy, a constructor, or an `Old`.
-  let r = Region::new_in(Store::default(), Expr::add(Expr::Lit(1), Expr::neg(Expr::add(Expr::Lit(2), &*inst_expr()))));
+  let r = region(Expr::add(Expr::Lit(1), Expr::neg(Expr::add(Expr::Lit(2), &*inst_expr()))));
   assert_eq!(show(&r), "(1 + -(2 + -2))");
-  let c = Region::new_in(Store::default(), Chain::link(1, Chain::link(2, Chain::End)));
+  let c = region(Chain::link(1, Chain::link(2, Chain::End)));
   assert!(
     matches!(&*c, Chain::Link(1, n) if matches!(&**n, Chain::Link(2, e) if **e == Chain::End))
   );
-  let p = Region::new_in(Store::default(), Pair::new(Color::Red, Tree::node(Tree::Leaf(1u8), Tree::leaf(2))));
+  let p = region(Pair::new(Color::Red, Tree::node(Tree::Leaf(1u8), Tree::leaf(2))));
   assert!(matches!(&*p.second, Tree::Node(a, _) if **a == Tree::Leaf(1)));
   // An alias of `Near<X>` takes a builder of the pointer.
-  let a = Region::new_in(Store::default(), Aliased::new(Near::new(5)));
+  let a = region(Aliased::new(Near::new(5)));
   assert_eq!(*a.p, 5);
   // `Pair<_, Near<str>>`: `second` is a pointer to a pointer.
-  let s = Region::new_in(Store::default(), Pair::<u8, Near<str>>::new(1, "text"));
+  let s = region(Pair::<u8, Near<str>>::new(1, "text"));
   assert_eq!(&**s.second, "text");
 }
 
@@ -461,21 +486,21 @@ fn enums_generics_and_nesting() {
     }
   }
   let stmt =
-    Region::new_in(Store::default(), Stmt::block((Stmt::Nop, Stmt::int_lit(3), Stmt::block([Stmt::IntLit(4)], 1)), 2));
+    region(Stmt::block((Stmt::Nop, Stmt::int_lit(3), Stmt::block([Stmt::IntLit(4)], 1)), 2));
   let Stmt::Block { body, tag } = &*stmt else { unreachable!() };
   assert_eq!((&body[0], &body[1], *tag), (&Stmt::Nop, &Stmt::IntLit(3), 2));
   assert!(matches!(&body[2], Stmt::Block { body, tag: 1 } if body[0] == Stmt::IntLit(4)));
 
-  let tree = Region::new_in(Store::default(), Tree::node(Tree::Leaf(1u16), Tree::node(Tree::leaf(2), Tree::Leaf(3))));
+  let tree = region(Tree::node(Tree::Leaf(1u16), Tree::node(Tree::leaf(2), Tree::Leaf(3))));
   assert_eq!(sum(&tree), 6);
   let pair =
-    Region::new_in(Store::default(), Pair::new(Color::Blue, Tree::leaf(Wrap::new(1, [Color::Red, Color::Green]))));
+    region(Pair::new(Color::Blue, Tree::leaf(Wrap::new(1, [Color::Red, Color::Green]))));
   assert_eq!(pair.first, Color::Blue);
   assert!(matches!(&*pair.second, Tree::Leaf(Wrap(1, c)) if c[..] == [Color::Red, Color::Green]));
 
-  let arr = Region::new_in(Store::default(), Arr::<2>::new([1, 2], [[3, 4], [5, 6]]));
+  let arr = region(Arr::<2>::new([1, 2], [[3, 4], [5, 6]]));
   assert_eq!((arr.items, &arr.rest[..]), ([1, 2], &[[3, 4], [5, 6]][..]));
-  let shapes = Region::new_in(Store::default(), Lst::new([Shape::Dot, Shape::Circle(3), Shape::Rect { w: 1, h: 2 }]));
+  let shapes = region(Lst::new([Shape::Dot, Shape::Circle(3), Shape::Rect { w: 1, h: 2 }]));
   assert_eq!(shapes.items[2], Shape::Rect { w: 1, h: 2 });
 }
 
@@ -491,8 +516,8 @@ struct Padded {
 
 #[test]
 fn layout() {
-  let r = Region::new_in(Store::default(), Aligned::new([1u8], [2u64, 3], "abc", [4u16]));
-  let r2 = Region::new_in(Store::default(), Aligned::new((), (), "", ()));
+  let r = region(Aligned::new([1u8], [2u64, 3], "abc", [4u16]));
+  let r2 = region(Aligned::new((), (), "", ()));
   for r in [&r, &r2, &r.clone()] {
     assert_eq!(r.big.as_ptr().addr() % align_of::<u64>(), 0);
     assert_eq!(r.wide.as_ptr().addr() % 2, 0);
@@ -511,25 +536,68 @@ fn layout() {
   ];
   assert_eq!((offsets, size_of::<Padded>(), align_of::<Padded>()), ([0, 4, 8, 10], 12, 4));
   let padded = [&[1, 0, 0, 0][..], &2u32.to_ne_bytes(), &[3, 0], &4u16.to_ne_bytes()].concat();
-  assert_eq!(Region::new_in(Store::default(), Padded::new(1, 2, 3, 4)).as_bytes().unwrap(), padded);
+  assert_eq!(region(Padded::new(1, 2, 3, 4)).as_bytes().unwrap(), padded);
   // `[cap][len][elements]` after the pointer; strings are `[len][bytes]`.
-  let l = Region::<Near<[u32]>>::new_in(Store::default(), Near::from_iter([7u32, 8]));
+  let l = region::<Near<[u32]>>(Near::from_iter([7u32, 8]));
   let words =
     |b: &[u8]| b.chunks(4).map(|c| u32::from_ne_bytes(c.try_into().unwrap())).collect::<Vec<_>>();
   assert_eq!(words(l.as_bytes().unwrap()), [8, 2, 2, 7, 8]);
-  let s = Region::new_in(Store::default(), Lst::<Near<str>>::new(["ab"]));
+  let s = region(Lst::<Near<str>>::new(["ab"]));
   assert_eq!(words(&s.as_bytes().unwrap()[..16]), [8, 1, 1, 4]);
-  // A pushed list has spare capacity; a copy is compact again.
+  // A pushed list moves to a block with spare capacity, after the old one; a copy has neither.
   let mut l = l;
   l.edit().push(9);
   assert_eq!(l.byte_len(), 20 + 8 + 4 * 4);
-  assert!(l.as_bytes().is_none());
+  assert_eq!(words(&l.as_bytes().unwrap()[20..]), [4, 3, 7, 8, 9, 0]);
   assert_eq!(words(&compact_bytes(&l)), [8, 3, 3, 7, 8, 9]);
+}
+
+/// The bytes of a region are all initialized until a `&mut` that reaches a type with padding is
+/// handed out: as a value, as a slice of a list, or through a pinned view. A `&mut` to plain data
+/// without padding, `set`, and moves keep them.
+#[test]
+fn bytes_after_writes_through_a_mut() {
+  let mut r = region(Lst::<u32>::new([1, 2]));
+  r.edit().items()[0] = 3;
+  *r.edit().items().at(1) = 4;
+  r.edit().items().push(5);
+  assert_eq!(view::<Lst<u32>, _>(r.as_bytes().unwrap(), |l| l.items[..].to_vec()), Ok(vec![3, 4, 5]));
+  let mut r = region(Lst::<Pad>::new([Pad { a: 1, b: 2 }]));
+  r.edit().items().at(0).set(Pad { a: 3, b: 4 });
+  r.edit().items().push(Pad { a: 5, b: 6 });
+  assert!(r.as_bytes().is_some());
+  r.edit().items()[0] = Pad { a: 7, b: 8 };
+  assert!(r.as_bytes().is_none());
+  let mut r = region(Lst::<Pad>::new([Pad { a: 1, b: 2 }]));
+  **r.edit().items().at(0) = Pad { a: 7, b: 8 };
+  assert!(r.as_bytes().is_none());
+  let mut r = region(Lst::<Pad>::new([Pad { a: 1, b: 2 }]));
+  let _ = r.edit().items().iter_pin_mut();
+  assert!(r.as_bytes().is_none());
+  let mut r = region(Block::new(1, [Inst::new(2, [3])], None));
+  let _ = r.edit().pin();
+  assert!(r.as_bytes().is_none());
+  // A copy has its bytes again.
+  assert!(region(&*r).as_bytes().is_some());
+}
+
+/// The capacity of a list of a loaded image is not trusted: the check claims only the elements
+/// in use, so the room after them may be other values, here the texts. A push moves the list.
+#[test]
+fn the_room_of_a_loaded_list_is_not_trusted() {
+  let r = region(Lst::<Near<str>>::new(["ab", "c"]));
+  let mut image = r.as_bytes().unwrap().to_vec();
+  let len_at = usize::try_from(i32::from_ne_bytes(image[..4].try_into().unwrap())).unwrap();
+  image[len_at - 4..len_at].copy_from_slice(&4i32.to_ne_bytes());
+  let mut back = Region::<Lst<Near<str>>>::load(&image).unwrap();
+  back.edit().items().push("d");
+  assert_eq!(back.items.iter().map(|t| &**t).collect::<Vec<_>>(), ["ab", "c", "d"]);
+  assert!(back.byte_len() > image.len());
 }
 
 #[test]
 fn near_traits() {
-  let r = Region::new_in(Store::default(), Pair::<Inst, Near<[Inst]>>::new(
+  let r = region(Pair::<Inst, Near<[Inst]>>::new(
     Inst::new(1, [2]),
     (Inst::new(1, [2]), Inst::new(1, [3])),
   ));
@@ -547,16 +615,16 @@ fn near_traits() {
   );
   let total: u32 = (&*r.second).into_iter().map(|i| i.args[0]).sum();
   assert_eq!(total, 5);
-  let s = Region::new_in(Store::default(), Pair::<u8, Near<str>>::new(0, "x"));
+  let s = region(Pair::<u8, Near<str>>::new(0, "x"));
   assert_eq!(
     (format!("{:?}", s.second), hash(&*s.second) == hash(&*s.second)),
     ("\"x\"".into(), true)
   );
-  let e = Region::new_in(Store::default(), Expr::neg(Expr::Lit(1)));
+  let e = region(Expr::neg(Expr::Lit(1)));
   let Expr::Neg(x) = &*e else { unreachable!() };
   assert_eq!((format!("{x:?}"), x == x), ("Lit(1)".into(), true));
-  // `Display` shows the target.
-  let d = Region::new_in(Store::default(), Pair::<Near<u64>, Near<str>>::new(Near::new(42), "text"));
+  // `Display` shows the pointee.
+  let d = region(Pair::<Near<u64>, Near<str>>::new(Near::new(42), "text"));
   assert_eq!(format!("{} {:>6}", d.first, d.second), "42   text");
 }
 
@@ -569,7 +637,7 @@ fn region_traits() {
     assert_eq!(f, g);
     assert_eq!(format!("{f:?}"), format!("{:?}", *g));
     assert!(format!("{f:?}").starts_with("Func { name: \"main\""));
-    assert_eq!(Region::new_in(Store::default(), 1.5f64).to_string(), "1.5");
+    assert_eq!(region(1.5f64).to_string(), "1.5");
     // The clone is independent.
     let mut h = f.clone();
     *h.edit().flag() = false;
@@ -603,26 +671,26 @@ fn struct_handles() {
   assert_eq!((f.entry.insts[0].op, &f.entry.insts[0].args[..]), (11, &[30, 20, 10][..]));
 
   // Tuple fields, colliding names, and visibility.
-  let mut w = Region::new_in(Store::default(), Wrap::new(1, [Color::Red]));
+  let mut w = region(Wrap::new(1, [Color::Red]));
   *w.edit()._0() = 2;
   w.edit()._1().push(Color::Blue);
   assert_eq!((w.0, &w.1[..]), (2, &[Color::Red, Color::Blue][..]));
-  let mut n = Region::new_in(Store::default(), Names::new(1, "a", 2));
+  let mut n = region(Names::new(1, "a", 2));
   *n.edit().set_() = 3;
   n.edit().replace_().set("b");
   *n.edit().r#as_mut() = 4;
   assert_eq!((n.set, &*n.replace, n.r#as_mut), (3, "b", 4));
-  let mut m = Region::new_in(Store::default(), private::Mixed::new(1, "h"));
+  let mut m = region(private::Mixed::new(1, "h"));
   *m.edit().open() = 2;
   private::rename(m.edit(), "renamed");
   assert_eq!((m.open, m.hidden()), (2, "renamed"));
 
   // Handles of generic types.
-  let mut p = Region::new_in(Store::default(), Pair::new(1u16, Lst::new([1u8])));
+  let mut p = region(Pair::new(1u16, Lst::new([1u8])));
   *p.edit().first() = 2;
   p.edit().second().items().push(2);
   assert_eq!((p.first, &p.second.items[..]), (2, &[1, 2][..]));
-  let mut a = Region::new_in(Store::default(), Arr::<2>::new([1, 2], ()));
+  let mut a = region(Arr::<2>::new([1, 2], ()));
   a.edit().items()[1] = 5;
   a.edit().rest().push([7, 8]);
   assert_eq!((a.items, &a.rest[..]), ([1, 5], &[[7, 8]][..]));
@@ -630,12 +698,12 @@ fn struct_handles() {
 
 #[test]
 fn plain_handles_deref_mut() {
-  let mut r = Region::new_in(Store::default(), Rgb { r: 1, g: 2, b: 3, c: Color::Red });
+  let mut r = region(Rgb { r: 1, g: 2, b: 3, c: Color::Red });
   **r.edit() = Rgb { r: 9, g: 9, b: 9, c: Color::Green }; // `Copy`: the handle is assignable
   r.edit().c = Color::Blue;
   *r.edit().r() = 4;
   assert_eq!(*r, Rgb { r: 4, g: 9, b: 9, c: Color::Blue });
-  let mut s = Region::new_in(Store::default(), Shape::Dot);
+  let mut s = region(Shape::Dot);
   **s.edit() = Shape::Circle(1);
   if let ShapeMut::Circle(mut radius) = s.edit().as_mut() {
     *radius += 1;
@@ -649,10 +717,10 @@ fn plain_handles_deref_mut() {
   assert_eq!(*s, Shape::Rect { w: 3, h: 3 });
   assert!(matches!(s.edit().set(Shape::Dot), ()));
   assert!(matches!(s.edit().as_mut(), ShapeMut::Dot));
-  let mut c = Region::new_in(Store::default(), Wrap::new(0, [Color::Red, Color::Blue]));
+  let mut c = region(Wrap::new(0, [Color::Red, Color::Blue]));
   c.edit()._1().fill(Color::Green); // a list of plain data is a real `&mut [T]`
   assert_eq!(c.1[..], [Color::Green; 2]);
-  let mut u = Region::new_in(Store::default(), Color::Red);
+  let mut u = region(Color::Red);
   u.edit().set(Color::Blue);
   **u.edit() = Color::Green;
   assert_eq!(*u, Color::Green);
@@ -661,7 +729,7 @@ fn plain_handles_deref_mut() {
 #[test]
 fn enum_handles() {
   let mut s =
-    Region::new_in(Store::default(), Stmt::block((Stmt::r#let("x", Expr::Lit(1)), Stmt::r#return(None), Stmt::Nop), 7));
+    region(Stmt::block((Stmt::r#let("x", Expr::Lit(1)), Stmt::r#return(None), Stmt::Nop), 7));
   let StmtMut::Block(block) = s.edit().as_mut() else { unreachable!() };
   *block.tag() = 8;
   let body = block.body();
@@ -681,7 +749,7 @@ fn enum_handles() {
   assert_eq!(body[2], Stmt::IntLit(5));
 
   // Generic enums.
-  let mut t = Region::new_in(Store::default(), Tree::node(Tree::Leaf(1u32), Tree::Leaf(2)));
+  let mut t = region(Tree::node(Tree::Leaf(1u32), Tree::Leaf(2)));
   if let TreeMut::Node(kids) = t.edit().as_mut() {
     if let TreeMut::Leaf(mut x) = kids._0().as_mut() {
       *x = 10;
@@ -696,18 +764,18 @@ fn enum_handles() {
 /// over a `Some` is zeros again, from a value on the stack and from a copy of a region's.
 #[test]
 fn a_value_overwrites_every_pointer() {
-  let mut b = Region::new_in(Store::default(), Block::new(0, [Inst::new(1, [2])], Near::new(Block::new(5, (), None))));
+  let mut b = region(Block::new(0, [Inst::new(1, [2])], Near::new(Block::new(5, (), None))));
   b.edit().set(Block::new(1, (), None));
   assert!(b.next.is_none() && b.insts.is_empty() && b.id == 1);
   b.edit().set(Block::new(2, (), Near::new(Block::new(6, (), None))));
-  let none = Region::new_in(Store::default(), Block::new(3, (), None));
+  let none = region(Block::new(3, (), None));
   b.edit().set(&*none);
   assert!(b.next.is_none() && b.id == 3);
 }
 
 #[test]
 fn list_handles() {
-  let mut b = Region::new_in(Store::default(), Block::new(0, (), None));
+  let mut b = region(Block::new(0, (), None));
   let insts = b.edit().insts();
   // `push` and `insert` return the new element's handle.
   insts.push(Inst::new(1, ())).args().push(10);
@@ -730,7 +798,7 @@ fn list_handles() {
   insts.at(1).args().push(31);
   assert_eq!(args(&b), [vec![20, 21, 22], vec![30, 31]]);
   // Growth from empty and from a compact copy.
-  let mut b = Region::new_in(Store::default(), &*b);
+  let mut b = region(&*b);
   for i in 0..100u8 {
     b.edit().insts().push(Inst::new(i, Near::from_iter(0..u32::from(i % 7))));
   }
@@ -747,7 +815,7 @@ fn list_handles() {
   e.next().insert(Block::new(9, old, None));
   assert_eq!((ops(&b), ops(b.next.as_ref().unwrap())), (vec![0], vec![1]));
   // Lists of lists, of pointers and of strings.
-  let mut l = Region::new_in(Store::default(), Lst::<Near<[u8]>>::new(([1u8], ())));
+  let mut l = region(Lst::<Near<[u8]>>::new(([1u8], ())));
   l.edit().items().at(1).push(2);
   l.edit().items().push([3]).push(4);
   l.edit().items().insert(0, ()).push(0);
@@ -755,13 +823,13 @@ fn list_handles() {
     l.items.iter().map(|x| x.to_vec()).collect::<Vec<_>>(),
     [vec![0], vec![1], vec![2], vec![3, 4]]
   );
-  let mut p = Region::new_in(Store::default(), Lst::<Near<Expr>>::new([Near::new(Expr::Lit(1))]));
+  let mut p = region(Lst::<Near<Expr>>::new([Near::new(Expr::Lit(1))]));
   let items = p.edit().items();
   items.push(Near::new(Expr::Lit(2))).set(Expr::Lit(3));
   let one = items.at(0).replace(Expr::Lit(0));
   items.at(0).set(Expr::neg(one));
   assert_eq!(p.items.iter().map(|e| eval(e)).collect::<Vec<_>>(), [-1, 3]);
-  let mut s = Region::new_in(Store::default(), Lst::<Near<str>>::new(["b"]));
+  let mut s = region(Lst::<Near<str>>::new(["b"]));
   s.edit().items().insert(0, "a");
   s.edit().items().push("c").set("C");
   assert_eq!(s.items.iter().map(|x| &**x).collect::<String>(), "abC");
@@ -769,7 +837,7 @@ fn list_handles() {
 
 #[test]
 fn list_index_panics() {
-  let mut r = Region::<Near<[u32]>>::new_in(Store::default(), Near::from_iter([1u32, 2]));
+  let mut r = region::<Near<[u32]>>(Near::from_iter([1u32, 2]));
   fails(|| *r.edit().at(2) = 0);
   fails(|| {
     let _ = r.edit().remove(2);
@@ -783,7 +851,7 @@ fn list_index_panics() {
     *x += 1;
   }
   assert_eq!((r[..].to_vec(), r.byte_len()), (vec![1, 3], 4 + 8 + 8));
-  let mut exprs = Region::new_in(Store::default(), Lst::<Expr>::new([Expr::Lit(1)]));
+  let mut exprs = region(Lst::<Expr>::new([Expr::Lit(1)]));
   let items = exprs.edit().items();
   assert!(items.try_at(1).is_none());
   items.try_at(0).unwrap().set(Expr::neg(Expr::Lit(2)));
@@ -792,7 +860,7 @@ fn list_index_panics() {
 
 #[test]
 fn option_handles() {
-  let mut b = Region::new_in(Store::default(), Block::new(0, (), None));
+  let mut b = region(Block::new(0, (), None));
   assert!(b.edit().next().as_mut().is_none());
   assert!(b.edit().next().take().is_none());
   let next = b.edit().next();
@@ -802,7 +870,7 @@ fn option_handles() {
   next.as_mut().unwrap().next().insert(Block::new(3, (), None));
   assert_eq!(b.next.as_ref().map(|n| (n.id, ops(n))), Some((2, vec![1])));
   assert_eq!(b.next.as_ref().unwrap().next.as_ref().unwrap().id, 3);
-  // `insert` over a target replaces it.
+  // `insert` over a pointee replaces it.
   b.edit().next().insert(Block::new(4, (), None));
   assert_eq!(b.next.as_ref().map(|n| (n.id, n.next.is_none())), Some((4, true)));
   b.edit().next().set(None);
@@ -817,7 +885,7 @@ fn option_handles() {
   let n = b.next.as_ref().unwrap();
   assert_eq!((before, n.id, n.next.as_ref().unwrap().id), (Some(5), 6, 5));
   // Optional pointers to plain data are `&mut T`.
-  let mut o = Region::new_in(Store::default(), Pair::new(0u8, None::<Near<u64>>));
+  let mut o = region(Pair::new(0u8, None::<Near<u64>>));
   *o.edit().second().insert(1) += 1;
   assert_eq!(o.second.as_deref(), Some(&2));
 }
@@ -861,7 +929,7 @@ fn set_and_replace() {
 
 #[test]
 fn moves_in_a_tree() {
-  let mut r = Region::new_in(Store::default(), Expr::add(Expr::neg(Expr::neg(Expr::Lit(3))), Expr::Lit(4)));
+  let mut r = region(Expr::add(Expr::neg(Expr::neg(Expr::Lit(3))), Expr::Lit(4)));
   let e = r.edit();
   // Wrap, like `mem::replace`.
   let old = e.replace(Expr::Lit(0));
@@ -898,7 +966,7 @@ fn moves_in_a_tree() {
     e.set(Expr::add(old, Expr::Lit(i)));
   }
   assert_eq!(eval(&r), 3 + 13 + (0..wraps).sum::<i64>());
-  let copy = Region::new_in(Store::default(), &*r);
+  let copy = region(&*r);
   assert_eq!(show(&copy), show(&r));
   assert!(copy.byte_len() < r.byte_len());
 }
@@ -942,7 +1010,7 @@ fn moves_between_lists_and_regions() {
   c.edit().entry().insts().push(inst);
   assert_eq!((ops(&a.entry), ops(&c.entry)), (vec![2], vec![1, 2, 1]));
   let next = c.edit().entry().next().take().unwrap();
-  let d = Region::new_in(Store::default(), next);
+  let d = region(next);
   assert_eq!((d.id, ops(&d)), (1, vec![3]));
   assert!(c.entry.next.is_none());
   // Two edits at once, of two regions.
@@ -952,7 +1020,7 @@ fn moves_between_lists_and_regions() {
   ea.entry().insts().push(y);
   ec.entry().insts().push(x);
   assert_eq!((ops(&a.entry), ops(&c.entry)), (vec![1], vec![2, 1, 2]));
-  assert_eq!(*Region::new_in(Store::default(), &*a), *a);
+  assert_eq!(*region(&*a), *a);
 }
 
 /// Anything `impl Emit` can be passed on generically.
@@ -962,7 +1030,7 @@ fn wrap_twice(e: impl Emit<Expr>) -> impl Emit<Expr> {
 
 #[test]
 fn builders_compose() {
-  let mut r = Region::new_in(Store::default(), wrap_twice(Expr::Lit(4)));
+  let mut r = region(wrap_twice(Expr::Lit(4)));
   assert_eq!(show(&r), "--4");
   let e = r.edit();
   let old = e.replace(Expr::Lit(0));
@@ -989,7 +1057,7 @@ fn fails(f: impl FnOnce()) {
 
 #[test]
 fn a_panic_leaves_the_old_value() {
-  let mut r = Region::new_in(Store::default(), Expr::neg(Expr::Lit(7)));
+  let mut r = region(Expr::neg(Expr::Lit(7)));
   let e = r.edit();
   fails(|| e.set(Expr::add(Expr::Lit(1), Boom)));
   assert_eq!(show(e), "-7");
@@ -1025,7 +1093,7 @@ fn a_panic_leaves_the_old_value() {
 
 #[test]
 fn a_panic_in_a_list_operation_leaves_a_valid_list() {
-  let mut b = Region::new_in(Store::default(), Block::new(0, (Inst::new(0, [0]), Inst::new(1, [1])), None));
+  let mut b = region(Block::new(0, (Inst::new(0, [0]), Inst::new(1, [1])), None));
   let expected = args(&b);
   for k in 0..3 {
     fails(|| {
@@ -1061,13 +1129,13 @@ fn a_panic_in_a_list_operation_leaves_a_valid_list() {
   });
   assert_eq!((seen, ops(&b)), (4, vec![1, 3, 4]));
   assert_eq!(args(&b), [vec![1], vec![3], vec![4]]);
-  assert_eq!(*Region::new_in(Store::default(), &*b), *b);
+  assert_eq!(*region(&*b), *b);
 }
 
 #[test]
 fn the_size_limit_leaves_a_valid_region() {
   // The real limit is 2 GiB; check that a request past it fails before changing anything.
-  let mut r = Region::new_in(Store::default(), Lst::new([1u64]));
+  let mut r = region(Lst::new([1u64]));
   let len = r.byte_len();
   fails(|| r.edit().items().set(Near::from_iter(std::iter::repeat_n(0u64, usize::MAX / 16))));
   assert_eq!(r.byte_len(), len);
@@ -1088,9 +1156,9 @@ fn aligned(bytes: &[u8]) -> Vec<u64> {
   words
 }
 
-/// The compact image of any region: a copy is compact.
+/// The image of a copy of any region: its value and what it reaches, in the order of a copy.
 fn compact_bytes<T: Flat>(r: &Region<T>) -> Vec<u8> {
-  Region::new_in(Store::default(), &**r).as_bytes().unwrap().to_vec()
+  region(&**r).as_bytes().unwrap().to_vec()
 }
 
 /// `nearest::view` of `bytes`, copied to words: an address aligned as a region is.
@@ -1116,7 +1184,7 @@ struct Rec {
 
 fn rec() -> Region<Rec> {
   let leaf = |c: char| Rec::new(false, c, NonZero::new(1).unwrap(), Color::Red, "", (), None, ());
-  Region::new_in(Store::default(), Rec::new(
+  region(Rec::new(
     true,
     'é',
     NonZero::new(300).unwrap(),
@@ -1151,12 +1219,12 @@ fn bytes_round_trip() {
   // Any alignment of the input.
   let mut shifted = vec![0u8];
   shifted.extend_from_slice(&image);
-  let back = Region::<Rec>::from_bytes(&shifted[1..]).unwrap();
+  let back = Region::<Rec>::load(&shifted[1..]).unwrap();
   assert_eq!(*back, *r);
   assert_eq!(back.as_bytes(), Some(&*image));
   // Trusted bytes can skip the check.
   // SAFETY: `image` comes from `as_bytes` for the same type.
-  let trusted = unsafe { Region::<Rec>::from_bytes_unchecked(&image) };
+  let trusted = unsafe { Region::<Rec>::load_unchecked(&image) };
   assert_eq!((&*trusted, trusted.byte_len()), (&*r, image.len()));
   let own = trusted.as_bytes().unwrap();
   // SAFETY: as above, and a region's own buffer is 8-aligned.
@@ -1167,53 +1235,58 @@ fn bytes_round_trip() {
   let misaligned =
     unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), shifted.len()) };
   assert!(nearest::view::<Rec>(&misaligned[1..]).is_err());
-  // An edited region has no image of its own; a copy has one, and only what is reachable.
+  // An edited region has its bytes, with what the edits left behind; a copy has only what is
+  // reachable.
   let e = r.edit();
   let kid = e.kids().remove(0);
   e.kids().at(0).kids().push(kid);
   e.wide().push(3);
   e.name().set("edited");
-  assert!(r.as_bytes().is_none());
+  assert_eq!(r.as_bytes().map(<[u8]>::len), Some(r.byte_len()));
   let edited = compact_bytes(&r);
   assert!(edited.len() < r.byte_len());
-  let mut back = Region::<Rec>::from_bytes(&edited).unwrap();
+  let mut back = Region::<Rec>::load(&edited).unwrap();
   assert_eq!(*back, *r);
   assert_eq!(back.as_bytes(), Some(&*edited));
   // A loaded region is editable.
   back.edit().kids().at(0).kids().at(1).wide().push(5);
   assert_eq!(back.kids[0].kids[1].wide[..], [5]);
-  // Padding is not part of the value.
-  let mut p = Region::<[Pad; 2]>::new_in(Store::default(), [Pad { a: 1, b: 2 }, Pad { a: 3, b: 4 }]);
+  // Padding is not part of the value. A `&mut` to a type with padding writes its padding as
+  // uninitialized bytes, so the region has no bytes to give after one was handed out.
+  let mut p = region::<[Pad; 2]>([Pad { a: 1, b: 2 }, Pad { a: 3, b: 4 }]);
+  p.edit().set([Pad { a: 5, b: 6 }, Pad { a: 3, b: 4 }]);
+  assert!(p.as_bytes().is_some());
   p.edit()[0] = Pad { a: 9, b: 9 };
+  assert!(p.as_bytes().is_none());
   assert_eq!(
-    *Region::<[Pad; 2]>::from_bytes(&compact_bytes(&p)).unwrap(),
+    *Region::<[Pad; 2]>::load(&compact_bytes(&p)).unwrap(),
     [Pad { a: 9, b: 9 }, Pad { a: 3, b: 4 }]
   );
   let f = func();
-  assert_eq!(*Region::<Func>::from_bytes(f.as_bytes().unwrap()).unwrap(), *f);
+  assert_eq!(*Region::<Func>::load(f.as_bytes().unwrap()).unwrap(), *f);
 }
 
 #[test]
 fn builders_write_the_compact_image() {
   fn same<T: Flat>(r: &Region<T>) {
     let image = r.as_bytes().unwrap();
-    assert_eq!(Some(image), Region::new_in(Store::default(), &**r).as_bytes());
-    assert!(Region::<T>::from_bytes(image).is_ok());
+    assert_eq!(Some(image), region(&**r).as_bytes());
+    assert!(Region::<T>::load(image).is_ok());
   }
   same(&func());
   same(&rec());
-  same(&Region::new_in(Store::default(), Stmt::block(
+  same(&region(Stmt::block(
     (Stmt::Nop, Stmt::r#let("x", Expr::Lit(1)), Stmt::r#return(None)),
     1,
   )));
-  same(&Region::new_in(Store::default(), Tree::node(Tree::Leaf(1u16), Tree::node(Tree::leaf(2), Tree::Leaf(3)))));
-  same(&Region::new_in(Store::default(), Aligned::new([1u8], [2u64, 3], "abc", [4u16])));
-  same(&Region::new_in(Store::default(), Arr::<2>::new([1, 2], [[3, 4], [5, 6]])));
-  same(&Region::new_in(Store::default(), Chain::link(1, Chain::link(2, Chain::End))));
-  same(&Region::new_in(Store::default(), Lst::<Near<Expr>>::new(Near::from_iter(
+  same(&region(Tree::node(Tree::Leaf(1u16), Tree::node(Tree::leaf(2), Tree::Leaf(3)))));
+  same(&region(Aligned::new([1u8], [2u64, 3], "abc", [4u16])));
+  same(&region(Arr::<2>::new([1, 2], [[3, 4], [5, 6]])));
+  same(&region(Chain::link(1, Chain::link(2, Chain::End))));
+  same(&region(Lst::<Near<Expr>>::new(Near::from_iter(
     (0..5).map(|i| Near::new(Expr::Lit(i))),
   ))));
-  same(&Region::new_in(Store::default(), Prims::new(
+  same(&region(Prims::new(
     1u8,
     2u16,
     3u32,
@@ -1230,11 +1303,12 @@ fn builders_write_the_compact_image() {
     NonZero::new(1).unwrap(),
     NonZero::new(2).unwrap(),
   )));
-  // A list whose iterator lied about its length is not compact; its spare room is used.
+  // A list whose iterator lied about its length: spare room, or a list that moved as it grew,
+  // leaving its first block behind. Its elements hold no pointers, so both load.
   for (n, hint) in [(3, 1000), (40, 3)] {
-    let mut r = Region::new_in(Store::default(), Inst::new(0, Near::from_iter(Liar { n, hint })));
-    assert!(r.as_bytes().is_none());
-    assert!(Region::<Inst>::from_bytes(&compact_bytes(&r)).is_ok());
+    let mut r = region(Inst::new(0, Near::from_iter(Liar { n, hint })));
+    assert!(Region::<Inst>::load(r.as_bytes().unwrap()).is_ok());
+    assert!(Region::<Inst>::load(&compact_bytes(&r)).is_ok());
     let len = r.byte_len();
     r.edit().args().push(7);
     if hint > n as usize {
@@ -1244,8 +1318,8 @@ fn builders_write_the_compact_image() {
 }
 
 /// Every image with one byte changed, or cut, or longer, is either rejected or read in full as a
-/// value that shows the same and whose copy is as long as those bytes: a corruption is never read
-/// as more than its bytes, nor out of them (Miri). Which corruptions are accepted depends on the bytes of
+/// value that shows the same and whose copy is no longer than those bytes: its pointees form a tree
+/// in them, so a corruption is never read as more than its bytes, nor out of them (Miri). Which corruptions are accepted depends on the bytes of
 /// the target (its widths, its alignment), so only that both outcomes happen is asserted: the
 /// image itself is accepted, a cut one rejected. Under Miri every 127th byte is changed.
 #[test]
@@ -1254,10 +1328,11 @@ fn small_corruptions_are_rejected_or_harmless() {
   // Whether `bytes` are accepted; what is accepted is walked in full and is exactly the image of
   // its value.
   let try_one = |bytes: &[u8]| match view::<Rec, _>(bytes, |v| {
-    (format!("{v:?}"), Region::new_in(Store::default(), v))
+    (format!("{v:?}"), region(v))
   }) {
     Ok((shown, again)) => {
-      assert_eq!((format!("{:?}", *again), again.byte_len()), (shown, bytes.len()));
+      assert_eq!(format!("{:?}", *again), shown);
+      assert!(again.byte_len() <= bytes.len(), "a copy is no longer than a tree");
       true
     }
     Err(_) => false,
@@ -1286,16 +1361,16 @@ fn malformed_images_are_rejected() {
   let put =
     |bytes: &mut [u8], at: usize, v: i32| bytes[at..at + 4].copy_from_slice(&v.to_ne_bytes());
   let ok = |bytes: &[u8]| view::<Expr, _>(bytes, show);
-  let image = Region::new_in(Store::default(), Expr::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2))).as_bytes().unwrap().to_vec();
+  let image = region(Expr::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2))).as_bytes().unwrap().to_vec();
   assert_eq!(ok(&image), Ok("(-1 + 2)".into()));
   let (l, r) = (4, 8); // the two pointers of the root `Add`
   let mut shared = image.clone();
-  put(&mut shared, r, word(&image, l) - 4); // both pointers to the same target
+  put(&mut shared, r, word(&image, l) - 4); // both pointers to the same pointee
   assert!(ok(&shared).is_err());
   let mut cycle = image.clone();
   put(&mut cycle, l, -4); // a pointer back to the root
   assert!(ok(&cycle).is_err());
-  let mut swapped = image.clone(); // valid targets in the wrong order
+  let mut swapped = image.clone(); // valid pointees in the wrong order
   put(&mut swapped, l, word(&image, r) + 4);
   put(&mut swapped, r, word(&image, l) - 4);
   assert!(ok(&swapped).is_err());
@@ -1303,20 +1378,25 @@ fn malformed_images_are_rejected() {
   tag[0] = 3; // no such variant
   assert!(ok(&tag).is_err());
   assert!(ok(&image[..image.len() - 1]).is_err()); // missing bytes
-  assert!(ok(&[&image[..], &[0; 8]].concat()).is_err()); // trailing bytes
+  assert_eq!(ok(&[&image[..], &[0; 8]].concat()), Ok("(-1 + 2)".into())); // no pointer reaches them
   assert!(ok(&[]).is_err());
 
-  // Lists and strings: absurd lengths, `cap != len`, bad UTF-8.
-  let r = Region::new_in(Store::default(), Lst::<Near<str>>::new(["ab", "c"]));
+  // Lists and strings: absurd lengths, `cap < len`, a negative `cap`, bad UTF-8; spare room.
+  let r = region(Lst::<Near<str>>::new(["ab", "c"]));
   let image = r.as_bytes().unwrap().to_vec();
   let len_at = usize::try_from(word(&image, 0)).unwrap(); // the list's `len`
   assert_eq!((word(&image, len_at - 4), word(&image, len_at)), (2, 2));
   let ok = |bytes: &[u8]| view::<Lst<Near<str>>, _>(bytes, |l| l.items.len());
   assert_eq!(ok(&image), Ok(2));
-  for (at, v) in [(len_at, -1), (len_at - 4, -1), (len_at - 4, 3), (len_at, 1), (len_at, 3)] {
+  for (at, v) in [(len_at, -1), (len_at - 4, -1), (len_at - 4, 1), (len_at, 3)] {
     let mut bad = image.clone();
     put(&mut bad, at, v);
     assert!(ok(&bad).is_err(), "{at} = {v}");
+  }
+  for (at, v) in [(len_at - 4, 3), (len_at, 1)] {
+    let mut room = image.clone();
+    put(&mut room, at, v);
+    assert!(ok(&room).is_ok(), "{at} = {v}");
   }
   let text_at = len_at + 4 + usize::try_from(word(&image, len_at + 4)).unwrap();
   let mut utf8 = image.clone();
@@ -1327,7 +1407,7 @@ fn malformed_images_are_rejected() {
   assert!(ok(&long).is_err());
 
   // Values: `bool`, `char`, `NonZero`, enum tags.
-  let image = Region::new_in(Store::default(), Prims::new(
+  let image = region(Prims::new(
     1u8,
     2u16,
     3u32,
@@ -1360,13 +1440,13 @@ fn malformed_images_are_rejected() {
     bad[field..field + bytes.len()].copy_from_slice(&bytes);
     assert!(ok(&bad).is_err(), "field at {field}");
   }
-  let color = Region::new_in(Store::default(), Color::Blue).as_bytes().unwrap().to_vec();
+  let color = region(Color::Blue).as_bytes().unwrap().to_vec();
   assert!(view::<Color, _>(&[3], |_| ()).is_err() && view::<Color, _>(&color, |_| ()).is_ok());
 
   // Elements that can be invalid are checked one by one, inside lists and arrays too; lists
   // of numbers are not walked, and any bytes there are a value.
-  let flags = Region::new_in(Store::default(), Lst::<[bool; 2]>::new([[true, false], [false, true]]));
-  let numbers = Region::new_in(Store::default(), Lst::<[u16; 2]>::new([[1, 2], [3, 4]]));
+  let flags = region(Lst::<[bool; 2]>::new([[true, false], [false, true]]));
+  let numbers = region(Lst::<[u16; 2]>::new([[1, 2], [3, 4]]));
   let (flags, numbers) = (flags.as_bytes().unwrap().to_vec(), numbers.as_bytes().unwrap().to_vec());
   for i in 12..flags.len() {
     let (mut f, mut n) = (flags.clone(), numbers.clone());
@@ -1376,17 +1456,12 @@ fn malformed_images_are_rejected() {
   }
 
   // The error.
-  let err = Region::<Expr>::from_bytes(&[9]).err().unwrap();
-  assert_eq!(err, nearest::Error::Invalid(0));
-  assert_eq!(err.to_string(), "invalid region bytes at offset 0");
+  let err = Region::<Expr>::load(&[9]).err().unwrap();
+  assert_eq!(err, nearest::Error::Invalid(nearest::puns::Error::Size));
+  assert_eq!(err.to_string(), "invalid region bytes: value does not have the size of the target type");
   let _: &dyn std::error::Error = &err;
-  assert_eq!(format!("{err:?}"), "Invalid(0)");
-  for (e, shown) in [
-    (nearest::Error::ScratchFull, "scratch too small to check region bytes"),
-    (nearest::Error::StorageFull, "region bytes larger than the storage"),
-  ] {
-    assert_eq!(e.to_string(), shown);
-  }
+  assert_eq!(format!("{err:?}"), "Invalid(Size)");
+  assert_eq!(nearest::Error::Alloc.to_string(), "the allocator did not give the block of the region");
 }
 
 #[test]
@@ -1443,16 +1518,16 @@ fn a_very_deep_value_is_checked_without_recursion() {
 
 #[test]
 fn compaction() {
-  let mut b = Region::new_in(Store::default(), Block::new(0, (), None));
+  let mut b = region(Block::new(0, (), None));
   for i in 0..20u8 {
     b.edit().insts().push(Inst::new(i, [u32::from(i)]));
     b.edit().insts().at(0).args().push(u32::from(i));
     b.edit().next().insert(Block::new(u32::from(i), (), None));
   }
-  let c = Region::new_in(Store::default(), &*b);
+  let c = region(&*b);
   assert!(c.byte_len() * 2 < b.byte_len());
   assert_eq!(*c, *b);
-  assert_eq!(Region::new_in(Store::default(), &*c).byte_len(), c.byte_len());
+  assert_eq!(region(&*c).byte_len(), c.byte_len());
   assert_eq!(c.as_bytes().map(<[u8]>::len), Some(c.byte_len()));
 }
 
@@ -1478,10 +1553,10 @@ fn size_hint_may_lie() {
   // The long list is a tenth of its length under Miri: it grows as many times but four.
   let long = if cfg!(miri) { 100 } else { 1000 };
   for (n, hint) in [(3, 1000), (long, 0), (50, 3), (0, 10)] {
-    let r = Region::new_in(Store::default(), Inst::new(0, Near::from_iter(Liar { n, hint })));
+    let r = region(Inst::new(0, Near::from_iter(Liar { n, hint })));
     assert_eq!(r.args.to_vec(), (0..n).rev().collect::<Vec<_>>());
     // Elements that allocate while the list grows.
-    let b = Region::new_in(Store::default(), Block::new(
+    let b = region(Block::new(
       0,
       Near::from_iter(
         Liar { n, hint }.map(|i| Inst::new((i % 5) as u8, Near::from_iter(0..i % 5))),
@@ -1590,10 +1665,10 @@ fn random_edits_match_a_model() {
   for seed in [0x2545_f491_u64, 0x9e37_79b9_7f4a_7c15] {
     let mut rng = Rng(seed);
     let mut m = MDoc { id: 0, name: "root".into(), items: vec![], next: None };
-    let mut r = Region::new_in(Store::default(), Doc::new(0, "root", (), None));
+    let mut r = region(Doc::new(0, "root", (), None));
     let mut om: Vec<MItem> = vec![];
-    let mut other = Region::new_in(Store::default(), Lst::<Item>::new(()));
-    let copied = Region::new_in(Store::default(), Item::new(7, [7, 7], Near::new(Label::new(70, "other"))));
+    let mut other = region(Lst::<Item>::new(()));
+    let copied = region(Item::new(7, [7, 7], Near::new(Label::new(70, "other"))));
     for step in 0..steps {
       let depth = rng.below(chain_len(&m));
       let (dm, de) = (walk(&mut m, depth), walk_edit(r.edit(), depth));
@@ -1743,21 +1818,21 @@ fn random_edits_match_a_model() {
         }
         _ => {
           r = match step % 3 {
-            0 => Region::new_in(Store::default(), &*r),
+            0 => region(&*r),
             1 => r.clone(),
-            _ => Region::from_bytes(&compact_bytes(&r)).unwrap(),
+            _ => Region::load(&compact_bytes(&r)).unwrap(),
           };
         }
       }
       assert_eq!(doc_model(&r), m, "step {step}");
       if step % 5 == 0 {
-        let back = Region::<Doc>::from_bytes(&compact_bytes(&r)).unwrap();
+        let back = Region::<Doc>::load(&compact_bytes(&r)).unwrap();
         assert_eq!(doc_model(&back), m, "step {step}");
         let others: Vec<MItem> = other.items.iter().map(item_model).collect();
         assert_eq!(others, om);
       }
     }
-    let compact = Region::new_in(Store::default(), &*r);
+    let compact = region(&*r);
     assert_eq!(doc_model(&compact), m);
     assert!(compact.byte_len() <= r.byte_len());
   }
@@ -1782,9 +1857,9 @@ fn random_expression_rewrites_match_a_model() {
   let steps: u32 = if cfg!(miri) { 60 } else { 5000 };
   let mut rng = Rng(0x1234_5678);
   let mut m = M::Lit(0);
-  let mut r = Region::new_in(Store::default(), Expr::Lit(0));
+  let mut r = region(Expr::Lit(0));
   let mut om = M::Lit(0);
-  let mut other = Region::new_in(Store::default(), Expr::Lit(0));
+  let mut other = region(Expr::Lit(0));
   for step in 0..steps {
     let s = i64::from(step);
     // Pick a node by a random path.
@@ -1905,9 +1980,9 @@ fn random_expression_rewrites_match_a_model() {
       }
       _ => {
         if step % 2 == 0 {
-          r = Region::new_in(Store::default(), &*r);
+          r = region(&*r);
         } else {
-          r = Region::from_bytes(&compact_bytes(&r)).unwrap();
+          r = Region::load(&compact_bytes(&r)).unwrap();
         }
       }
     }
@@ -1925,7 +2000,7 @@ mod update {
 
   use nearest::{Edit, Near, Old, flat};
 
-  use super::{Expr, ExprMut, Region, Store, show};
+  use super::{Expr, ExprMut, Region, region, show};
 
   #[flat]
   struct Node {
@@ -1953,7 +2028,7 @@ mod update {
 
   #[test]
   fn update_builds_from_the_old_value() {
-    let mut r = Region::new_in(Store::default(), Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2))));
+    let mut r = region(Expr::add(Expr::Lit(1), Expr::neg(Expr::Lit(2))));
     let e = r.edit();
     e.update(Expr::neg); // wrap, without a placeholder
     e.update(|old| Expr::add(Expr::Lit(0), old));
@@ -1966,7 +2041,7 @@ mod update {
     negate_literals(r.edit());
     assert_eq!(show(&r), "(-0 + -(-1 + --2))");
 
-    let mut n = Region::new_in(Store::default(), Node::new(1, "a", [Node::new(7, "k", (), None)], None));
+    let mut n = region(Node::new(1, "a", [Node::new(7, "k", (), None)], None));
     let node = n.edit();
     node.next().insert(Node::new(3, "c", (), None));
     node.next().update(|rest| Near::new(Node::new(2, "b", (), rest))); // goes in front
@@ -1978,7 +2053,7 @@ mod update {
 
   #[test]
   fn update_restores_the_old_value_when_the_closure_panics() {
-    let mut r = Region::new_in(Store::default(), Expr::neg(Expr::Lit(7)));
+    let mut r = region(Expr::neg(Expr::Lit(7)));
     let e = r.edit();
     let boom = catch_unwind(AssertUnwindSafe(|| e.update(|_| -> Expr { panic!("boom") })));
     assert!(boom.is_err());
@@ -2001,7 +2076,7 @@ mod update {
 
   #[test]
   fn an_old_that_leaves_its_closure_is_a_copy_elsewhere() {
-    let (mut a, mut b) = (Region::new_in(Store::default(), Expr::neg(Expr::Lit(7))), Region::new_in(Store::default(), Expr::Lit(0)));
+    let (mut a, mut b) = (region(Expr::neg(Expr::Lit(7))), region(Expr::Lit(0)));
     let mut stash = None;
     a.edit().update(|old| {
       stash = Some(old);
@@ -2013,8 +2088,8 @@ mod update {
     // Also when the closure then panics: `update` puts the old value back, and the kept one,
     // which still borrows its region, is copied out while the panic unwinds.
     let boom = catch_unwind(|| {
-      let mut a = Region::new_in(Store::default(), Expr::Lit(0));
-      let mut b = Region::new_in(Store::default(), Expr::neg(Expr::neg(Expr::Lit(7))));
+      let mut a = region(Expr::Lit(0));
+      let mut b = region(Expr::neg(Expr::neg(Expr::Lit(7))));
       let stash = Cell::new(None);
       let _copy = CopyOut(&mut a, &stash);
       b.edit().update(|old| -> Expr {
@@ -2033,7 +2108,7 @@ mod pinned {
 
   use nearest::{Near, flat};
 
-  use super::{Block, BlockPin, Expr, ExprPin, Inst, InstPin, Region, Store, show};
+  use super::{Block, BlockPin, Expr, ExprPin, Inst, InstPin, Load, Region, region, show};
 
   #[flat]
   struct Node {
@@ -2055,6 +2130,31 @@ mod pinned {
     }
   }
 
+  /// A region loaded as its bytes are, with bytes that no pointer reaches after them, is edited
+  /// through its pinned view, both sides of an addition borrowed at once, and through handles: the
+  /// check of `puns` found the pointees to form a tree, which these writes rely on (Miri). The
+  /// same image with two pointers to one pointee, or a pointer back to the root, is not loaded.
+  #[test]
+  fn a_loaded_image_is_edited_in_place() {
+    let built = region(Expr::add(Expr::neg(Expr::Lit(1)), Expr::Lit(2)));
+    let image = [built.as_bytes().unwrap(), &[0; 8][..]].concat();
+    let mut r = Region::<Expr>::load(&image).unwrap();
+    assert_eq!(r.byte_len(), image.len());
+    bump(r.edit().pin(), 10);
+    r.edit().update(|old| Expr::add(old, Expr::Lit(5)));
+    let mut expected = region(Expr::add(Expr::neg(Expr::Lit(11)), Expr::Lit(12)));
+    expected.edit().update(|old| Expr::add(old, Expr::Lit(5)));
+    assert_eq!(*r, *expected);
+    let (left, right) = (4, 8); // the two pointers of the root `Add`
+    let word = |at: usize| i32::from_ne_bytes(image[at..at + 4].try_into().unwrap());
+    let mut shared = image.clone();
+    shared[right..right + 4].copy_from_slice(&(word(left) - 4).to_ne_bytes());
+    assert!(Region::<Expr>::load(&shared).is_err());
+    let mut cycle = image;
+    cycle[left..left + 4].copy_from_slice(&(-4i32).to_ne_bytes());
+    assert!(Region::<Expr>::load(&cycle).is_err());
+  }
+
   /// Data without pointers stays `Unpin`: a pin of it gives a `&mut`.
   #[test]
   fn plain_data_is_unpin() {
@@ -2062,9 +2162,9 @@ mod pinned {
     unpin::<super::Prims>();
     unpin::<super::Rgb>();
     unpin::<super::Shape>();
-    let mut r = Region::new_in(Store::default(), super::Rgb { r: 1, g: 2, b: 3, c: super::Color::Red });
+    let mut r = region(super::Rgb { r: 1, g: 2, b: 3, c: super::Color::Red });
     r.edit().pin().get_mut().r = 9;
-    let mut p = Region::new_in(Store::default(), super::Pad { a: 1, b: 2 });
+    let mut p = region(super::Pad { a: 1, b: 2 });
     p.edit().pin().get_mut().b = 7;
     assert_eq!((r.r, p.b), (9, 7));
   }
@@ -2072,7 +2172,7 @@ mod pinned {
   #[test]
   fn several_fields_are_borrowed_at_once() {
     let mut r =
-      Region::new_in(Store::default(), Expr::add(Expr::neg(Expr::Lit(1)), Expr::add(Expr::Lit(2), Expr::Lit(3))));
+      region(Expr::add(Expr::neg(Expr::Lit(1)), Expr::add(Expr::Lit(2), Expr::Lit(3))));
     let e = r.edit();
     bump(e.pin(), 10);
     assert_eq!(show(e), "(-11 + (12 + 13))");
@@ -2091,7 +2191,7 @@ mod pinned {
 
   #[test]
   fn struct_fields_and_list_elements() {
-    let mut r = Region::new_in(Store::default(), Block::new(1, (Inst::new(1, [1, 2]), Inst::new(2, [3])), None));
+    let mut r = region(Block::new(1, (Inst::new(1, [1, 2]), Inst::new(2, [3])), None));
     let b = r.edit();
     let BlockPin { mut id, insts, next } = b.pin().project();
     assert!(next.as_pin_mut().is_none());
@@ -2113,7 +2213,7 @@ mod pinned {
     assert_eq!(r.insts.len(), 3);
 
     let mut n =
-      Region::new_in(Store::default(), Node::new(0, [Node::new(1, (), None)], Near::new(Node::new(2, (), None))));
+      region(Node::new(0, [Node::new(1, (), None)], Near::new(Node::new(2, (), None))));
     let NodePin { mut id, kids, next } = n.edit().pin().project();
     let mut next = next.as_pin_mut().map(Near::as_pin_mut).unwrap().project();
     for kid in kids.iter_pin_mut() {
@@ -2129,7 +2229,7 @@ mod pinned {
 mod names {
   use nearest::{Near, flat};
 
-  use super::{Lst, Region, Store};
+  use super::{Lst, Region, region};
 
   /// Fields called like a method of the handle get a trailing underscore.
   #[flat]
@@ -2175,7 +2275,7 @@ mod names {
 
   #[test]
   fn reserved_names_and_self() {
-    let mut led = Region::new_in(Store::default(), Led::new(1, 2, false, "a"));
+    let mut led = region(Led::new(1, 2, false, "a"));
     let l = led.edit();
     *l.pin_() += 1;
     *l.update_() += 1;
@@ -2184,25 +2284,25 @@ mod names {
     assert_eq!(*l.pin().project().pin, 2);
     assert_eq!((led.pin, led.update, led.set, &*led.replace), (2, 3, true, "b"));
 
-    let mut plan = Region::new_in(Store::default(), Plan::project_(Plan::Scan(1), 2));
+    let mut plan = region(Plan::project_(Plan::Scan(1), 2));
     if let PlanPin::Project(_, mut n) = plan.edit().pin().project() {
       *n += 1;
     }
     assert!(matches!(&*plan, Plan::Project(input, 3) if matches!(**input, Plan::Scan(1))));
 
-    let mut host = Region::new_in(Store::default(), Host::plan(1, Near::new(Host::http_server_v2(2))));
+    let mut host = region(Host::plan(1, Near::new(Host::http_server_v2(2))));
     if let HostMut::Project(p) = host.edit().as_mut() {
       p.next().insert(Host::http_server(3));
     }
     let Host::Project { id: 1, next: Some(next) } = &*host else { unreachable!() };
     assert_eq!(**next, Host::HTTPServer(3));
-    assert_ne!(*Region::new_in(Store::default(), Host::Idle), **next);
+    assert_ne!(*region(Host::Idle), **next);
 
-    let mut wrap = Region::new_in(Store::default(), Wrap::<u8>::new(7, 1));
+    let mut wrap = region(Wrap::<u8>::new(7, 1));
     *wrap.edit().value() += 1;
     assert_eq!((*wrap.value, wrap.count), (8, 1));
 
-    let mut tree = Region::new_in(Store::default(), Tree::new(0, Lst::new([Tree::new(1, Lst::new(()))])));
+    let mut tree = region(Tree::new(0, Lst::new([Tree::new(1, Lst::new(()))])));
     tree.edit().kids().items().push(Tree::new(2, Lst::new(())));
     assert_eq!(tree.kids.items.iter().map(|t| t.id).sum::<u32>(), 3);
 
@@ -2215,18 +2315,18 @@ mod names {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The alignment of a region: that of a `u64`, whatever the target
+// The alignment of a region: 8 bytes, whatever the target
 
-/// As aligned as a stored type may be: as a `u64`, 8 bytes on x86-64, 4 on `i686`.
+/// As aligned as a stored type may be: 8 bytes, on every target, more than a `u64` on `i686`.
 #[flat]
+#[repr(C, align(8))]
 #[derive(Debug, PartialEq, Clone, Copy)]
 struct Word {
   value: u64,
 }
 
-/// Words behind pointers of every width: positions aligned for them, at addresses of a buffer
-/// aligned as a `u64` only. With `i16`, the elements of a list are 4 bytes past a multiple of 8;
-/// with `i64`, at a multiple of 8, which is all the alignment a `u64` has on x86-64.
+/// Words behind pointers of every width: positions aligned for them, so to 8, at addresses that
+/// are then aligned to 8 too, since the block of a region is.
 #[flat]
 #[derive(Debug, PartialEq)]
 struct Words {
@@ -2237,21 +2337,21 @@ struct Words {
   wide: Near<[Word], i64>,
 }
 
-/// The bytes of a region are accepted by `view` on the target that made it, in every storage,
-/// and every reference into it is aligned (Miri runs this on `i686`, where a `u64` is aligned to
-/// 4). Several regions, so that the heap gives addresses of every kind.
+/// The bytes of a region are aligned to 8 and accepted by `view` on the target that made it, in
+/// every allocator, and every reference into it is aligned (Miri runs this on `i686`, where a
+/// `u64` is aligned to 4). Several regions, so that the allocator gives addresses of every kind.
 #[test]
-fn a_region_is_aligned_as_its_words() {
-  assert_eq!(align_of::<Word>(), align_of::<u64>());
+fn a_region_is_aligned_to_8() {
+  assert_eq!(align_of::<Word>(), 8);
   let regions: Vec<_> = (0..8u8)
     .map(|i| {
       let w = |v: u64| Word { value: v + u64::from(i) };
-      Region::new_in(Store::default(), Words::new(i, w(1), "x", [w(2), w(3)], [w(4)]))
+      region(Words::new(i, w(1), "x", [w(2), w(3)], [w(4)]))
     })
     .collect();
   for (i, r) in regions.iter().enumerate() {
     let bytes = r.as_bytes().unwrap();
-    assert!(bytes.as_ptr().addr().is_multiple_of(align_of::<u64>()));
+    assert!(bytes.as_ptr().addr().is_multiple_of(8));
     let v = nearest::view::<Words>(bytes).unwrap();
     assert_eq!(v, &**r);
     let i = i as u64;
@@ -2260,14 +2360,14 @@ fn a_region_is_aligned_as_its_words() {
     // SAFETY: `view` accepted them, at this address.
     assert_eq!(unsafe { nearest::view_unchecked::<Words>(bytes) }, &**r);
     // Read in place where they are, and loaded elsewhere.
-    assert_eq!(*Region::<Words>::from_bytes(bytes).unwrap(), **r);
+    assert_eq!(*Region::<Words>::load(bytes).unwrap(), **r);
   }
   // A single `Word`, the root, and lists of them edited in place.
-  let mut r = Region::new_in(Store::default(), Lst::new([Word { value: 1 }]));
+  let mut r = region(Lst::new([Word { value: 1 }]));
   for v in 2..10 {
     r.edit().items().push(Word { value: v });
   }
   assert!(r.items.iter().map(|w| w.value).eq(1..10));
-  let copy = Region::new_in(Store::default(), &*r);
+  let copy = region(&*r);
   assert_eq!(nearest::view::<Lst<Word>>(copy.as_bytes().unwrap()).map(|l| l.items.len()), Ok(9));
 }

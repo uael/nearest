@@ -1,4 +1,4 @@
-//! `into` is for plain data: a pointer's parameter takes a builder of its target.
+//! `into` is for plain data: a pointer's parameter takes a builder of its pointee.
 use nearest::flat;
 
 #[flat]

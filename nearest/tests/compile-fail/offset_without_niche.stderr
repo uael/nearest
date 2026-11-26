@@ -23,22 +23,8 @@ note: erroneous constant encountered
   | |   };
   | |___^
 
-note: erroneous constant encountered
- --> $CARGO/puns-$VERSION/src/lib.rs
+note: the above error was encountered while instantiating `fn nearest::near::offset::<Wide>`
+ --> src/flat.rs
   |
-  |     let layout = Layout::scalar::<T>(T::SPEC).identified(T::ID);
-  |                                      ^^^^^^^
-
-note: erroneous constant encountered
- --> $CARGO/puns-$VERSION/src/std_enums.rs
-  |
-  |   const LAYOUT: Layout = if T::LAYOUT.is_never() {
-  |                             ^^^^^^^^^
-
-note: erroneous constant encountered
-  --> tests/compile-fail/offset_without_niche.rs:18:1
-   |
-18 | #[flat]
-   | ^^^^^^^
-   |
-   = note: this note originates in the derive macro `::nearest::puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)
+  |     offset::<O>();
+  |     ^^^^^^^^^^^^^

@@ -1,24 +1,24 @@
-//! The integration tests, with every region on the heap; `inline.rs` runs them again with
-//! inline storage.
+//! The integration tests, with every region in the global allocator; `user_alloc.rs` runs them
+//! again with an allocator written there.
 #![expect(clippy::many_single_char_names, reason = "short names for regions and models")]
 
-/// The storage of every region: the heap.
-type Store = nearest::Heap;
+/// The allocator of every region: the global one.
+type Store = std::alloc::Global;
 
 include!("common/integration.rs");
 
 // ---------------------------------------------------------------------------------------------
-// The heap
+// The global allocator
 
-/// The buffer does not move until the region holds more than its capacity.
+/// The block does not move until the region holds more than was reserved.
 #[test]
-fn with_capacity_reserves_up_front() {
-  let mut r = Region::new_in(nearest::Heap::with_capacity(4096), Lst::<u32>::new([0]));
+fn reserve_makes_room_up_front() {
+  let mut r = nearest::Region::new(Lst::<u32>::new([0]));
+  r.reserve(4096);
   let root = std::ptr::from_ref(&*r);
   for i in 1..200 {
     r.edit().items().push(i);
   }
   assert!(r.byte_len() <= 4096 && std::ptr::eq(std::ptr::from_ref(&*r), root));
   assert!(r.items.iter().copied().eq(0..200));
-  assert_eq!(Region::new_in(nearest::Heap::with_capacity(0), &*r), r);
 }

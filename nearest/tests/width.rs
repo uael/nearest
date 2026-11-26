@@ -3,13 +3,34 @@
 //! generic over the width; the limit a width sets; mixed widths; byte orders.
 
 use std::{
+  mem::MaybeUninit,
   num::NonZero,
   panic::{AssertUnwindSafe, catch_unwind},
 };
 
 use nearest::{
-  Edit, Error, Heap, Inline, Near, Offset, Pending, Region, flat, puns::layout::Endian,
+  Edit, Error, Fixed, Near, Offset, Region, flat,
+  puns::{Error::Validity, Pun, layout::Endian, num},
 };
+
+/// The byte order of an offset, which its layout says, as the tests read it.
+trait Ordered: Offset {
+  const ENDIAN: Endian;
+}
+
+macro_rules! ordered {
+  ($($offset:ty: $endian:ident;)*) => {$(
+    impl Ordered for $offset {
+      const ENDIAN: Endian = Endian::$endian;
+    }
+  )*};
+}
+ordered! {
+  i16: NATIVE; i32: NATIVE; i64: NATIVE;
+  num::i16le: Little; num::i32le: Little; num::i64le: Little;
+  num::i16be: Big; num::i32be: Big; num::i64be: Big;
+  Le16: Little; Le32: Little; Le64: Little; Be16: Big; Be32: Big; Be64: Big;
+}
 
 #[flat]
 #[derive(Debug, PartialEq)]
@@ -89,10 +110,10 @@ const fn bytes_of<O: Offset>(o: &O) -> &[u8] {
 }
 
 /// The contract of `Offset`, on values: the bytes are the integer in two's complement in the byte
-/// order `ENDIAN` says, which `to_isize` reads; a round trip within `LIMIT`; zero is the zero
-/// bytes and nothing else is; the `NonZero` is the same bytes, and `None` of it is zero. This is
-/// what `puns` relies on when it reads a pointer of one offset as a pointer of another.
-fn contract<O: Offset>() {
+/// order that its layout says, which `to_isize` reads; a round trip within `LIMIT`; zero is the
+/// zero bytes and nothing else is; the `NonZero` is the same bytes, and `None` of it is zero. This
+/// is what `puns` relies on when it reads a pointer of one offset as a pointer of another.
+fn contract<O: Ordered>() {
   let w = size_of::<O>();
   let limit = i64::try_from(O::LIMIT).unwrap();
   let (least, most) = (i64::MIN >> (64 - 8 * w), i64::MAX >> (64 - 8 * w));
@@ -173,8 +194,9 @@ fn edit<O: Offset>() {
   let compact = Region::new(&*r);
   assert!(compact.byte_len() < r.byte_len());
   assert_eq!(compact, r);
-  // Into another region, of another storage: a copy.
-  let mut other = Region::new_in(Inline::<4096>::default(), leaf::<O>(0, ""));
+  // Into another region, of another allocator: a copy.
+  let mut bytes = vec![MaybeUninit::uninit(); 4096];
+  let mut other = Region::new_in(leaf::<O>(0, ""), Fixed::new(&mut bytes));
   let e = r.edit();
   let moved = e.kids().remove(0);
   other.edit().kids().push(moved);
@@ -252,27 +274,30 @@ fn bytes<O: Offset>() {
   let image = compact.as_bytes().unwrap();
   assert_eq!(Region::<Tree<O>>::from_bytes(image), Ok(Region::new(&*r)));
   assert_eq!(nearest::view::<Tree<O>>(image), Ok(&*r));
-  let mut scratch = vec![Pending::default(); image.len() / size_of::<O>().min(4)];
-  assert_eq!(nearest::view_with::<Tree<O>>(image, &mut scratch), Ok(&*r));
-  assert_eq!(Region::<Tree<O>>::from_bytes_with(image, &mut []).err(), Some(Error::ScratchFull));
-  // Cut, padded, or a pointer one byte off.
+  // Cut, padded (bytes that no pointer reaches), or a pointer one byte off.
   let cut = &image[..image.len() - 1];
   assert!(matches!(Region::<Tree<O>>::from_bytes(cut), Err(Error::Invalid(_))));
   let mut long = image.to_vec();
   long.push(0);
-  assert_eq!(Region::<Tree<O>>::from_bytes(&long).err(), Some(Error::Invalid(image.len())));
+  assert_eq!(Region::<Tree<O>>::from_bytes(&long), Ok(Region::new(&*r)));
   let name = std::mem::offset_of!(Tree<O>, name);
   for n in [1, -1] {
     let mut bad = image.to_vec();
     put::<O>(&mut bad, name, int::<O>(image, name) + n);
-    assert_eq!(Region::<Tree<O>>::from_bytes(&bad).err(), Some(Error::Invalid(name)));
+    assert_eq!(
+      Region::<Tree<O>>::from_bytes(&bad).err(),
+      Some(Error::Invalid(Validity { at: name }))
+    );
   }
   // A negative length is as bad as one too long.
   let text = Region::<Near<str, O>>::new("hi");
   let mut bad = text.as_bytes().unwrap().to_vec();
   let w = size_of::<O>();
   put::<O>(&mut bad, w, -1);
-  assert_eq!(Region::<Near<str, O>>::from_bytes(&bad).err(), Some(Error::Invalid(w)));
+  assert_eq!(
+    Region::<Near<str, O>>::from_bytes(&bad).err(),
+    Some(Error::Invalid(Validity { at: 0 }))
+  );
 }
 
 /// Each test with each offset. Under Miri, the tests that build and check regions run with seven
@@ -308,48 +333,48 @@ widths!(sizes, contract, build_and_read, edit, helpers, layout, bytes);
 // ---------------------------------------------------------------------------------------------
 // Offsets of the user's: the byte order of a region's own integers
 
-/// An integer of a given byte order, whatever the target's, and the same without zero.
+/// An integer of a given byte order, whatever the target's, and the same without zero: around an
+/// offset of `puns::num`, whose layout says its byte order, which is then the layout of the offset.
 macro_rules! offsets {
-  ($($name:ident $non_zero:ident: $int:ty, $to:ident, $from:ident, $endian:expr;)*) => {$(
+  ($($name:ident $non_zero:ident: $int:ty;)*) => {$(
     #[flat]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     #[repr(transparent)]
     struct $name($int);
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Pun)]
+    #[pun(crate = nearest::puns)]
     #[repr(transparent)]
-    struct $non_zero(NonZero<$int>);
+    struct $non_zero(<$int as Offset>::NonZero);
 
     impl From<$non_zero> for $name {
       fn from(n: $non_zero) -> Self {
-        Self(n.0.get())
+        Self(n.0.into())
       }
     }
 
-    // SAFETY: an integer whose bytes are those of the integer in the given byte order: any
-    // bit pattern, a round trip within its range, zero is the zero bytes (swapping keeps it);
-    // `$non_zero` is the same bytes without zero, a `#[repr(transparent)]` `NonZero`, so
-    // `Option` of it is its size with `None` zero; `From` keeps the bytes.
-    #[expect(clippy::cast_possible_truncation, reason = "values within a region fit both")]
+    // SAFETY: the offset that it holds, whose layout is its own (`repr(transparent)`): any bit
+    // pattern, a round trip within its range, zero is the zero bytes; `$non_zero` is the same
+    // bytes without zero, its `NonZero` in a `#[repr(transparent)]` struct, so `Option` of it is
+    // its size with `None` zero; `From` keeps the bytes.
     unsafe impl Offset for $name {
       type NonZero = $non_zero;
-      const ENDIAN: Endian = $endian;
       fn from_isize(n: isize) -> Self {
-        Self((n as $int).$to())
+        Self(<$int>::from_isize(n))
       }
       fn to_isize(self) -> isize {
-        <$int>::$from(self.0) as isize
+        self.0.to_isize()
       }
     }
   )*};
 }
 offsets! {
-  Le16 NonZeroLe16: i16, to_le, from_le, Endian::Little;
-  Le32 NonZeroLe32: i32, to_le, from_le, Endian::Little;
-  Le64 NonZeroLe64: i64, to_le, from_le, Endian::Little;
-  Be16 NonZeroBe16: i16, to_be, from_be, Endian::Big;
-  Be32 NonZeroBe32: i32, to_be, from_be, Endian::Big;
-  Be64 NonZeroBe64: i64, to_be, from_be, Endian::Big;
+  Le16 NonZeroLe16: num::i16le;
+  Le32 NonZeroLe32: num::i32le;
+  Le64 NonZeroLe64: num::i64le;
+  Be16 NonZeroBe16: num::i16be;
+  Be32 NonZeroBe32: num::i32be;
+  Be64 NonZeroBe64: num::i64be;
 }
 
 /// The bytes of a region are the same on every target with offsets of a fixed byte order: a
@@ -406,9 +431,12 @@ fn the_size_limit_panics_and_leaves_a_valid_region() {
   assert_eq!(compact[..], r[..]);
 }
 
+/// A block larger than the limit, as `Fixed` gives the whole buffer: the region uses none of it
+/// past the limit.
 #[test]
-fn capacity_past_the_size_limit_is_not_used() {
-  let mut r = Region::<Small>::new_in(Heap::with_capacity(2 * LIMIT), Near::from_iter([0u32]));
+fn a_block_past_the_size_limit_is_not_used() {
+  let mut bytes = vec![MaybeUninit::uninit(); 2 * LIMIT];
+  let mut r = Region::<Small, _>::new_in(Near::from_iter([0u32]), Fixed::new(&mut bytes));
   let full = catch_unwind(AssertUnwindSafe(|| {
     for i in 0..LIMIT as u32 {
       r.edit().push(i);
@@ -423,7 +451,10 @@ fn bytes_past_the_size_limit_are_invalid() {
   let mut long = r.as_bytes().unwrap().to_vec();
   assert_eq!(Region::<Small>::from_bytes(&long).map(|r| r.to_vec()), Ok(vec![1, 2]));
   long.resize(LIMIT + 8, 0);
-  assert_eq!(Region::<Small>::from_bytes(&long).err(), Some(Error::Invalid(0)));
+  assert_eq!(
+    Region::<Small>::from_bytes(&long).err(),
+    Some(Error::Invalid(nearest::puns::Error::Size))
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -473,17 +504,14 @@ struct Big {
 #[ignore = "builds a region of more than 2 GiB; CI runs it in release"]
 fn a_region_past_2_gib() {
   let n = (1usize << 31) + 1000;
-  let mut r = Region::new_in(
-    Heap::with_capacity(n + 4096),
-    Big::new(Near::from_iter(std::iter::repeat_n(7u8, n)), "end"),
-  );
+  let mut r = Region::new(Big::new(Near::from_iter(std::iter::repeat_n(7u8, n)), "end"));
   assert!(r.byte_len() > n);
   assert_eq!((r.data.len(), r.data[n - 1], &*r.tail), (n, 7, "end"));
   let e = r.edit();
   e.data()[n - 1] = 8;
   e.tail().set("moved");
   assert_eq!((r.data[n - 1], &*r.tail), (8, "moved"));
-  let copy = Region::new_in(Heap::with_capacity(r.byte_len()), &*r);
+  let copy = Region::new(&*r);
   let bytes = copy.as_bytes().unwrap();
   let big = nearest::view::<Big>(bytes).unwrap();
   assert_eq!((big.data.len(), big.data[n - 1], &*big.tail), (n, 8, "moved"));
@@ -509,27 +537,31 @@ fn integers_wider_than_isize_are_invalid() {
   let bytes = r.as_bytes().unwrap();
   assert_eq!(bytes, [&8i64.to_ne_bytes()[..], &[7]].concat());
   let far = with_i64(bytes, 0, HIGH + 8);
-  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&far).err(), Some(Error::Invalid(0)));
-  assert_eq!(view_in_words::<Near<u8, i64>>(&far), Err(Error::Invalid(0)));
+  let refused = Error::Invalid(Validity { at: 0 });
+  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&far).err(), Some(refused));
+  assert_eq!(view_in_words::<Near<u8, i64>>(&far), Err(refused));
   assert_eq!(view_in_words::<Near<u8, i64>>(bytes), Ok(()));
-  // The length and the capacity of a list, and the length of a text.
+  // The length of a list, and of a text. A capacity is at least the length, and a region does
+  // not read the capacity of a loaded list, so a large one is valid.
   let list = Region::<Near<[u8], i64>>::new(Near::from_iter([1u8, 2]));
   let bytes = list.as_bytes().unwrap();
   let len = usize::try_from(i64::from_ne_bytes(bytes[..8].try_into().unwrap())).unwrap();
   assert_eq!(Region::<Near<[u8], i64>>::from_bytes(bytes).map(|r| r.len()), Ok(2));
-  for at in [len, len - 8] {
-    let bad = with_i64(bytes, at, HIGH + 2);
-    assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&bad), Err(Error::Invalid(_))), "{at}");
-  }
+  let bad = with_i64(bytes, len, HIGH + 2);
+  assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&bad), Err(Error::Invalid(_))));
+  let room = with_i64(bytes, len - 8, HIGH + 2);
+  let mut loaded = Region::<Near<[u8], i64>>::from_bytes(&room).unwrap();
+  loaded.edit().push(3); // moves the list: its capacity is not trusted
+  assert_eq!(loaded[..], [1, 2, 3]);
   let both = with_i64(&with_i64(bytes, len, HIGH + 2), len - 8, HIGH + 2);
   assert!(matches!(Region::<Near<[u8], i64>>::from_bytes(&both), Err(Error::Invalid(_))));
   let text = Region::<Near<str, i64>>::new("hi");
   let bytes = text.as_bytes().unwrap();
   let bad = with_i64(bytes, 8, HIGH + 2);
-  assert_eq!(Region::<Near<str, i64>>::from_bytes(&bad).err(), Some(Error::Invalid(8)));
+  assert_eq!(Region::<Near<str, i64>>::from_bytes(&bad).err(), Some(refused));
   // Nor any `i64` that is not what `from_isize` makes: the most negative one.
   let low = with_i64(r.as_bytes().unwrap(), 0, i64::MIN);
-  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&low).err(), Some(Error::Invalid(0)));
+  assert_eq!(Region::<Near<u8, i64>>::from_bytes(&low).err(), Some(refused));
 }
 
 /// `nearest::view` of `bytes`, copied to words: an address aligned as a region is.
@@ -550,7 +582,8 @@ fn view_in_words<T: nearest::Flat>(bytes: &[u8]) -> Result<(), Error> {
 #[repr(transparent)]
 struct Lenient(i32);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Pun)]
+#[pun(crate = nearest::puns)]
 #[repr(transparent)]
 struct NonZeroLenient(NonZero<i32>);
 
@@ -565,7 +598,6 @@ impl From<NonZeroLenient> for Lenient {
 unsafe impl Offset for Lenient {
   type NonZero = NonZeroLenient;
   const LIMIT: u64 = 1 << 20;
-  const ENDIAN: Endian = Endian::NATIVE;
   fn from_isize(n: isize) -> Self {
     Self(i32::try_from(n).unwrap())
   }
@@ -582,13 +614,14 @@ fn offsets_that_from_isize_does_not_make_are_invalid() {
   assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(bytes).map(|r| **r), Ok(7));
   let mut far = bytes.to_vec();
   far[..4].copy_from_slice(&((1 << 20) + 4i32).to_ne_bytes()); // past `LIMIT`
-  assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(&far).err(), Some(Error::Invalid(0)));
+  let refused = Some(Error::Invalid(Validity { at: 0 }));
+  assert_eq!(Region::<Near<u8, Lenient>>::from_bytes(&far).err(), refused);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Offsets of the same width and byte order read each other's regions
 
-/// The image of a `Tree<A>` read as a `Tree<B>` with `nearest::view`: the same targets, since both
+/// The image of a `Tree<A>` read as a `Tree<B>` with `nearest::view`: the same pointees, since both
 /// offsets are the same two's complement integer of the same bytes (the contract of `Offset`).
 fn read_as<A: Offset, B: Offset>() {
   let r = tree::<A>();

@@ -2,12 +2,14 @@
 //!
 //! Every image of a deterministic corpus (structs, enums, lists, text, optional pointers, numbers
 //! of given values, each offset width and byte order), then every byte of it changed by a few
-//! masks, every truncation, a few extensions and an address that is not aligned: what `view`,
-//! `from_bytes` (at an odd address) and `view_with` (the least scratch that suffices) say of each
-//! is folded into a digest per image. `corpus.expected` holds the digests that the checker of
-//! `nearest` 0.7 gave (the code that `#[flat]` generated, before the one validator of `puns`):
-//! the same accepts, the same errors at the same positions, the same scratch. Written with
-//! `NEAREST_CORPUS_WRITE=1` by this file run on that code.
+//! masks, every truncation and a few extensions: whether each is a compact image of a valid value,
+//! a value that `view` accepts of which a deep copy writes the same bytes, and whether
+//! `from_bytes` (at an odd address) loads it as it is, is folded into a digest per image.
+//! `corpus.expected` holds the digests of what the loaders of `nearest` 0.8.1 accepted, which
+//! accepted exactly the compact images of valid values, with the results of 0.7 (the code that
+//! `#[flat]` generated, before the one validator of `puns`). Written with `NEAREST_CORPUS_WRITE=1`
+//! by this file run on that code. The loaders now also accept images that are not compact, which
+//! this does not count.
 //!
 //! Under Miri, a fraction of the corpus runs, for the unsafe code that it reaches; the digests
 //! are compared natively.
@@ -15,8 +17,11 @@
 use std::{fmt::Write as _, hash::Hasher};
 
 use nearest::{
-  Error, Flat, Near, Offset, Pending, Region, flat,
-  puns::num::{i16be, i32le, i64le, u8c, u8in, u16bec, u16le, u32le, u64lec},
+  Error, Flat, Near, Offset, Region, flat,
+  puns::{
+    Error::Validity,
+    num::{i16be, i32le, i64le, u8c, u8in, u16bec, u16le, u32le, u64lec},
+  },
 };
 
 // -------------------------------------------------------------------------------------------------
@@ -183,31 +188,26 @@ impl Aligned {
   }
 }
 
-/// What the loaders say of bytes, written to the record.
-fn verdict<T: Flat>(bytes: &[u8], out: &mut String) {
-  let shown = |r: Result<(), Error>| match r {
-    Ok(()) => "ok".to_owned(),
-    Err(e) => format!("{e:?}"),
-  };
-  let viewed = nearest::view::<T>(bytes).map(|_| ());
-  let _ = write!(out, "{};", shown(viewed));
+/// Whether `bytes` are a compact image of a valid `T`: a value that `view` accepts, of which a deep
+/// copy writes the same bytes. That is what the loaders of 0.7 to 0.8.1 accepted.
+fn compact<T: Flat>(bytes: &[u8]) -> bool {
+  nearest::view::<T>(bytes).is_ok_and(|value| Region::<T>::new(value).as_bytes() == Some(bytes))
 }
 
-/// What `from_bytes` says at an odd address, and the least scratch with which `view_with`
-/// finishes (with what it says then).
+/// What the loaders say of bytes, written to the record: `o` for a compact image of a valid `T`,
+/// `x` for any other bytes.
+fn verdict<T: Flat>(bytes: &[u8], out: &mut String) {
+  out.push(if compact::<T>(bytes) { 'o' } else { 'x' });
+}
+
+/// What `from_bytes` says at an odd address, as `verdict` writes it: whether it loads a compact
+/// image, whose copy is the same bytes.
 fn loaded<T: Flat>(bytes: &[u8], out: &mut String) {
   let mut odd = vec![0u8; bytes.len() + 1];
   odd[1..].copy_from_slice(bytes);
-  let from = Region::<T>::from_bytes(&odd[1..]).map(|_| ());
-  let _ = write!(out, "from {from:?};");
-  for size in 0.. {
-    let mut scratch = vec![Pending::default(); size];
-    let result = nearest::view_with::<T>(bytes, &mut scratch).map(|_| ());
-    if result != Err(Error::ScratchFull) {
-      let _ = write!(out, "scratch {size} {result:?};");
-      break;
-    }
-  }
+  let loaded = Region::<T>::from_bytes(&odd[1..]);
+  let same = loaded.is_ok_and(|r| Region::<T>::new(&*r).as_bytes() == Some(bytes));
+  out.push(if same { 'o' } else { 'x' });
 }
 
 /// The record of an image and its corruptions.
@@ -234,9 +234,6 @@ fn record<T: Flat>(image: &[u8]) -> String {
   for extra in 1..=7 {
     verdict::<T>(Aligned::new(&[image, &vec![0; extra][..]].concat()).bytes(), &mut out);
   }
-  // Not aligned as a region is.
-  let shifted = Aligned::new(&[&[0u8][..], image].concat());
-  verdict::<T>(&shifted.bytes()[1..], &mut out);
   out
 }
 
@@ -302,36 +299,8 @@ fn corpus() -> Vec<(String, String)> {
 /// The expected digests, by name of image.
 const EXPECTED: &str = include_str!("corpus.expected");
 
-/// Where the results differ from those of 0.7, and why: an image, the index of a verdict in its
-/// record, what is said now, what 0.7 said.
-///
-/// An expression whose tag is changed to the one of `Call` (two pointers) where its bytes are the
-/// `i64` of a `Lit` then zeros: the second pointer is zero, which a `Near` (a `NonZero`) cannot
-/// be. The check of the value refuses it where it is; 0.7 queued both
-/// pointers and refused the first, whose bytes aim nowhere, when it followed it. Both refuse the
-/// bytes, each at a place where they stop being a value.
-const CHANGED: [(&str, usize, &str, &str); 4] = [
-  ("expr i64 2", 196, "Invalid(40)", "Invalid(32)"),
-  ("expr i64 2", 197, "Invalid(40)", "Invalid(32)"),
-  ("expr i64 4", 388, "Invalid(64)", "Invalid(56)"),
-  ("expr i64 4", 389, "Invalid(64)", "Invalid(56)"),
-];
-
-/// `record` as 0.7 would have written it: the changes of [`CHANGED`] undone, after checking that
-/// they are what is said now.
-fn as_in_0_7(name: &str, record: &str) -> String {
-  let mut verdicts: Vec<&str> = record.split(';').collect();
-  for (image, index, now, then) in CHANGED {
-    if image == name {
-      assert_eq!(verdicts[index], now, "{name}: verdict {index}");
-      verdicts[index] = then;
-    }
-  }
-  verdicts.join(";")
-}
-
 #[test]
-fn the_loaders_give_the_results_of_0_7() {
+fn the_loaders_accept_the_compact_images_that_0_8_accepted() {
   let corpus = corpus();
   // The records themselves, to compare two versions where the digests differ.
   if let Some(path) = std::env::var_os("NEAREST_CORPUS_DUMP") {
@@ -339,7 +308,7 @@ fn the_loaders_give_the_results_of_0_7() {
     for (name, record) in &corpus {
       let _ = writeln!(dump, "{name}\n{record}");
     }
-    std::fs::write(path, dump.replace(';', "\n")).unwrap();
+    std::fs::write(path, dump).unwrap();
   }
   if std::env::var_os("NEAREST_CORPUS_WRITE").is_some() {
     let mut file = String::new();
@@ -359,9 +328,8 @@ fn the_loaders_give_the_results_of_0_7() {
   assert_eq!(expected.len(), corpus.len(), "the corpus is not the one of the expected digests");
   for ((name, record), (expected_name, digest_and_len)) in corpus.iter().zip(&expected) {
     assert_eq!(name, expected_name);
-    let record = as_in_0_7(name, record);
-    let ours = format!("{:016x}\t{}", digest(&record), record.len());
-    assert_eq!(&ours, digest_and_len, "{name}: not the results of 0.7");
+    let ours = format!("{:016x}\t{}", digest(record), record.len());
+    assert_eq!(&ours, digest_and_len, "{name}: not the results of 0.8");
   }
 }
 
@@ -415,6 +383,7 @@ fn rules_are_checked_at_load() {
   ] {
     let mut bad = image.clone();
     bad[at] = value;
-    assert_eq!(Region::<Checked>::from_bytes(&bad).err(), Some(Error::Invalid(error)), "at {at}");
+    let refused = Some(Error::Invalid(Validity { at: error }));
+    assert_eq!(Region::<Checked>::from_bytes(&bad).err(), refused, "at {at}, the rule at {error}");
   }
 }

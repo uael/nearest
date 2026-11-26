@@ -2,7 +2,7 @@
 //!
 //! A [`Region<T>`] keeps a `T` and everything it points to in one buffer. A pointer is a
 //! [`Near<T>`]: 4 bytes (or 2, or 8: see [Pointer widths](#pointer-widths)) holding the distance
-//! from its own address to its target. So copying the buffer copies the whole value (`Clone` is
+//! from its own address to its pointee. So copying the buffer copies the whole value (`Clone` is
 //! a `memcpy`), reading is plain `&T` with `Near` dereferencing like `Box`, and the bytes mean
 //! the same at any address, so a region can be written out and read back.
 //!
@@ -39,11 +39,11 @@
 //! assert_eq!((r.id, r.insts.len(), &r.insts[0].args[..]), (7, 1, &[1, 2, 3][..]));
 //! assert!(r.next.is_none());
 //!
-//! // Save and load. A compact region is its own image; loading checks the bytes.
+//! // Save and load. The bytes of a region are its image; loading checks them.
 //! let bytes = r.as_bytes().unwrap();
 //! let copy = Region::<Block>::from_bytes(bytes)?;
 //! assert_eq!(copy.insts[0].op, 9);
-//! // A memory-mapped file, or any slice aligned as a region is (as a `u64`), is read in place.
+//! // A memory-mapped file, or any slice aligned as a region is (to 8 bytes), is read in place.
 //! let block: &Block = nearest::view(bytes)?;
 //! assert_eq!(block.id, 7);
 //! # Ok::<(), nearest::Error>(())
@@ -137,7 +137,7 @@
 //! handle of a `#[flat]` type gives a `Pin<&mut T>` in which several places are borrowed
 //! together, for reading, writing plain data and assigning values without pointers; nothing
 //! is pushed, built or moved through it. `project()` returns the fields, pinned;
-//! [`Near::as_pin_mut`] goes to the target of a pointer and `iter_pin_mut` to the elements of a
+//! [`Near::as_pin_mut`] goes to the pointee of a pointer and `iter_pin_mut` to the elements of a
 //! list.
 //!
 //! ```
@@ -174,7 +174,7 @@
 //! too. Each field picks its width, and a type can take it as a parameter. The pointers of the
 //! root bound the region, and a pointer may only lead to types whose pointers are at least as
 //! wide (checked at compile time), so every distance fits. Building or editing past the bound
-//! panics, as growing past a storage does, and bytes longer than it do not load.
+//! panics, as growing past what the allocator gives does, and bytes longer than it do not load.
 //!
 //! `i16`, `i32` (the default) and `i64` are in the byte order of the machine, as are the numbers
 //! of Rust (`u32`, `f64`, ...): the bytes of a region of them are those of the machine that wrote
@@ -202,14 +202,14 @@
 //! # One version read as another
 //!
 //! Every `#[flat]` type is also a [`puns::Pun`] type: its layout and its valid values are known
-//! at compile time. [`Near`] is a scalar that a pun never makes ([`puns::layout::Spec::never`]):
-//! `puns` reads a value that holds one as plain data, and never makes one, since where a pointer
-//! aims is not a property of its bytes. The loaders check everything but the pointers with
-//! `puns`, and the pointers themselves. So the bytes saved by one version of a program load as
-//! the next, in place, when they are a value of it:
+//! at compile time. A [`Near`] holds an eager aim of `puns` ([`puns::layout::Aim`]): its offset,
+//! and its pointee at the address of the pointer plus the offset. The loaders are the check of
+//! `puns` ([`puns::from_head`]), which checks a value that holds one with its pointee, and the
+//! pointees of the pointee. So the bytes saved by one version of a program load as the next, in
+//! place, when they are a value of it:
 //!
 //! ```
-//! use nearest::{Error, Near, Region, flat};
+//! use nearest::{Error, Near, Region, flat, puns::Error::Validity};
 //!
 //! #[flat]
 //! enum Expr { Lit(i64), Neg(Near<Expr>), Add(Near<Expr>, Near<Expr>) }
@@ -233,7 +233,8 @@
 //! assert_eq!(eval(new), -1);
 //! // The other way, a `Mul` is no `Expr`: refused where its tag is.
 //! let mul = Region::new(NewExpr::mul(NewExpr::Lit(2), NewExpr::Lit(3)));
-//! assert_eq!(nearest::view::<Expr>(mul.as_bytes().unwrap()).err(), Some(Error::Invalid(0)));
+//! let refused = Some(Error::Invalid(Validity { at: 0 }));
+//! assert_eq!(nearest::view::<Expr>(mul.as_bytes().unwrap()).err(), refused);
 //! ```
 //!
 //! What `#[pun(..)]` says of a type, `valid(..)` of a field and `assert(..)` of a struct, are
@@ -244,7 +245,7 @@
 //! by [`Region::as_bytes`] and refused when loaded.
 //!
 //! ```
-//! use nearest::{Error, Region, flat};
+//! use nearest::{Error, Region, flat, puns::Error::Validity};
 //!
 //! #[flat]
 //! #[pun(assert(lo <= hi))]
@@ -252,36 +253,56 @@
 //!
 //! let backwards = Region::new(Span::new(2, 1)); // built: rules are not checked here
 //! let bytes = backwards.as_bytes().unwrap();
-//! assert_eq!(Region::<Span>::from_bytes(bytes).err(), Some(Error::Invalid(0)));
+//! assert_eq!(Region::<Span>::from_bytes(bytes).err(), Some(Error::Invalid(Validity { at: 0 })));
 //! assert!(Region::<Span>::from_bytes(Region::new(Span::new(1, 2)).as_bytes().unwrap()).is_ok());
 //! ```
 //!
 //! # Bytes
 //!
-//! [`Region::as_bytes`] returns the compact image, borrowed: the bytes a deep copy writes, which
-//! a region is until it is edited. Save an edited region by copying it first:
-//! `Region::new(&*r).as_bytes()`. [`Region::from_bytes`] checks and copies bytes; [`view`]
-//! checks a slice aligned as a region is (as a `u64`: 8 bytes on x86-64, 4 on `i686`) and reads
-//! it in place. Checking accepts exactly the compact images
-//! of valid values, in one pass, without recursion or panics; an [`Error`] says where the
-//! bytes went wrong, or that a valid image does not fit the storage. Checking keeps the
-//! pointers still to visit in memory that grows with the nesting of the data: [`view_with`] and
-//! [`Region::from_bytes_with`] take it from the caller, as a slice of [`Pending`]
-//! (`bytes.len() / 4` entries are always enough, `/ 2` with 2-byte pointers), and say if it
-//! runs out. For bytes that are
-//! trusted, or checked by the caller, [`Region::from_bytes_unchecked`] and [`view_unchecked`]
-//! skip the check and are `unsafe`. The bytes hold the layout of the target, its values in the byte order of their
-//! types, and distances and lengths as their [`Offset`] writes them (native-endian for `i16`,
-//! `i32` and `i64`; as their names say for the offsets of [`puns::num`]).
+//! [`Region::as_bytes`] returns the bytes in use, borrowed: the value, what it reaches, and what
+//! edits left behind, which no pointer reaches. It is `None` once a `&mut` to a type with padding
+//! was handed out (`*e.field() = ..` of such a type, a list of them as a slice, or a pinned view),
+//! since an assignment writes the padding of a value as uninitialized bytes. [`view`] checks bytes
+//! and reads them in place; it is `const`. [`Region::from_bytes`] copies bytes into a region and
+//! checks them there, and keeps them as they are: edits append after them. Checking accepts the
+//! images of valid values whose pointees are in the order of a copy, with bytes that no pointer
+//! reaches between them, at any depth, without recursion with the depth of the data, panics or
+//! memory from the caller: the pointees form a tree, which editing a loaded region relies on.
+//! Edits may move pointees out of that order, so before saving bytes that must load back as a
+//! region, check them, or save a copy, `Region::new(&*r)`, which is in that order and holds only
+//! what is reachable:
+//!
+//! ```
+//! use nearest::{Near, Region, flat};
+//!
+//! #[flat]
+//! struct Msg { id: u8, body: Near<str>, tags: Near<[u8]> }
+//!
+//! let mut r = Region::new(Msg::new(1, "hi", [1]));
+//! r.edit().body().set("hello"); // after the tags: out of the order of a copy
+//! let bytes = match r.as_bytes() {
+//!   Some(bytes) if nearest::view::<Msg>(bytes).is_ok() => bytes.to_vec(),
+//!   _ => Region::new(&*r).as_bytes().unwrap().to_vec(),
+//! };
+//! assert_eq!(&*Region::<Msg>::from_bytes(&bytes)?.body, "hello");
+//! # Ok::<(), nearest::Error>(())
+//! ```
+//!
+//! An [`Error`] says what `puns` found, or that the allocator did not give a block for the bytes.
+//! For bytes that are trusted, or checked by the caller, [`Region::from_bytes_unchecked_in`] and
+//! [`view_unchecked`] skip the check and are `unsafe`. The bytes hold the layout of the target,
+//! its values in the byte order of their types, and distances and lengths as their [`Offset`]
+//! writes them (native-endian for `i16`, `i32` and `i64`; as their names say for the offsets of
+//! [`puns::num`]).
 //!
 //! # The `serde` feature
 //!
 //! With the opt-in cargo feature `serde` (which turns on `alloc`), a [`Region`] is `Serialize`
-//! and `Deserialize`, as its bytes: it is written with `serialize_bytes` ([`Region::as_bytes`],
-//! or the bytes of a compact copy if the region was edited), and read back through
-//! [`Region::from_bytes`], so the bytes are checked and an [`Error`] becomes the format's error.
-//! Formats that have no bytes, such as JSON, write a sequence of numbers, which is read back
-//! too. Any storage with `Default` can be read into. The bytes are the same as `as_bytes` gives:
+//! and `Deserialize`, as its bytes: it is written with `serialize_bytes` ([`Region::as_bytes`]
+//! if they load back as the region, or else the bytes of a copy), and read back through
+//! [`Region::from_bytes_in`], so the bytes are checked and an [`Error`] becomes the format's
+//! error. Formats that have no bytes, such as JSON, write a sequence of numbers, which is read
+//! back too. Any allocator with `Default` can be read into. The bytes are the same as `as_bytes` gives:
 //! with the layout of the target, and native-endian unless the types and the [`Offset`]s fix
 //! a byte order, so they suit caches and messages between builds of the same program, and a
 //! format shared across architectures only with types of a fixed byte order.
@@ -299,7 +320,7 @@
 //! struct Msg { id: u32, body: Near<str> }
 //!
 //! let mut r = Region::new(Msg::new(1, "hi"));
-//! r.edit().body().set("hello"); // edited: written as a compact copy
+//! r.edit().body().set("hello"); // edited
 //! let json = serde_json::to_string(&r).unwrap();
 //! let back: Region<Msg> = serde_json::from_str(&json).unwrap();
 //! assert_eq!(back, r);
@@ -308,43 +329,43 @@
 //! # }
 //! ```
 //!
-//! # Storage
+//! # Allocators
 //!
-//! A region keeps its buffer in a [`Storage`]: `Region<T>` is `Region<T, Heap>`, on the [`Heap`],
-//! which grows as needed ([`Heap::with_capacity`] makes room up front). [`Inline<N>`] keeps it in
-//! `N` bytes inside the `Region` value, with no heap; growing past them panics, as growing past
-//! what the pointers reach does. A storage of your own, such as an arena or a memory-mapped file,
-//! implements the `unsafe` trait [`Storage`]: two accessors to its memory, the second of which
-//! grows it if it can. A region in any storage is built with [`Region::new_in`], or with
-//! [`Region::from_bytes`] when the storage has a `Default`; everything else is the same. A storage
-//! may move with its region; a region cannot move while something borrows it, and every edit starts
-//! from where it is.
+//! A region keeps its buffer in one block of an [`Allocator`](core::alloc::Allocator), aligned to
+//! 8 bytes on every target: `Region<T>` is `Region<T, Global>`, the global allocator, and
+//! [`Region::reserve`] makes room up front. [`Fixed`] gives a buffer of your own, on the stack or
+//! static, with no heap; growing past it panics, as growing past what the pointers reach does. A
+//! region in any allocator is built with [`Region::new_in`], and loaded with
+//! [`Region::from_bytes_in`]; everything else is the same. The block does not move with the
+//! region.
 //!
 //! ```
-//! use nearest::{Inline, Near, Region, flat};
+//! use core::mem::MaybeUninit;
+//!
+//! use nearest::{Fixed, Near, Region, flat};
 //!
 //! #[flat]
 //! #[derive(Debug, PartialEq)]
 //! struct Block { id: u32, insts: Near<[u8]> }
 //!
-//! let mut r = Region::new_in(Inline::<256>::default(), Block::new(0, [1, 2]));
+//! let mut bytes = [MaybeUninit::uninit(); 256];
+//! let mut r = Region::new_in(Block::new(0, [1, 2]), Fixed::new(&mut bytes));
 //! r.edit().insts().push(3);
 //! let moved = r;
 //! assert_eq!(moved.insts[..], [1, 2, 3]);
 //! assert_eq!(*Region::new(&*moved), *moved); // the same value, on the heap
 //! ```
 //!
-//! The default feature `alloc` provides the [`Heap`]. Without it the crate needs no allocator:
-//! a region names its storage (`Region<T, Inline<N>>`), and `from_bytes` and [`view`] are not
-//! available, while [`Region::as_bytes`], [`Region::from_bytes_with`] and [`view_with`], which
-//! take the memory for checking from the caller, are.
+//! The default feature `alloc` provides `Global` as the default. Without it the crate needs no
+//! allocator but the one a region names (`Region<T, Fixed<'_>>`), and loads and views bytes as
+//! with it.
 //!
 //! # Safety model
 //!
 //! - A `Near` has no constructor and is not `Clone`: it only exists inside a region.
 //! - No safe API gives a `&mut T` for a `T` that contains a `Near`; such places are reached
 //!   through handles, which are unsized, so they cannot be swapped or assigned through.
-//! - A region is a tree: builders make fresh targets, `&T` copies, and the only moves are
+//! - A region is a tree: builders make fresh pointees, `&T` copies, and the only moves are
 //!   [`Old`] (used at most once) and list operations. Bytes no longer reachable are never
 //!   written again, so an `Old` stays intact for the whole edit, which it keeps borrowed.
 //! - A handle holds a position, not an address, so it stays valid when the buffer grows; real
@@ -355,29 +376,30 @@
 //!   provenance.
 //!
 //! What [`puns`] makes of a value that holds a `Near` keeps all of this: it reads such a value
-//! as plain data, and never makes one.
+//! as plain data, makes none by value and no `&mut` to one, and makes a reference to one only
+//! once it checked its pointees, which `Deref` then reads.
 //!
-//! Stored types must be no more aligned than a `u64` (the words of a region's memory: 8 bytes on
-//! x86-64, 4 on `i686`), and have a non-zero size and no drop glue (checked at compile time). A region holds at most what the pointers of its root reach (2 GiB with the
-//! default `i32`; see [Pointer widths](#pointer-widths)), or what its storage gives; growing past
-//! that panics.
+//! Stored types must be aligned to at most 8 bytes, on every target, and have a non-zero size and
+//! no drop glue (checked at compile time). A region holds at most what the pointers of its root
+//! reach (2 GiB with the default `i32`; see [Pointer widths](#pointer-widths)), or what its
+//! allocator gives; growing past that panics.
 #![no_std]
 #![deny(missing_docs)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+mod aim;
 mod bytes;
 mod edit;
+mod fixed;
 mod flat;
 mod near;
 mod region;
-mod storage;
 
-#[cfg(feature = "alloc")]
-pub use bytes::view;
-pub use bytes::{Error, Pending, view_unchecked, view_with};
+pub use bytes::{Error, view, view_unchecked};
 pub use edit::{Handle, ListEdit, Old, OptionEdit, Plain, PlainEdit, StrEdit};
+pub use fixed::Fixed;
 pub use flat::{Emit, Flat};
 pub use near::{Near, Offset};
 /// Makes a struct or enum storable in a region.
@@ -393,7 +415,7 @@ pub use near::{Near, Offset};
 ///   ([`Emit`]): `new` for structs with fields, and one function per non-unit enum variant
 ///   named after it in snake case (`project_` for a variant called `Project`), or as
 ///   `#[flat(rename = "name")]` on the variant says. A parameter
-///   for a field written `Near<X>` takes a builder of `X` and allocates the target (a list or
+///   for a field written `Near<X>` takes a builder of `X` and allocates the pointee (a list or
 ///   string builder if `X` is a slice or `str`); one for a field of plain data marked
 ///   `#[flat(into)]` takes `impl Into<FieldType>`;
 /// - for structs with fields, `XInit`, next to `X`: the same builders as the fields of a struct,
@@ -413,10 +435,12 @@ pub use near::{Near, Offset};
 ///   that field's handle, and a variant with several fields holds a handle with a method per
 ///   field (and no `set` or `replace`, so the variant cannot change under it).
 ///
-/// Generic type parameters must be [`Flat`]. Lifetime parameters, unions, `repr(packed)`, enum
-/// `repr`s other than `u8`, explicit discriminants, empty enums, enums of more than 256
-/// variants, variants whose constructors would have the same name (`rename` one) and `#[pin_v2]`
-/// are rejected. `#[flat(..)]` on a variant or a field is
+/// Generic type parameters must be [`Flat`] for the type to be `Flat`. The type bounds each of
+/// them by [`Pun`](puns::Pun), which its layout needs, so the impls that a `derive` writes, such
+/// as `Debug`, which reads the pointees, have that bound: do not write it again. Lifetime
+/// parameters, unions, `repr(packed)`, enum `repr`s other than `u8`, explicit discriminants, empty
+/// enums, enums of more than 256 variants, variants whose constructors would have the same name
+/// (`rename` one) and `#[pin_v2]` are rejected. `#[flat(..)]` on a variant or a field is
 /// read and removed. A variant with fields takes `rename = "name"`, a new name for its
 /// constructor, which no other constructor and not `project` may have; a field takes `into`,
 /// unless it is written as a pointer (`Near<..>`, `Option<Near<..>>`).
@@ -471,9 +495,6 @@ pub use nearest_derive::flat;
 /// version that `nearest` uses.
 pub use puns;
 pub use region::Region;
-#[cfg(feature = "alloc")]
-pub use storage::Heap;
-pub use storage::{Inline, Storage};
 
 /// The handle of a place holding a `T`, during the edit `'e`: `&mut Edit<'e, T>` is what
 /// [`Region::edit`], field methods and [`ListEdit::at`] return.
@@ -482,7 +503,7 @@ pub use storage::{Inline, Storage};
 /// handle or an [`Old`] names them, as in
 /// `fn first<'a, 'e>(b: &'a mut Edit<'e, Block>) -> &'a mut Edit<'e, Inst>`.
 ///
-/// For plain data it is `T` itself; for `Near<T>` it is the handle of the target; for lists,
+/// For plain data it is `T` itself; for `Near<T>` it is the handle of the pointee; for lists,
 /// optional pointers and strings it is [`ListEdit`], [`OptionEdit`] and [`StrEdit`]; for
 /// `#[flat]` types it is generated.
 ///
@@ -510,10 +531,8 @@ pub type Edit<'e, T> = <T as Flat>::Edit<'e>;
 pub mod __private {
   use crate::{Emit, Flat, Near, Offset};
   pub use crate::{
-    bytes::Check,
     edit::Raw,
     flat::{Buf, Sink, fits, make},
-    near::Packed,
   };
 
   /// Names the handle of a variant with several fields, for `XMut`.
@@ -523,7 +542,7 @@ pub mod __private {
   }
 
   /// What a constructor takes for a field written `Near<..>`: for `Near<T>` a builder of the
-  /// target, which it allocates; for a list or a string, a builder of the pointer itself.
+  /// pointee, which it allocates; for a list or a string, a builder of the pointer itself.
   pub trait Pointer: Flat {
     /// What the parameter builds.
     type Arg: Flat;

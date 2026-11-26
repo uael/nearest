@@ -1,12 +1,11 @@
 #[cfg(feature = "alloc")]
+use alloc::alloc::Global;
+#[cfg(feature = "serde")]
 use alloc::vec::Vec;
-use core::{fmt, marker::PhantomData, ops::Deref, slice};
+use core::{alloc::Allocator, fmt, marker::PhantomData, ops::Deref, slice};
 
-#[cfg(feature = "alloc")]
-use crate::Heap;
 use crate::{
-  Emit, Error, Flat, Pending, Storage,
-  bytes::{Stack, check},
+  Emit, Error, Flat,
   flat::{Buf, Sink, fits, limit},
 };
 
@@ -16,12 +15,12 @@ use crate::{
 /// changes it in place; [`as_bytes`](Self::as_bytes) and [`from_bytes`](Self::from_bytes) save
 /// and load it.
 ///
-/// `S` is the [`Storage`] of the buffer: by default, with `alloc`, the [`Heap`](crate::Heap), which
-/// grows as needed up to the limit of `T` (2 GiB with the default pointers; see
-/// [`Offset`](crate::Offset)); [`Inline<N>`](crate::Inline) keeps it in `N` bytes inside the
-/// `Region` value, with no heap; and a storage of your own puts it anywhere else. A region in
-/// another storage is built with [`new_in`](Self::new_in) or [`from_bytes`](Self::from_bytes);
-/// everything else is the same for all.
+/// The buffer is one block of the allocator `A`, aligned to 8 bytes on every target: by default,
+/// with `alloc`, the global allocator, and [`Fixed`](crate::Fixed) over a buffer of your own,
+/// without a heap. The block grows as needed, up to the limit of `T` (2 GiB with the default
+/// pointers; see [`Offset`](crate::Offset)), and a growth that the allocator refuses panics. A
+/// region in another allocator is built with [`new_in`](Self::new_in) or loaded with
+/// [`from_bytes_in`](Self::from_bytes_in); everything else is the same for all.
 ///
 /// ```
 /// use nearest::{Near, Region, flat};
@@ -35,41 +34,39 @@ use crate::{
 /// assert_eq!(copy.children.iter().map(|c| c.value).sum::<u32>(), 5);
 /// assert_eq!(copy, r);
 /// ```
-pub struct Region<T, #[cfg(feature = "alloc")] S = Heap, #[cfg(not(feature = "alloc"))] S> {
+pub struct Region<
+  T,
+  #[cfg(feature = "alloc")] A: Allocator = Global,
+  #[cfg(not(feature = "alloc"))] A: Allocator,
+> {
   buf: Buf,
-  store: S,
+  alloc: A,
   _t: PhantomData<T>,
 }
 
-impl<T, S: Storage> Region<T, S> {
-  /// An empty region in `store`, not attached: attach it once it is where it is used, since a
-  /// storage may move with its region. It holds at most `max` bytes, the limit of `T`.
-  const fn empty(store: S, max: usize) -> Self {
-    Self { buf: Buf::new(max), store, _t: PhantomData }
+impl<T, A: Allocator> Region<T, A> {
+  /// An empty region with no block, of at most `max` bytes, the limit of `T`.
+  const fn empty(alloc: A, max: usize) -> Self {
+    Self { buf: Buf::new::<A>(max), alloc, _t: PhantomData }
   }
 
-  /// Attaches the storage to the buffer, where it is now: a storage may move with its region.
-  /// Every use of the buffer through `&mut self` starts here, after the region last moved.
-  fn attach(&mut self) {
-    // SAFETY: the storage holds the buffer's bytes (none when given), moves only with the
-    // region, and is reached only through the buffer while the region is borrowed.
-    unsafe { self.buf.attach(&raw mut self.store, 0) };
+  /// Writes into the buffer where the region is now: the address of its allocator, which moves
+  /// with the region, and of the buffer itself, through which an edit reaches it (I8). Every use
+  /// of the buffer through `&mut self` that may grow it starts here.
+  const fn bind(&mut self) {
+    self.buf.alloc = (&raw const self.alloc).cast();
+    self.buf.me = &raw mut self.buf;
   }
 
-  /// Byte 0, for reading, from the storage where the region is now.
-  fn base(&self) -> *const u8 {
-    self.store.memory().as_ptr().cast()
-  }
-
-  /// A region of at most `max` bytes in `store` holding a copy of the `len` bytes at `src`, or
-  /// `None` if the storage cannot hold them.
+  /// A region of at most `max` bytes in `alloc` holding a copy of the `len` bytes at `src`, or
+  /// `None` if the allocator does not give a block for them.
   ///
   /// # Safety
-  /// `src` is valid for reading `len` bytes, outside `store`.
-  unsafe fn copy_of(store: S, max: usize, src: *const u8, len: usize) -> Option<Self> {
-    let mut r = Self::empty(store, max);
-    r.attach();
-    // SAFETY: the buffer was just attached and is empty; `src` is not in it.
+  /// `src` is valid for reading `len` bytes, outside a new block, and `len <= max`.
+  unsafe fn copy_of(alloc: A, max: usize, src: *const u8, len: usize) -> Option<Self> {
+    let mut r = Self::empty(alloc, max);
+    r.bind();
+    // SAFETY: the buffer was just bound and is empty; `src` is not in it.
     unsafe { r.buf.load(src, len) }.then_some(r)
   }
 }
@@ -92,34 +89,59 @@ impl<T: Flat> Region<T> {
   /// assert_eq!(compact.byte_len(), r.byte_len());
   /// ```
   pub fn new(value: impl Emit<T>) -> Self {
-    Self::new_in(Heap::default(), value)
+    Self::new_in(value, Global)
   }
-}
 
-impl<T: Flat, S: Storage> Region<T, S> {
-  /// A new region holding `value`, in `storage`: [`new`](Region::new) for any storage, whose
-  /// memory may hold anything (see [`Storage`]).
+  /// The region whose image is `bytes`, on the heap: [`from_bytes_in`](Self::from_bytes_in)
+  /// with the global allocator.
   ///
   /// ```
-  /// use nearest::{Inline, Near, Region, flat};
+  /// use nearest::{Near, Region, flat};
   ///
   /// #[flat]
   /// struct Msg { id: u8, body: Near<str> }
   ///
-  /// // 64 bytes inside the `Region` value.
-  /// let mut r = Region::new_in(Inline::<64>::default(), Msg::new(1, "hi"));
+  /// let r = Region::new(Msg::new(1, "hi"));
+  /// let bytes = r.as_bytes().unwrap();
+  /// let back = Region::<Msg>::from_bytes(bytes)?;
+  /// assert_eq!((back.id, &*back.body), (1, "hi"));
+  /// assert!(Region::<Msg>::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+  /// # Ok::<(), nearest::Error>(())
+  /// ```
+  ///
+  /// # Errors
+  /// As for [`from_bytes_in`](Self::from_bytes_in).
+  pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+    Self::from_bytes_in(bytes, Global)
+  }
+}
+
+impl<T: Flat, A: Allocator> Region<T, A> {
+  /// A new region holding `value`, in a block of `alloc`: [`new`](Region::new) for any
+  /// allocator.
+  ///
+  /// ```
+  /// use core::mem::MaybeUninit;
+  ///
+  /// use nearest::{Fixed, Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Msg { id: u8, body: Near<str> }
+  ///
+  /// // 64 bytes on the stack.
+  /// let mut bytes = [MaybeUninit::uninit(); 64];
+  /// let mut r = Region::new_in(Msg::new(1, "hi"), Fixed::new(&mut bytes));
   /// r.edit().body().set("hello");
-  /// let moved = r; // the bytes move with it
-  /// assert_eq!(&*moved.body, "hello");
+  /// assert_eq!(&*r.body, "hello");
   /// ```
   ///
   /// # Panics
-  /// If the value does not fit the storage.
-  pub fn new_in(storage: S, value: impl Emit<T>) -> Self {
+  /// If the allocator does not give the block.
+  pub fn new_in(value: impl Emit<T>, alloc: A) -> Self {
     fits::<T>();
-    let mut r = Self::empty(storage, limit::<T>());
-    r.attach();
-    // SAFETY: the buffer is attached, live during the call and only reached through the sink.
+    let mut r = Self::empty(alloc, limit::<T>());
+    r.bind();
+    // SAFETY: the buffer is bound, live during the call and only reached through the sink.
     let mut sink = unsafe { Sink::new(&raw mut r.buf) };
     let at = sink.alloc(size_of::<T>(), align_of::<T>());
     // SAFETY: `at` was just allocated for a `T`.
@@ -149,18 +171,46 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// ```
   pub fn edit(&mut self) -> T::Ref<'_, '_> {
     fits::<T>();
-    self.attach();
-    self.buf.compact = false;
-    self.buf.me = &raw mut self.buf;
-    // SAFETY: the root is a `T` at byte 0, the buffer is attached, the region is borrowed for
-    // the edit, and every access of the edit goes through `me` (I8).
+    self.bind();
+    // SAFETY: the root is a `T` at byte 0, the buffer is bound, the region is borrowed for the
+    // edit, and every access of the edit goes through `me` (I8).
     T::reference(unsafe { T::edit(self.buf.me, 0) })
   }
 
-  /// The compact image of the region, borrowed: the bytes a deep copy writes, which the loaders
-  /// take back. `None` if the region is not compact: it was edited, or a list in it was built
-  /// from an iterator whose size hint was wrong. A copy is always compact, so any region is
-  /// saved with `Region::new(&*r)` first (or `new_in`, in any storage). It allocates nothing.
+  /// Makes room for `bytes` more bytes: the block does not grow until the region holds more.
+  ///
+  /// ```
+  /// use nearest::{Near, Region, flat};
+  ///
+  /// #[flat]
+  /// struct Log { entries: Near<[u64]> }
+  ///
+  /// let mut r = Region::new(Log::new(()));
+  /// r.reserve(4096);
+  /// for i in 0..100 {
+  ///   r.edit().entries().push(i);
+  /// }
+  /// assert_eq!(r.entries.len(), 100);
+  /// ```
+  ///
+  /// # Panics
+  /// If the region would exceed its limit, or the allocator does not give the block.
+  pub fn reserve(&mut self, bytes: usize) {
+    self.bind();
+    let end = self.buf.len().saturating_add(bytes);
+    // SAFETY: the buffer is bound, and only reached through it during the call.
+    unsafe { self.buf.room(end, end) };
+  }
+
+  /// The bytes in use, borrowed: the value, what it reaches, and what edits left behind. `None`
+  /// if some of them may not be initialized: after a `&mut` to a type with padding was handed
+  /// out (`*e.field() = ..` of such a type, a list of them as a slice, or a pinned view), since
+  /// an assignment through it writes the padding as uninitialized bytes. It allocates nothing.
+  ///
+  /// The bytes load back as a region if their pointees are in the order of a copy, which every
+  /// region that was built and not edited has (see [`from_bytes_in`](Self::from_bytes_in)), and
+  /// read with [`view`](crate::view) otherwise. A copy, `Region::new(&*r)` (or `new_in`), has
+  /// its bytes, in that order, without what edits left behind.
   ///
   /// ```
   /// use nearest::{Near, Region, flat};
@@ -172,132 +222,86 @@ impl<T: Flat, S: Storage> Region<T, S> {
   /// let image = r.as_bytes().unwrap();
   /// assert_eq!(&*nearest::view::<Msg>(image)?.body, "hi"); // aligned as a region is
   /// r.edit().body().set("hello");
-  /// assert!(r.as_bytes().is_none());
+  /// let edited = r.as_bytes().unwrap(); // the old text is still there
+  /// assert_eq!(&*nearest::view::<Msg>(edited)?.body, "hello");
   /// let copy = Region::new(&*r);
-  /// let image = copy.as_bytes().unwrap();
-  /// assert!(image.len() < r.byte_len());
-  /// assert_eq!(&*Region::<Msg>::from_bytes(image)?.body, "hello");
+  /// assert!(copy.byte_len() < r.byte_len());
+  /// assert_eq!(&*Region::<Msg>::from_bytes(copy.as_bytes().unwrap())?.body, "hello");
   /// # Ok::<(), nearest::Error>(())
   /// ```
   #[must_use]
   pub fn as_bytes(&self) -> Option<&[u8]> {
-    // SAFETY: the bytes in use are in the memory, and initialized since the buffer is compact.
-    self.buf.compact.then(|| unsafe { slice::from_raw_parts(self.base(), self.buf.len()) })
+    // SAFETY: the bytes in use are in the block, initialized while `init` holds.
+    self.buf.init.then(|| unsafe { slice::from_raw_parts(self.buf.base(), self.buf.len()) })
   }
 
-  /// The region whose image is `bytes`, which may have any alignment, in a new storage. The
-  /// bytes are checked, then copied: they must be exactly what [`as_bytes`](Self::as_bytes)
-  /// returns for a `T`. For a storage that has no `Default`, copy from a view instead:
-  /// `Region::new_in(storage, nearest::view::<T>(bytes)?)`. It needs `alloc`: checking takes
-  /// memory that grows with the nesting of the data, which
-  /// [`from_bytes_with`](Self::from_bytes_with) takes from the caller.
+  /// The region whose image is `bytes`, which may have any alignment, in a block of `alloc`: the
+  /// bytes are copied as they are, to an address aligned as a region is, then checked there as
+  /// [`view`](crate::view) checks them. Nothing is rearranged: edits append after the image. The
+  /// check of `puns` requires the pointees in the order of a copy, so that each is reached by
+  /// one pointer, which the edits of a region rely on: what [`as_bytes`](Self::as_bytes)
+  /// returns for a region that was built, with gaps that no pointer reaches too. Bytes whose
+  /// pointees are shared, or out of that order, are refused, as `view` refuses them: save a copy
+  /// of an edited region, `Region::new(&*r)`, which is in that order.
+  ///
+  /// # Errors
+  /// In this order: [`Error::Invalid`] with [`puns::Error::Size`] for fewer bytes than a `T` or
+  /// more than the limit of `T`, [`Error::Alloc`] if the allocator does not give a block for
+  /// them, and [`Error::Invalid`] with what `puns` found if the copy is not the image of a valid
+  /// `T` in the order of a copy.
+  pub fn from_bytes_in(bytes: &[u8], alloc: A) -> Result<Self, Error> {
+    fits::<T>();
+    if bytes.len() < size_of::<T>() || bytes.len() > limit::<T>() {
+      return Err(Error::Invalid(puns::Error::Size));
+    }
+    // SAFETY: `bytes` is not in a new block, and within the limit.
+    let r = unsafe { Self::copy_of(alloc, limit::<T>(), bytes.as_ptr(), bytes.len()) };
+    let r = r.ok_or(Error::Alloc)?;
+    // SAFETY: the bytes in use are the copy, initialized.
+    let image = unsafe { slice::from_raw_parts(r.buf.base(), r.buf.len()) };
+    crate::view::<T>(image)?;
+    Ok(r)
+  }
+
+  /// The region whose bytes are a copy of `bytes`, in a block of `alloc`, which are trusted, or
+  /// that the caller checked itself: nothing is checked, and nothing is copied but the bytes.
   ///
   /// ```
+  /// use std::alloc::Global;
+  ///
   /// use nearest::{Near, Region, flat};
   ///
   /// #[flat]
   /// struct Msg { id: u8, body: Near<str> }
   ///
   /// let r = Region::new(Msg::new(1, "hi"));
-  /// let bytes = r.as_bytes().unwrap();
-  /// let back = Region::<Msg>::from_bytes(bytes)?;
-  /// assert_eq!((back.id, &*back.body), (1, "hi"));
-  /// assert!(Region::<Msg>::from_bytes(&bytes[1..]).is_err());
-  /// # Ok::<(), nearest::Error>(())
-  /// ```
-  ///
-  /// # Errors
-  /// [`Error::Invalid`] if the bytes are not the compact image of a valid `T`, and
-  /// [`Error::StorageFull`] if they are one, larger than the storage gives.
-  #[cfg(feature = "alloc")]
-  pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error>
-  where
-    S: Default,
-  {
-    Self::load(bytes, Stack::Heap(Vec::new()))
-  }
-
-  /// [`from_bytes`](Self::from_bytes), checking with `scratch` for memory.
-  /// `bytes.len() / 4` entries are always enough (`/ 2` with 2-byte pointers; see [`Pending`]).
-  /// It needs no `alloc`.
-  ///
-  /// ```
-  /// use nearest::{Inline, Near, Pending, Region, flat};
-  ///
-  /// #[flat]
-  /// struct Msg { id: u8, body: Near<str> }
-  ///
-  /// type Small = Region<Msg, Inline<64>>;
-  ///
-  /// let r = Small::new_in(Inline::default(), Msg::new(1, "hi"));
-  /// let bytes = r.as_bytes().unwrap();
-  /// let mut scratch = [Pending::default(); 64 / 4]; // enough for anything `Inline<64>` holds
-  /// let back = Small::from_bytes_with(bytes, &mut scratch)?;
-  /// assert_eq!((back.id, &*back.body), (1, "hi"));
-  /// assert!(Small::from_bytes_with(&bytes[1..], &mut scratch).is_err());
-  /// # Ok::<(), nearest::Error>(())
-  /// ```
-  ///
-  /// # Errors
-  /// As [`from_bytes`](Self::from_bytes), and [`Error::ScratchFull`] if `scratch` ran out before
-  /// the check finished, which says nothing about the bytes.
-  pub fn from_bytes_with(bytes: &[u8], scratch: &mut [Pending]) -> Result<Self, Error>
-  where
-    S: Default,
-  {
-    Self::load(bytes, Stack::Scratch(scratch, 0))
-  }
-
-  /// `from_bytes`, checking with `todo`.
-  fn load(bytes: &[u8], todo: Stack<'_>) -> Result<Self, Error>
-  where
-    S: Default,
-  {
-    // The checker reads bytes at any alignment, so nothing is copied for a bad image.
-    check::<T>(bytes, todo)?;
-    // SAFETY: `bytes` is not in a new storage.
-    let r = unsafe { Self::copy_of(S::default(), limit::<T>(), bytes.as_ptr(), bytes.len()) };
-    r.ok_or(Error::StorageFull)
-  }
-
-  /// [`from_bytes`](Self::from_bytes) without the check, for bytes that are trusted, or that the
-  /// caller checked itself.
-  ///
-  /// ```
-  /// use nearest::{Near, Region, flat};
-  ///
-  /// #[flat]
-  /// struct Msg { id: u8, body: Near<str> }
-  ///
-  /// let r = Region::new(Msg::new(1, "hi"));
-  /// // SAFETY: the bytes come from `as_bytes` for the same type, in this build.
-  /// let back = unsafe { Region::<Msg>::from_bytes_unchecked(r.as_bytes().unwrap()) };
+  /// // SAFETY: the bytes come from `as_bytes` of a region of the same type, in this build, that
+  /// // was not edited.
+  /// let back = unsafe { Region::<Msg>::from_bytes_unchecked_in(r.as_bytes().unwrap(), Global) };
   /// assert_eq!((back.id, &*back.body), (1, "hi"));
   /// ```
   ///
   /// # Safety
-  /// [`from_bytes`](Self::from_bytes) would not return [`Error::Invalid`] for them, in this
-  /// build: `bytes` (at any address) are the compact image of a valid `T`, no longer than its
-  /// limit, every offset and length an `O` that `from_isize` makes (see
-  /// [`Offset`](crate::Offset)). That is what [`as_bytes`](Self::as_bytes) returned for a region
-  /// of `T` in a build with the same layout of `T` (this one, for example), and what a check of
-  /// the caller's that accepts no more than `from_bytes` accepted.
+  /// In this build, [`from_bytes_in`](Self::from_bytes_in) would accept `bytes`: every offset
+  /// and length is an `O` that `from_isize` makes (see [`Offset`](crate::Offset)), and the
+  /// pointees are in the order of a copy, so each is reached by one pointer only, and overlaps no
+  /// other value: the bytes are a tree, which the edits of a region rely on. That is what
+  /// [`as_bytes`](Self::as_bytes) returned for a region of `T` that was built and not edited, in
+  /// a build with the same layout of `T` (this one, for example).
   ///
   /// # Panics
-  /// If the storage cannot hold them.
+  /// If the allocator does not give a block for them.
   #[must_use]
-  pub unsafe fn from_bytes_unchecked(bytes: &[u8]) -> Self
-  where
-    S: Default,
-  {
+  pub unsafe fn from_bytes_unchecked_in(bytes: &[u8], alloc: A) -> Self {
     fits::<T>();
-    // SAFETY: `bytes` is not in a new storage.
-    let r = unsafe { Self::copy_of(S::default(), limit::<T>(), bytes.as_ptr(), bytes.len()) };
-    r.expect("region exceeds its storage")
+    assert!(bytes.len() <= limit::<T>(), "region exceeds what its pointers reach");
+    // SAFETY: `bytes` is not in a new block, and within the limit.
+    let r = unsafe { Self::copy_of(alloc, limit::<T>(), bytes.as_ptr(), bytes.len()) };
+    r.expect("region exceeds what its allocator gives")
   }
 }
 
-impl<T, S> Region<T, S> {
+impl<T, A: Allocator> Region<T, A> {
   /// Bytes in use, including those no longer reachable after edits.
   ///
   /// ```
@@ -311,26 +315,40 @@ impl<T, S> Region<T, S> {
   }
 }
 
-impl<T, S: Storage> Deref for Region<T, S> {
+impl<T, A: Allocator> Deref for Region<T, A> {
   type Target = T;
   fn deref(&self) -> &T {
-    // SAFETY: a region holds a `T` at byte 0 of its buffer, aligned as a `u64` (the words of its
-    // memory), so for `T`, which is not more aligned (`fits`, on every way into a region).
-    unsafe { &*self.base().cast() }
+    // SAFETY: a region holds a `T` at byte 0 of its block, aligned to 8, so for `T`, which is
+    // not more aligned (`fits`, on every way into a region). The region upholds what `puns`
+    // requires of unsafe code that gives a reference to a value that holds an `InPlace` ("Values
+    // made by unsafe code" in `puns::InPlace`): every `Near` of the value leads to a valid
+    // pointee in the block, which its writers put there, and which is not written while the
+    // region is borrowed, and the reference has the provenance of the block.
+    unsafe { &*self.buf.base().cast() }
   }
 }
 
-impl<T, S: Storage + Default> Clone for Region<T, S> {
+impl<T, A: Allocator> Drop for Region<T, A> {
+  fn drop(&mut self) {
+    if let Some((block, layout)) = self.buf.block() {
+      // SAFETY: the block is of this allocator, and fits `layout`.
+      unsafe { self.alloc.deallocate(block, layout) };
+    }
+  }
+}
+
+impl<T, A: Allocator + Clone> Clone for Region<T, A> {
   fn clone(&self) -> Self {
-    // SAFETY: the bytes in use are in the memory of `self`, not of the new storage.
-    let r = unsafe { Self::copy_of(S::default(), self.buf.max(), self.base(), self.buf.len()) };
-    let mut r = r.expect("region exceeds its storage");
-    r.buf.compact = self.buf.compact;
+    let (base, len) = (self.buf.base(), self.buf.len());
+    // SAFETY: the bytes in use are in the block of `self`, not in a new one, within the limit.
+    let r = unsafe { Self::copy_of(self.alloc.clone(), self.buf.max(), base, len) };
+    let mut r = r.expect("region exceeds what its allocator gives");
+    (r.buf.init, r.buf.loaded) = (self.buf.init, self.buf.loaded);
     r
   }
 }
 
-impl<T: fmt::Debug, S: Storage> fmt::Debug for Region<T, S> {
+impl<T: fmt::Debug, A: Allocator> fmt::Debug for Region<T, A> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     (**self).fmt(f)
   }
@@ -343,26 +361,26 @@ impl<T: fmt::Debug, S: Storage> fmt::Debug for Region<T, S> {
 ///
 /// assert_eq!(Region::new(7u32).to_string(), "7");
 /// ```
-impl<T: fmt::Display, S: Storage> fmt::Display for Region<T, S> {
+impl<T: fmt::Display, A: Allocator> fmt::Display for Region<T, A> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     fmt::Display::fmt(&**self, f)
   }
 }
 
-impl<T: PartialEq, S: Storage> PartialEq for Region<T, S> {
+impl<T: PartialEq, A: Allocator> PartialEq for Region<T, A> {
   fn eq(&self, other: &Self) -> bool {
     **self == **other
   }
 }
 
-impl<T: Eq, S: Storage> Eq for Region<T, S> {}
+impl<T: Eq, A: Allocator> Eq for Region<T, A> {}
 
-// A region owns its value in a storage of its own. Nothing pinned outlives a borrow of the
-// region: moving it (which moves inline storage) is like growing its buffer.
-impl<T, S: Unpin> Unpin for Region<T, S> {}
+// A region owns its value in a block of its own, which does not move with it. Nothing pinned
+// outlives a borrow of the region.
+impl<T, A: Allocator + Unpin> Unpin for Region<T, A> {}
 
-/// With the `serde` feature: a region is its bytes, [`as_bytes`](Region::as_bytes) of the
-/// region or of a compact copy of it, written with `serialize_bytes`. Like any image, they hold
+/// With the `serde` feature: a region is its bytes, written with `serialize_bytes`: those of
+/// [`as_bytes`](Region::as_bytes) if they load back as the region, or else those of a copy. Like any image, they hold
 /// the layout of the target, and distances and lengths in the byte order of their [`Offset`]
 /// (native-endian for `i16`, `i32`, `i64`).
 ///
@@ -381,12 +399,14 @@ impl<T, S: Unpin> Unpin for Region<T, S> {}
 /// # Ok::<(), serde_json::Error>(())
 /// ```
 #[cfg(feature = "serde")]
-impl<T: Flat, S: Storage> ::serde::Serialize for Region<T, S> {
+impl<T: Flat, A: Allocator> ::serde::Serialize for Region<T, A> {
   fn serialize<Z: ::serde::Serializer>(&self, serializer: Z) -> Result<Z::Ok, Z::Error> {
-    if let Some(bytes) = self.as_bytes() {
+    if let Some(bytes) = self.as_bytes()
+      && crate::view::<T>(bytes).is_ok()
+    {
       return serializer.serialize_bytes(bytes);
     }
-    // A copy is compact.
+    // A copy has its bytes, in the order of a copy.
     let copy = Region::<T>::new(&**self);
     serializer.serialize_bytes(copy.as_bytes().unwrap_or_default())
   }
@@ -397,25 +417,25 @@ impl<T: Flat, S: Storage> ::serde::Serialize for Region<T, S> {
 /// deserializer. Bytes are accepted borrowed, owned, or as a sequence of `u8` (as JSON writes
 /// them).
 #[cfg(feature = "serde")]
-impl<'de, T: Flat, S: Storage + Default> ::serde::Deserialize<'de> for Region<T, S> {
+impl<'de, T: Flat, A: Allocator + Default> ::serde::Deserialize<'de> for Region<T, A> {
   fn deserialize<D: ::serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
     use ::serde::de::{self, SeqAccess, Visitor};
 
     /// Builds the region from what the format gives.
-    struct Bytes<T, S>(PhantomData<(T, S)>);
+    struct Bytes<T, A>(PhantomData<(T, A)>);
 
-    impl<'de, T: Flat, S: Storage + Default> Visitor<'de> for Bytes<T, S> {
-      type Value = Region<T, S>;
+    impl<'de, T: Flat, A: Allocator + Default> Visitor<'de> for Bytes<T, A> {
+      type Value = Region<T, A>;
 
       fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("the bytes of a region")
       }
 
       fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {
-        Region::from_bytes(bytes).map_err(E::custom)
+        Region::from_bytes_in(bytes, A::default()).map_err(E::custom)
       }
 
-      fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+      fn visit_seq<Q: SeqAccess<'de>>(self, mut seq: Q) -> Result<Self::Value, Q::Error> {
         // The hint comes from the input: trust it only so far.
         let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(1 << 16));
         while let Some(byte) = seq.next_element::<u8>()? {
@@ -430,10 +450,12 @@ impl<'de, T: Flat, S: Storage + Default> ::serde::Deserialize<'de> for Region<T,
 }
 
 const _: () = {
+  #[cfg(feature = "alloc")]
   const fn send_sync_unpin<T: Send + Sync + Unpin>() {}
+  const fn send_unpin<T: Send + Unpin>() {}
   #[cfg(feature = "alloc")]
   send_sync_unpin::<Region<u64>>();
   #[cfg(feature = "alloc")]
   send_sync_unpin::<Region<crate::Near<[u64]>>>();
-  send_sync_unpin::<Region<crate::Near<[u64]>, crate::Inline<64>>>();
+  send_unpin::<Region<crate::Near<[u64]>, crate::Fixed<'static>>>();
 };

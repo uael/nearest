@@ -2,7 +2,7 @@
 name = "nearest"
 version = "0.8.1"
 edition.workspace = true
-rust-version = "1.99"
+rust-version = "1.100"
 license = "Apache-2.0 OR MIT"
 description = "Self-relative pointer library for region-based allocation"
 repository = "https://github.com/uael/nearest"
@@ -15,20 +15,19 @@ exclude = ["CLAUDE.md"]
 
 [features]
 default = ["alloc"]
-# The heap: `Region<T>`, its default storage, and `from_bytes` and `view`, whose
-# check takes memory from the heap. Without it, regions live in other storage
-# (`Region<T, Inline<N>>`), and loaded bytes are checked with memory from the caller
-# (`from_bytes_with`, `view_with`).
+# The global allocator: `Region<T>`, whose blocks come from `Global`. Without it, regions take
+# their blocks from an allocator that they name, such as `Fixed` over a buffer.
 alloc = []
 # `Serialize` and `Deserialize` for `Region`: its bytes, checked when loaded.
 serde = ["alloc", "dep:serde"]
 
 [dependencies]
 nearest-derive = { version = "=0.8.1", path = "../nearest-derive" }
-# The layouts and the validity of values: `Pun` for every stored type, its check, and the numbers
-# of a fixed byte order (`puns::num`). Re-exported as `nearest::puns`. Exact, as a beta of `puns`
-# may change its API in the next one.
-puns = "=0.2.0-beta.3"
+# The layouts and the validity of values: `Pun` for every stored type, its check (the pointees of
+# the pointers included, which are aims), and the numbers of a fixed byte order (`puns::num`).
+# Re-exported as `nearest::puns`. Pinned to a commit: aims are not released yet. The version is
+# the one of that commit, which `cargo deny` requires (a git dependency without one is a wildcard).
+puns = { version = "=0.2.4", git = "https://github.com/uael/puns", rev = "f61a89a9a147085eb14f1563b6140f33f632956d" }
 serde = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

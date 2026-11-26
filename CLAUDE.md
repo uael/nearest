@@ -7,18 +7,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```sh
 cargo build                          # Build all crates
 cargo test --all                     # All tests: unit, integration, compile-fail, doc tests
-cargo test --test integration        # Run only integration tests (regions on the heap)
+cargo test --test integration        # Run only integration tests (regions in the global allocator)
 cargo test --test integration TESTNAME  # Run a single integration test
-cargo test --test inline             # The same tests with `Inline` storage, and its own tests
-cargo test --test user_storage       # The same tests with a storage written in the test, and others
+cargo test --test user_alloc         # The same tests with an allocator written in the test, and `Fixed`
 cargo test --test width              # Pointers of every width (i16, i32, i64), their limits
 cargo test --release --test width -- --ignored  # A region past 2 GiB (about 4 GB of memory)
 cargo test -p nearest --features serde --test serde  # The `serde` feature
 cargo test --test compile_fail       # Compile-fail tests (trybuild); TRYBUILD=overwrite to regenerate .stderr
 cargo run --example expr             # Examples (also: passes, ir); they assert their results
 cargo bench --bench region           # Benchmarks (criterion)
-MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p nearest --lib --test integration --test inline --test user_storage --test no_alloc --test width  # Miri
-MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p nearest --lib --test integration --test inline --test user_storage --test no_alloc --test width --target i686-unknown-linux-gnu  # Miri, 32 bits (a `u64` aligned to 4); also `--target s390x-unknown-linux-gnu` (big-endian)
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p nearest --lib --test integration --test user_alloc --test no_alloc --test width  # Miri
+MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p nearest --lib --test integration --test user_alloc --test no_alloc --test width --target i686-unknown-linux-gnu  # Miri, 32 bits (a `u64` aligned to 4); also `--target s390x-unknown-linux-gnu` (big-endian)
 MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly-2026-11-17 miri test -p nearest --no-default-features --test no_alloc  # Miri, no `alloc`
 cargo test -p nearest --no-default-features --lib --test no_alloc  # Without `alloc`: no heap
 cargo clippy -p nearest --no-default-features --lib --test no_alloc -- -D warnings  # Its clippy (in `cargo xtask lint`)
@@ -33,20 +32,20 @@ cargo deny check                     # License/advisory/ban auditing
 ```
 
 The crates build on **stable** Rust (`1.100.0`, pinned in `rust-toolchain`). `rust-version` is
-1.99, that of `puns` (its `DESIGN.md` says why: `size_of_val_raw` in `const`); the CI job "Minimum
-Rust version" builds and tests on it. Without `alloc`, CI also builds for `thumbv7em-none-eabihf`, a target
-without `std`, and for `msp430-none-elf`, a 16-bit one. A pinned nightly (`nightly-2026-11-17`,
-the one of `puns`) is used by `cargo xtask fmt` (`rustfmt.toml` uses unstable options), by Miri,
-and to build `core` for the 16-bit target. Generate trybuild `.stderr` files with the pinned
-stable; the trybuild test runs on stable only.
+1.100, the first stable release with `core::alloc::Allocator`, which a region takes its block
+from (`puns` needs 1.99); the CI job "Minimum Rust version" builds and tests on it. Without `alloc`, CI also builds for
+`thumbv7em-none-eabihf`, a target without `std`, and for `msp430-none-elf`, a 16-bit one. A pinned
+nightly (`nightly-2026-11-17`, the one of `puns`) is used by `cargo xtask fmt` (`rustfmt.toml` uses
+unstable options), by Miri, and to build `core` for the 16-bit target. Generate trybuild `.stderr`
+files with the pinned stable; the trybuild test runs on stable only.
 
 What `unsafe` code assumes of the target (the alignment of a primitive, the width of `usize` and
 `isize`, the byte order) is a `const` assertion where it is used, or a constant derived from the
-target (`ALIGN = align_of::<u64>()`, never "8 because words"), and the tests run under Miri on a
-target where the assumption does not hold: `i686-unknown-linux-gnu` (32 bits, a `u64` aligned to 4)
-and `s390x-unknown-linux-gnu` (big-endian): see the `miri` job of `ci.yml` for which tests run where
-(on a target, what the target can change). A target that is only built (`thumbv7em`, `msp430`) finds
-no undefined behavior, and a sentence of the specification is not a check: 0.7.1 was released with
+target, never a literal justified by prose, and the tests run under Miri on a target where the
+assumption does not hold: `i686-unknown-linux-gnu` (32 bits, a `u64` aligned to 4) and
+`s390x-unknown-linux-gnu` (big-endian): see the `miri` job of `ci.yml` for which tests run where (on
+a target, what the target can change). A target that is only built (`thumbv7em`, `msp430`) finds no
+undefined behavior, and a sentence of the specification is not a check: 0.7.1 was released with
 "memory is `u64` words, so 8-aligned", which no test ever ran where it is false, and with `i64`
 offsets truncated on 32 bits. A new `unsafe` block that reads a type at an address comes with the
 test that stresses it (an over-aligned type, an integer wider than `isize`, the other byte order);
@@ -66,12 +65,11 @@ and vary by a third.
 
 ## Architecture
 
-**nearest** keeps a value and everything it points to in one buffer, on the heap, inline or in
-any storage. Every pointer is a 4-byte offset relative to its own address, so `Clone` is a
-`memcpy` and reading is plain `&T`; edits go through handles checked by the borrow checker.
-**`nearest/CLAUDE.md` is the specification** (public surface, invariants, mechanics, files,
-what is left out and why): read it before changing the library, and keep it, the crate docs
-and `README.md` in step with the code.
+**nearest** keeps a value and everything it points to in one buffer, a block of any allocator. Every
+pointer is a 4-byte offset relative to its own address, so `Clone` is a `memcpy` and reading is
+plain `&T`; edits go through handles checked by the borrow checker. **`nearest/CLAUDE.md` is the
+specification** (public surface, invariants, mechanics, files, what is left out and why): read it
+before changing the library, and keep it, the crate docs and `README.md` in step with the code.
 
 - **`nearest/`** — the library (`#![no_std]`; default feature `alloc`, opt-in `serde`)
 - **`nearest-derive/`** — the `#[flat]` attribute, re-exported as `nearest::flat`

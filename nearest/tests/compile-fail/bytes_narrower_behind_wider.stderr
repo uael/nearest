@@ -16,16 +16,8 @@ note: erroneous constant encountered
   | |   };
   | |___^
 
-note: erroneous constant encountered
- --> $CARGO/puns-$VERSION/src/lib.rs
+note: the above error was encountered while instantiating `fn nearest::flat::fits_behind::<Inner, i32>`
+ --> src/flat.rs
   |
-  |     let layout = Layout::scalar::<T>(T::SPEC).identified(T::ID);
-  |                                      ^^^^^^^
-
-note: erroneous constant encountered
- --> tests/compile-fail/bytes_narrower_behind_wider.rs:7:1
-  |
-7 | #[flat]
-  | ^^^^^^^
-  |
-  = note: this note originates in the derive macro `::nearest::puns::Pun` (in Nightly builds, run with -Z macro-backtrace for more info)
+  |     fits_behind::<T, O>();
+  |     ^^^^^^^^^^^^^^^^^^^^^

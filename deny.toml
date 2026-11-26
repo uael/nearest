@@ -16,3 +16,5 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# `puns` at a commit that is not released yet (its aims), which `nearest` depends on by git.
+allow-git = ["https://github.com/uael/puns"]
